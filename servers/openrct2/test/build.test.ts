@@ -267,6 +267,79 @@ test("a door tile with a structure on it says the site data is stale, not to pic
     }
 });
 
+test("a door with nowhere to queue is refused, not built into an unusable ride", function () {
+    // Touching the footprint is necessary and not sufficient: find_build_sites checks the
+    // tile the door opens onto too. Skipping that check accepted a door nothing could ever
+    // queue to and then reported the build a success.
+    const cases = [
+        {
+            name: "unowned",
+            arrange: function (game: FakeGame) { game.own(11, 10, false); },
+            expect: /is not land the park owns, so no queue could ever reach this door/,
+            stale: false
+        },
+        {
+            name: "built on",
+            arrange: function (game: FakeGame) {
+                game.tile(11, 10).elements.push({ type: "track", baseZ: 96, ride: 9 });
+            },
+            expect: /is blocked by track, so no queue could ever reach this door/,
+            stale: true
+        },
+        {
+            name: "another ride's queue",
+            arrange: function (game: FakeGame) {
+                // A queue bound to ride 6: a door here would re-chain it and strand that ride.
+                // The entrance goes on second, because placing one is what chains the queue.
+                game.addPath(11, 10, true);
+                game.addRideEntrance(11, 11, 6, 1);
+            },
+            expect: /is already the queue for ride 6/,
+            stale: true
+        }
+    ];
+
+    cases.forEach(function (probe) {
+        const { game, restore } = park();
+        probe.arrange(game);
+
+        try {
+            const outcome = build({});
+            const detail = step(outcome, "site");
+
+            assert.equal(outcome.ok, false, probe.name + ": the ride went up anyway");
+            assert.match(detail, /entranceX\/entranceY 12,10 touches the footprint, but/,
+                probe.name + ": it does not say the tile itself was fine");
+            assert.match(detail, /11,10/, probe.name + ": the door tile is not named");
+            assert.match(detail, probe.expect, probe.name + ": got " + detail);
+            assert.equal(/find_build_sites for this ride again/.test(detail), probe.stale,
+                probe.name + ": wrong remedy for this kind of failure");
+            assert.equal(game.rides.length, 0, probe.name + ": a ride was created for a door that cannot work");
+        } finally {
+            restore();
+        }
+    });
+});
+
+test("a queue already lying at the door is still a legal place to build", function () {
+    // The other direction: an unbound queue on the door tile is the normal
+    // lay-the-queue-first order, and the entrance chains it. Refusing it would make
+    // build_flat_ride stricter than the game.
+    const { game, restore } = park();
+    game.addPath(11, 10, true);
+
+    try {
+        const outcome = build({});
+
+        assert.equal(outcome.ok, true, JSON.stringify(outcome.steps));
+        assert.equal(game.tile(11, 10).elements.filter(function (e) {
+            return e.type === "footpath";
+        })[0].ride, outcome.rideId, "the queue on the map did not bind to the new ride");
+    } finally {
+        restore();
+    }
+});
+
 test("one tile for both doors is refused, naming both arguments and the fix", function () {
     // A 1x4 ride has sides with a single perimeter tile, so this is easy to ask for.
     const { game, restore } = park();

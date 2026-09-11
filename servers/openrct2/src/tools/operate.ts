@@ -13,20 +13,31 @@ const MAX_PRICE = 2000;
 /** Inspection intervals are an enum of seven values, not a number of minutes. */
 const MAX_INSPECTION_INTERVAL = 6;
 
-const INSPECTION_INTERVAL_HELP = "0 is every 10 minutes, 1 every 20, 2 every 30, 3 every 45,"
-    + " 4 every hour, 5 every 2 hours, 6 never";
-
 /**
- * The MCP layer checks types, `required` and unknown properties, and nothing else: a
- * number outside its range reaches the game, which answers "Value out of range" without
- * naming a field. A run lost several turns to exactly that, passing 30 to
- * `inspectionInterval` meaning thirty minutes. So the ranges are checked here, by name,
- * before any action is sent.
+ * The mapping, spelled out wherever the model can read it. It is the whole content of the
+ * trap: the values look like minutes and are not, so thirty minutes is 2 and 30 is nothing.
  */
+const INSPECTION_INTERVAL_HELP = "0 is every 10 minutes, 1 every 20, 2 every 30, 3 every 45,"
+    + " 4 every hour, 5 every 2 hours, 6 never; so thirty minutes is 2, not 30";
+
 function isWholeNumberWithin(value: number, min: number, max: number): boolean {
     return Math.floor(value) === value && value >= min && value <= max;
 }
 
+/**
+ * A second line of defence, not the first one. `checkProperty` in src/mcp.ts enforces
+ * `enum`, `minimum` and `maximum` from the schema before a tool is ever invoked, so over
+ * MCP a bad number is refused there and never reaches this function.
+ *
+ * What is still worth keeping here: direct callers do not go through that check, and the
+ * `demolish` rule is a relationship between two arguments, which no JSON Schema keyword
+ * in use can express.
+ *
+ * What must NOT live only here: anything the model needs in order to avoid the mistake.
+ * A run lost several turns passing 30 to `inspectionInterval` meaning thirty minutes; the
+ * explanation of why that is wrong belongs in the property's `description`, which the
+ * model reads every turn, rather than in a refusal it will now never see.
+ */
 function refuseBadArguments(request: OperateRideRequest): string | undefined {
     if (request.demolish === true && (typeof request.price === "number" || typeof request.open === "boolean")) {
         return "`demolish` cannot be combined with `price` or `open`: the ride is gone, so it has"
@@ -87,8 +98,8 @@ export class OperateTools {
                     minimum: 0,
                     maximum: MAX_INSPECTION_INTERVAL,
                     enum: [0, 1, 2, 3, 4, 5, 6],
-                    description: "How often a mechanic inspects the ride, as an index and not as minutes: "
-                        + INSPECTION_INTERVAL_HELP + "."
+                    description: "How often a mechanic inspects the ride. It is an index into the game's"
+                        + " inspection intervals and not a number of minutes: " + INSPECTION_INTERVAL_HELP + "."
                 },
                 demolish: {
                     type: "boolean",

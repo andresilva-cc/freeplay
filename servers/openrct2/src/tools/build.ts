@@ -60,8 +60,8 @@ export class BuildTools {
             type: "object",
             properties: {
                 rideObject: { type: "integer", minimum: 0, description: "The `index` field of an entry from list_ride_objects. This is the object's own index, not its position in that list." },
-                x: { type: "integer", minimum: 0, description: "Tile x of the footprint centre." },
-                y: { type: "integer", minimum: 0, description: "Tile y of the footprint centre." },
+                x: { type: "integer", minimum: 0, description: "Tile x of the build origin, copied from a find_build_sites site's `x`. The origin is inside the footprint but it is NOT its centre and NOT a corner: a 4x4 runs 0..3 from it, a 1x4 runs -2..+1, a 3x3 runs -1..+1. Derive nothing from it — the ground the ride stands on is the site's `fromX`/`fromY`/`toX`/`toY`." },
+                y: { type: "integer", minimum: 0, description: "Tile y of the build origin, copied from a find_build_sites site's `y`. Same rule as `x`: it is not the centre of anything." },
                 rotation: { type: "integer", minimum: 0, maximum: MAX_ROTATION, description: "Which way the ride faces, 0-3. Use the `rotation` from the site you picked; it is not wrapped, so 4 is refused rather than read as 0." },
                 price: { type: "integer", minimum: 0, maximum: MAX_PRICE, description: "Ticket price in tenths of a currency unit: 10 means 1.00. Charge above what guests think the ride is worth and they walk past; park_status reports each ride's `value`. 0 is free." },
                 entranceX: { type: "integer", minimum: 0, description: "Tile x for the entrance building. Must be one of the site's `access` options. Required with entranceY, exitX and exitY for anything that is not a shop." },
@@ -77,7 +77,7 @@ export class BuildTools {
                     minimum: 0,
                     maximum: MAX_INSPECTION_INTERVAL,
                     enum: [0, 1, 2, 3, 4, 5, 6],
-                    description: "How often mechanics inspect, as one of seven settings and NOT a number of minutes: 0 every 10 minutes, 1 every 20, 2 every 30, 3 every 45, 4 every hour, 5 every two hours, 6 never. Default 2."
+                    description: "How often mechanics inspect. An index into the game's seven inspection intervals, NOT a number of minutes: 0 every 10 minutes, 1 every 20, 2 every 30, 3 every 45, 4 every hour, 5 every two hours, 6 never. Default 2."
                 }
             },
             required: ["rideObject", "x", "y", "rotation", "price", "open"],

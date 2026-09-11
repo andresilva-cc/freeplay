@@ -577,8 +577,8 @@ test("a demolition on its own still goes through the tool", function () {
 });
 
 test("the ranges the tool enforces are in the schema, so the model can read them", function () {
-    // The MCP layer checks types and nothing else, so these are documentation rather than
-    // enforcement. A model that cannot see the range guesses, and 30 is a good guess.
+    // src/mcp.ts enforces enum, minimum and maximum centrally, so these are both the
+    // enforcement and what the model sees before it guesses.
     const properties = toolDefinition().inputSchema.properties || {};
 
     assert.equal(properties.price.minimum, 0);
@@ -587,7 +587,23 @@ test("the ranges the tool enforces are in the schema, so the model can read them
     assert.equal(properties.inspectionInterval.minimum, 0);
     assert.equal(properties.inspectionInterval.maximum, 6);
     assert.deepEqual(properties.inspectionInterval.enum, [0, 1, 2, 3, 4, 5, 6]);
-    assert.match(String(properties.inspectionInterval.description), /not as minutes/);
+});
+
+test("the schema itself explains the traps, because the refusals below it may never run", function () {
+    // Central schema validation refuses a bad number before the tool is invoked, so the
+    // hand-written refusal for `inspectionInterval: 30` is unreachable over MCP. Anything
+    // the model has to know to avoid the mistake has to be in the description it reads
+    // every turn, not in a sentence it only sees after paying for the mistake.
+    const properties = toolDefinition().inputSchema.properties || {};
+    const interval = String(properties.inspectionInterval.description);
+
+    assert.match(interval, /not a number of minutes/, "the trap named in the property itself");
+    assert.match(interval, /0 is every 10 minutes/, "with the whole mapping");
+    assert.match(interval, /6 never/);
+    assert.match(interval, /thirty minutes is 2, not 30/, "and the correction for the mistake a run actually made");
+
+    assert.match(String(properties.price.description), /tenths/, "the money unit, likewise");
+    assert.match(String(properties.price.description), /1000 means 100\.00/);
 });
 
 test("the description reports facts and never advises what to charge or when to open", function () {

@@ -829,3 +829,102 @@ test("a shop's rectangle is its one tile", function () {
         restore();
     }
 });
+
+/**
+ * The band and trunk that leave exactly one 3x3 site, at (13,10), with its three -x doors
+ * on the trunk at (10,9), (10,10) and (10,11).
+ */
+function oneSitePark(): FakeGame {
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(9, 0);
+
+    for (let y = 1; y <= 11; y++) {
+        if (y !== 10) {
+            game.addPath(10, y);
+        }
+    }
+
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            game.own(x, y, x >= 10 && x <= 17 && y >= 9 && y <= 11);
+        }
+    }
+
+    return game;
+}
+
+function doorKeys(sites: { access: { door?: { x: number; y: number } }[] }[]): string[] {
+    const keys: string[] = [];
+
+    sites.forEach(function (site) {
+        site.access.forEach(function (option) {
+            if (option.door) {
+                keys.push(String(option.door.x) + "," + String(option.door.y));
+            }
+        });
+    });
+
+    return keys;
+}
+
+test("a door with a queue bound to no ride is offered, because placing the entrance chains it", function () {
+    // What a demolished ride leaves behind. Refusing these made the obvious place to rebuild
+    // read as having no access at all, with nothing in the result to say why.
+    const game = oneSitePark();
+    game.addPath(10, 10, true);
+
+    const restore = game.install();
+
+    try {
+        const sites = findBuildSites(0, 50, 0).sites || [];
+        assert.equal(sites.length, 1);
+
+        const doors = doorKeys(sites);
+        assert.ok(doors.indexOf("10,10") >= 0, "the unbound queue is a working door, offered: " + doors.join(" "));
+        assert.ok(doors.indexOf("10,9") >= 0);
+        assert.ok(doors.indexOf("10,11") >= 0);
+
+        const onTheQueue = sites[0].access.filter(function (option) {
+            return option.door && option.door.x === 10 && option.door.y === 10;
+        })[0];
+
+        assert.equal(onTheQueue.door && onTheQueue.door.hasUnboundQueue, true, "and it says the queue is already there");
+        assert.equal(onTheQueue.door && onTheQueue.door.isExistingPath, true);
+
+        // Nothing else on the map has a queue on it, so nothing else claims one.
+        sites[0].access.forEach(function (option) {
+            if (option.door && !(option.door.x === 10 && option.door.y === 10)) {
+                assert.equal(option.door.hasUnboundQueue, false, String(option.door.x) + "," + String(option.door.y));
+            }
+        });
+    } finally {
+        restore();
+    }
+});
+
+test("a door with a queue belonging to another ride is not offered", function () {
+    // Bound the way the game binds it: a ride entrance, and the chain walked back from it.
+    // Setting the field by hand would pass whatever the fake happened to store.
+    const game = oneSitePark();
+    game.addPath(10, 10, true);
+    game.addRideEntrance(9, 10, 6, 0);
+
+    const restore = game.install();
+
+    try {
+        const bound = game.tile(10, 10).elements.filter(function (e) { return e.type === "footpath"; })[0];
+        assert.equal(bound.ride, 6, "the fake has to have actually chained the queue, or this test proves nothing");
+
+        const sites = findBuildSites(0, 50, 0).sites || [];
+        assert.equal(sites.length, 1, "the site is still there; only the one door is gone");
+
+        const doors = doorKeys(sites);
+        assert.equal(doors.indexOf("10,10"), -1,
+            "building there would re-chain ride 6's queue and leave it with none: " + doors.join(" "));
+        assert.ok(doors.indexOf("10,9") >= 0, "the plain path tiles either side of it are untouched");
+        assert.ok(doors.indexOf("10,11") >= 0);
+    } finally {
+        restore();
+    }
+});

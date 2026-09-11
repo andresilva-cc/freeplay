@@ -12,6 +12,11 @@ export interface DoorTile {
     y: number;
     /** True when this tile is already a footpath, so a queue here would replace it. */
     isExistingPath: boolean;
+    /** True when a queue already stands here bound to no ride - what a demolished ride
+     *  leaves behind. It is not in the way: placing the entrance chains it to the new ride,
+     *  so the queue is done before it is built. A queue bound to another ride is a
+     *  different thing, and those tiles are not offered at all. */
+    hasUnboundQueue: boolean;
 }
 
 /** One place an entrance or exit can go: the kiosk tile, and the tile its door opens onto. */
@@ -85,6 +90,34 @@ export interface SiteSearchResult {
 
 function key(x: number, y: number): string {
     return String(x) + "," + String(y);
+}
+
+/**
+ * The ride a queue on this tile is chained to, or null when it is bound to nothing.
+ *
+ * Read from the live tile rather than from the cached grid, because the grid carries only
+ * "is a queue" and this is asked about a handful of tiles. The distinction is the one
+ * build_flat_ride draws: an unbound queue at a door is a finished queue waiting for its
+ * ride, and a queue already chained to another ride would be stolen from it.
+ */
+function queueBoundTo(x: number, y: number): number | null {
+    const tile = map.getTile(x, y);
+
+    for (let i = 0; i < tile.numElements; i++) {
+        const element = tile.getElement(i);
+
+        if (element.type !== "footpath") {
+            continue;
+        }
+
+        const path = element as FootpathElement;
+
+        if (path.isQueue && path.ride !== null && typeof path.ride === "number") {
+            return path.ride;
+        }
+    }
+
+    return null;
 }
 
 function areaState(grid: MapGrid, cx: number, cy: number, offsets: Offset[]): { z: number; scenery: number } | null {
@@ -473,10 +506,19 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                         // A door onto the existing path network is the best door there is -
                         // pathDistance 0, nothing to lay but the queue itself. Requiring bare
                         // ground here quietly discarded exactly those, and left `isExistingPath`
-                        // a flag that could never be true. Another ride's queue is different:
-                        // a second queue on that tile unbinds the first.
-                        if (!doorCell || !doorCell.owned
-                            || (!doorCell.clearable && !(doorCell.path && !doorCell.queue))) {
+                        // a flag that could never be true.
+                        if (!doorCell || !doorCell.owned || (!doorCell.clearable && !doorCell.path)) {
+                            continue;
+                        }
+
+                        // The one queue that is a blocker, and it is the same line
+                        // build_flat_ride draws: a queue chained to another ride would be
+                        // re-chained to this one, leaving that ride with none. An unbound
+                        // queue is a working door - the entrance chains it when it is placed -
+                        // and refusing those made a demolished ride's own spot unbuildable.
+                        const boundTo = doorCell.queue ? queueBoundTo(door.x, door.y) : null;
+
+                        if (boundTo !== null) {
                             continue;
                         }
 
@@ -486,7 +528,12 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                             direction: direction,
                             side: SIDE_NAMES[direction % 4],
                             needsClearing: !cell.clear || (!doorCell.clear && !doorCell.path),
-                            door: { x: door.x, y: door.y, isExistingPath: doorCell.path },
+                            door: {
+                                x: door.x,
+                                y: door.y,
+                                isExistingPath: doorCell.path,
+                                hasUnboundQueue: doorCell.queue
+                            },
                             pathDistance: pathDistanceOrNone(paths, door.x, door.y),
                             queueCutsOff: queueCutsOffAt(door.x, door.y)
                         });

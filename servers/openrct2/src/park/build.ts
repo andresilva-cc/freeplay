@@ -204,7 +204,66 @@ function accessAt(
         };
     }
 
+    // Touching the footprint is necessary and not sufficient. find_build_sites checks the
+    // tile the door will open onto as well, and a build that skipped it accepted a door
+    // nothing could ever queue to - and then reported success, which is the worst shape a
+    // failure takes here.
+    const door = apronTile({ x: tile.x, y: tile.y, direction: facing });
+    const doorCell = grid.at(door.x, door.y);
+    const opensOnto = "touches the footprint, but the tile its door would open onto, "
+        + String(door.x) + "," + String(door.y) + ", ";
+
+    if (!doorCell) {
+        return { reason: opensOnto + "is off the map, so no queue could ever reach this door" };
+    }
+
+    if (!doorCell.owned) {
+        return { reason: opensOnto + "is not land the park owns, so no queue could ever reach this door" };
+    }
+
+    if (!doorCell.clearable && !doorCell.path) {
+        const blockers = immovableElementsOn(door.x, door.y);
+
+        return {
+            reason: opensOnto + "is blocked by " + (blockers.length > 0 ? blockers.join(" and ") : "a structure")
+                + ", so no queue could ever reach this door",
+            stale: true
+        };
+    }
+
+    const servingRide = queueServingOther(door.x, door.y);
+
+    if (servingRide !== null) {
+        return {
+            reason: opensOnto + "is already the queue for ride " + String(servingRide)
+                + ". Putting a door on it would re-chain that queue to this ride and leave ride "
+                + String(servingRide) + " with none",
+            stale: true
+        };
+    }
+
     return { access: { x: tile.x, y: tile.y, direction: facing } };
+}
+
+/** The ride a queue on this tile already serves, or null. An unbound queue chains freely. */
+function queueServingOther(x: number, y: number): number | null {
+    const tile = map.getTile(x, y);
+
+    for (let i = 0; i < tile.numElements; i++) {
+        const element = tile.getElement(i);
+
+        if (element.type !== "footpath") {
+            continue;
+        }
+
+        const path = element as FootpathElement;
+
+        if (path.isQueue && typeof path.ride === "number") {
+            return path.ride;
+        }
+    }
+
+    return null;
 }
 
 /** "entranceX/entranceY 12,10" - the argument names, so the model edits the right one. */
@@ -337,13 +396,13 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                 ok: false,
                 detail: faults.join(". ") + "." + intact
                     + (stale
-                        ? " find_build_sites never offers a tile with that on it, so these coordinates either did"
-                            + " not come from its `access` list or that list is now out of date - a build that fails"
-                            + " leaves its track on the ground. Call find_build_sites for this ride again and take a"
-                            + " fresh `access` pair from the result. Do not re-send these coordinates and do not"
-                            + " guess new ones."
+                        ? " find_build_sites never offers a tile like that, so these coordinates either did not come"
+                            + " from its `access` list or that list is now out of date: the ground changes as you"
+                            + " build, and a build that fails leaves its track behind. Call find_build_sites for this"
+                            + " ride again and take a fresh `access` pair from the result. Do not re-send these"
+                            + " coordinates and do not guess new ones."
                         : " Pick a different option from this site's `access` list: every option in it is a clear,"
-                            + " level, owned tile touching this footprint.")
+                            + " level, owned tile touching this footprint, with somewhere for its queue behind it.")
             });
             return refuse();
         }
