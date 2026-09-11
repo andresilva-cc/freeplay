@@ -98,6 +98,12 @@ Money is an integer in tenths: `1000` means `100.00`. Ride ratings are fixed-poi
 Cash falls on its own — rides cost money to run and staff draw wages. A park with one
 cheap ride loses money. Watch `monthlyProfit` in `park_status`.
 
+Guests refuse rides they think are overpriced, and a ride nobody will pay for looks
+exactly like a ride nobody can reach: customers stay at 0. Each ride reports `value`
+alongside `price` — that is roughly what a guest thinks it is worth. A gentle ride is
+worth very little. If a ride has a queue, guests can reach it, and customers are still
+0, the price is why.
+
 ## Playing
 
 Time passes while you think. State you read is a snapshot, not a freeze-frame.

@@ -14,6 +14,8 @@ export interface RideSummary {
     excitement: number;
     intensity: number;
     price: number;
+    /** What the ride is worth to a guest. Charge far above this and they refuse to ride. */
+    value: number;
     totalCustomers: number;
     totalProfit: number;
     queueTime: number;
@@ -109,6 +111,7 @@ export function readParkStatus(): ParkStatus {
             excitement: ride.excitement,
             intensity: ride.intensity,
             price: ride.price.length > 0 ? ride.price[0] : 0,
+            value: ride.value,
             totalCustomers: ride.totalCustomers,
             totalProfit: ride.totalProfit,
             queueTime: station ? station.queueTime : 0,
