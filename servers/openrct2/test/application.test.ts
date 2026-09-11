@@ -505,29 +505,15 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
 
         assert.deepEqual(
             Object.keys(toolsByName).sort(),
-            ["build_flat_ride", "build_path", "clear_scenery", "evaluate", "find_build_sites", "get_date", "get_park_info", "guest_feedback", "hire_staff", "list_ride_objects", "park_status", "show_error"]
+            ["build_flat_ride", "build_path", "clear_scenery", "evaluate", "find_build_sites", "guest_feedback", "hire_staff", "list_ride_objects", "park_status"]
         );
 
-        assert.equal(toolsByName.get_date.title, "Get the current date");
-        assert.equal(toolsByName.get_date.inputSchema.type, "object");
-        assert.equal(toolsByName.get_date.inputSchema.additionalProperties, false);
-        assert.equal(typeof toolsByName.get_date.outputSchema, "undefined");
-        assert.equal(toolsByName.get_date.annotations?.readOnlyHint, true);
         assert.equal(toolsByName.evaluate.annotations?.readOnlyHint, false);
         assert.equal(toolsByName.find_build_sites.annotations?.readOnlyHint, true);
         assert.equal(toolsByName.build_flat_ride.annotations?.readOnlyHint, false);
         assert.equal(toolsByName.build_path.annotations?.readOnlyHint, false);
         assert.equal(toolsByName.clear_scenery.annotations?.destructiveHint, true);
-        assert.equal(toolsByName.get_park_info.outputSchema?.type, "object");
-        assert.deepEqual(toolsByName.show_error.inputSchema, {
-            type: "object",
-            properties: {
-                title: { type: "string" },
-                message: { type: "string" }
-            },
-            required: ["title", "message"],
-            additionalProperties: false
-        });
+        assert.equal(toolsByName.park_status.annotations?.readOnlyHint, true);
 
         const callResponse = app.handleRawRequest(createRawRequest(
             "POST",
@@ -538,123 +524,22 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
                 id: 3,
                 method: "tools/call",
                 params: {
-                    name: "get_date",
-                    arguments: {}
+                    name: "evaluate",
+                    arguments: { code: "1 + 1" }
                 }
             })
         ));
         const callBody = parseJsonBody(callResponse) as {
             result: {
-                content: Array<{
-                    type: string;
-                    text: string;
-                }>;
-                structuredContent: Record<string, string | number>;
+                content: Array<{ type: string; text: string }>;
+                structuredContent: Record<string, string | number | boolean>;
             };
         };
 
         assert.equal(callResponse.statusCode, 200);
         assert.equal(callBody.result.content[0].type, "text");
         assert.equal(callBody.result.content[0].text, JSON.stringify(callBody.result.structuredContent));
-        assert.deepEqual(callBody.result.structuredContent, {
-            day: 10,
-            month: 11,
-            year: 12,
-            formatted: "10 / 131"
-        });
-
-        const parkInfoResponse = app.handleRawRequest(createRawRequest(
-            "POST",
-            "/mcp",
-            sessionHeaders,
-            JSON.stringify({
-                jsonrpc: "2.0",
-                id: 4,
-                method: "tools/call",
-                params: {
-                    name: "get_park_info",
-                    arguments: {}
-                }
-            })
-        ));
-        const parkInfoBody = parseJsonBody(parkInfoResponse) as {
-            result: {
-                structuredContent: Record<string, string | number>;
-            };
-        };
-
-        assert.deepEqual(parkInfoBody.result.structuredContent, {
-            name: "Mega Park",
-            numGuests: 1234,
-            rating: 999,
-            cash: 45678,
-            bankLoan: 2000,
-            companyValue: 77777,
-            parkValue: 55555,
-            entranceFee: 25
-        });
-
-        const showErrorResponse = app.handleRawRequest(createRawRequest(
-            "POST",
-            "/mcp",
-            sessionHeaders,
-            JSON.stringify({
-                jsonrpc: "2.0",
-                id: 5,
-                method: "tools/call",
-                params: {
-                    name: "show_error",
-                    arguments: {
-                        title: "Oops",
-                        message: "Something happened"
-                    }
-                }
-            })
-        ));
-        const showErrorBody = parseJsonBody(showErrorResponse) as {
-            result: {
-                structuredContent: Record<string, string | boolean>;
-            };
-        };
-
-        assert.deepEqual(showErrorBody.result.structuredContent, {
-            shown: true,
-            title: "Oops",
-            message: "Something happened"
-        });
-        assert.deepEqual(uiCalls, [{
-            title: "Oops",
-            message: "Something happened"
-        }]);
-
-        const invalidShowErrorResponse = app.handleRawRequest(createRawRequest(
-            "POST",
-            "/mcp",
-            sessionHeaders,
-            JSON.stringify({
-                jsonrpc: "2.0",
-                id: 6,
-                method: "tools/call",
-                params: {
-                    name: "show_error",
-                    arguments: {
-                        title: "Missing message"
-                    }
-                }
-            })
-        ));
-
-        assert.deepEqual(parseJsonBody(invalidShowErrorResponse), {
-            jsonrpc: "2.0",
-            id: 6,
-            result: {
-                content: [{
-                    type: "text",
-                    text: "Missing required property: message"
-                }],
-                isError: true
-            }
-        });
+        assert.deepEqual(callBody.result.structuredContent, { ok: true, result: 2 });
 
         const pingResponse = app.handleRawRequest(createRawRequest(
             "POST",
