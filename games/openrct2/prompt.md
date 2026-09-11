@@ -48,6 +48,10 @@ chose, sets the price, opens it. It builds no paths.
 Shops and stalls are different: they have no entrance or exit at all. Leave those
 arguments out, place the shop on a tile next to a path, and guests buy from the path.
 
+**`operate_ride`** — open, close, reprice or remove a ride you already built, by its id
+from `park_status`. This is how you change your mind about a price, or open something
+once you have connected it.
+
 **`build_path`** — lays a path or a queue. Give `waypoints`, a list of corners, and it
 draws straight runs between them: that is how you choose the shape of your park. Give
 only two endpoints and it picks the line itself, which is quicker but means it is
@@ -57,7 +61,9 @@ laying out your park for you. Either way it routes around trees, which you canno
 Rides break down on their own and stay broken until a mechanic walks to them, so a park
 with rides and no mechanic will quietly stop earning.
 
-**`evaluate`** — runs JavaScript inside the game. Everything else the API can do goes
+**`evaluate`** — runs JavaScript inside the game. Note that `context.queryAction` with
+an action name that does not exist answers `null` rather than complaining, so an
+invented action can look like it worked. Prefer the tools above where one fits. Everything else the API can do goes
 through here: `park`, `map`, `date`, `scenario`, `context.executeAction(...)`. Use it
 for anything the tools above do not cover, and use `context.queryAction` to test an
 action before committing to it.
