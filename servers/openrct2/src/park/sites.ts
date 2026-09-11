@@ -3,8 +3,8 @@ import { flatRideShape, footprintOffsets, perimeterOffsets } from "./flatRides.j
 import type { MapGrid } from "./map.js";
 import type { FlatRideShape, Offset } from "./flatRides.js";
 
-/** How many door positions to return per site. */
-const MAX_ACCESS_OPTIONS = 6;
+/** How many door positions to return per site, after every side is represented. */
+const MAX_ACCESS_OPTIONS = 8;
 
 export interface DoorTile {
     x: number;
@@ -227,13 +227,37 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     continue;
                 }
 
-                // Every option is read by the model on every call, so return the ones
-                // nearest a path rather than all twelve sides of a large footprint.
                 options.sort(function (left, right) {
                     return left.pathDistance - right.pathDistance;
                 });
 
-                const shown = options.slice(0, MAX_ACCESS_OPTIONS);
+                // Trimming purely by distance to a path can hide a whole side of the ride,
+                // which quietly removes the option of putting both doors on one face. Take
+                // the best of every side first, then fill the rest by distance.
+                const shown: AccessOption[] = [];
+                const sideSeen: Record<string, boolean> = {};
+
+                for (let i = 0; i < options.length; i++) {
+                    if (!sideSeen[options[i].side]) {
+                        sideSeen[options[i].side] = true;
+                        shown.push(options[i]);
+                    }
+                }
+
+                for (let i = 0; i < options.length && shown.length < MAX_ACCESS_OPTIONS; i++) {
+                    let already = false;
+
+                    for (let j = 0; j < shown.length; j++) {
+                        if (shown[j].x === options[i].x && shown[j].y === options[i].y) {
+                            already = true;
+                            break;
+                        }
+                    }
+
+                    if (!already) {
+                        shown.push(options[i]);
+                    }
+                }
                 const distanceToPath = shape.isShop
                     ? nearestPathDistance(paths, cx, cy)
                     : (shown.length > 0 ? shown[0].pathDistance : Infinity);

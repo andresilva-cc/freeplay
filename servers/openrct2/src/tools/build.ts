@@ -27,7 +27,7 @@ export class BuildTools {
                 x: { type: "integer", description: "Tile x of the footprint centre." },
                 y: { type: "integer", description: "Tile y of the footprint centre." },
                 rotation: { type: "integer", description: "Which way the ride faces, 0-3. Use the `rotation` from the site you picked." },
-                price: { type: "integer", description: "Ticket price in tenths of a currency unit. 10 means 1.00. Default 10." },
+                price: { type: "integer", description: "Ticket price in tenths of a currency unit: 10 means 1.00. Charge above what guests think the ride is worth and they walk past; park_status reports each ride's `value`. 0 is free." },
                 entranceX: { type: "integer", description: "Tile x for the entrance building. Must be one of the site's `access` options." },
                 entranceY: { type: "integer", description: "Tile y for the entrance building." },
                 exitX: { type: "integer", description: "Tile x for the exit building." },
@@ -38,7 +38,7 @@ export class BuildTools {
                 entranceObject: { type: "integer", description: "Style of the entrance and exit buildings. Default 0." },
                 inspectionInterval: { type: "integer", description: "How often mechanics inspect: 0 is most frequent, 6 is never. Default 2." }
             },
-            required: ["rideObject", "x", "y", "rotation"],
+            required: ["rideObject", "x", "y", "rotation", "price"],
             additionalProperties: false
         },
         annotations: {
@@ -60,7 +60,7 @@ export class BuildTools {
             rideObject: number(args.rideObject, -1),
             x: number(args.x, -1),
             y: number(args.y, -1),
-            price: number(args.price, 10),
+            price: number(args.price, 0),
             open: flag(args.open, true),
             rotation: number(args.rotation, 0) % 4,
             colour1: number(args.colour1, 0),

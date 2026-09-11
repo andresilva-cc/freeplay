@@ -137,6 +137,7 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
     // tool only fills in tiles. With two points the tool picks the line, which is a
     // design decision it is making on the caller's behalf.
     let tiles: Tile[] | null = [];
+    const placedAlready: Record<string, boolean> = {};
 
     for (let i = 0; i + 1 < request.points.length && tiles !== null; i++) {
         const leg = route(request.points[i], request.points[i + 1]);
@@ -147,9 +148,12 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
         }
 
         for (let t = 0; t < leg.length; t++) {
-            const last = tiles.length > 0 ? tiles[tiles.length - 1] : null;
+            // Legs can double back over each other, so check the whole run, not just the
+            // previous tile: otherwise the same tile is laid and counted twice.
+            const key = String(leg[t].x) + "," + String(leg[t].y);
 
-            if (!last || last.x !== leg[t].x || last.y !== leg[t].y) {
+            if (!placedAlready[key]) {
+                placedAlready[key] = true;
                 tiles.push(leg[t]);
             }
         }

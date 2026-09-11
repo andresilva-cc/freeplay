@@ -97,6 +97,32 @@ was about 40 sites out of 1,325 — it silently hid 97% of the buildable park, b
 trees are removable and a player would simply fell them. Reporting `sceneryToClear` and
 offering `clear_scenery` handed back a park the model never knew it had.
 
+## What the tools still decide
+
+Audited deliberately, because these creep in as conveniences and are invisible once
+they ship.
+
+**Justified, because they are measurements or samples:**
+
+- `find_build_sites` orders sites by distance to a footpath and reports `totalFound`, so
+  the model can see it is being shown a window rather than everything.
+- Sites are spread at least a footprint apart. Returning the three nearest tiles to a
+  path returns one location three times, which reads as a choice and is not.
+- `guest_feedback` samples 100 guests; `park_status` samples the reachable path network
+  and the last dozen park messages. Sampling data is not choosing with it.
+
+**Fixed on audit, because they were choices in disguise:**
+
+- Door positions were trimmed to the six nearest a path, which could hide an entire side
+  of a ride — and with it the option of putting both doors on one face. Every side is
+  now represented before the list is filled by distance.
+- `price` defaulted to 10. A ticket price is an economic decision, and defaulting it
+  meant one was being made quietly. It is now required.
+
+**Known and deliberate:** the unstated line of a two-point `build_path`. See above; the
+model can take it with `waypoints`, and the description says who is choosing when it
+does not.
+
 ## Corollary: tools must not lie
 
 A tool that reports success for work that did not happen is worse than no tool, because
