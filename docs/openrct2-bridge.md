@@ -49,21 +49,35 @@ plugin API, and it is not exposed over MCP.
 
 ## What Freeplay adds
 
-Nine tools beyond the three inherited ones. Where the line between them and the model
-sits is [tool-design.md](tool-design.md); what each one does is in its own description,
-which is what the model reads.
+Eleven tools, and the three inherited ones are gone. Upstream's `getDate`, `getParkInfo`
+and `showError` are still in the tree but are no longer registered in `src/tools/index.ts`:
+`park_status` covers both reads, and every tool in the list is re-read by the model on
+every turn, so a redundant one costs context and invites it to pick the weaker option.
+Where the line between these tools and the model sits is [tool-design.md](tool-design.md);
+what each one does is in its own description, which is what the model reads.
 
 | Tool | |
 |---|---|
-| `park_status` | Objective, money, rating, guests, and every ride including whether a queue is bound to it |
-| `guest_feedback` | Guest thoughts, counted |
+| `park_status` | Objective, money, rating, guests, staff, park messages, the walkable path network, and every ride: its doors, the tiles those doors open onto, whether a queue is bound to it, and whether guests can reach it |
+| `guest_feedback` | Guest thoughts, counted over a sample |
 | `list_ride_objects` | What can be built, with footprints |
-| `find_build_sites` | Where a given ride fits, with every entrance and exit position |
-| `clear_scenery` | Fell trees on a square |
+| `find_build_sites` | Where a given ride fits, the ground it will stand on, and where each door can go on it |
+| `clear_scenery` | Strip a rectangle of ground, or a square centred on a tile |
 | `build_flat_ride` | Create, place, entrance, exit, price, open |
-| `build_path` | A path or queue between two tiles |
+| `build_path` | A path or queue, along given waypoints or between two tiles |
+| `operate_ride` | Open, close, reprice, reschedule inspections for or demolish a ride that already exists |
+| `open_park` | Open or close the park to guests, and set admission |
 | `hire_staff` | Hire and place staff |
 | `evaluate` | Arbitrary JavaScript against the plugin API |
+
+`open_park` is the newest and the smallest, and it is there for a reason worth stating:
+opening the park is two single game actions with undiscoverable argument shapes —
+`parksetparameter` takes `0` for close and `1` for open, and neither name resembles what
+it does — so five of five playable runs skipped them and hand-wrote
+`park.setFlag("open", true)` through `evaluate`. The tool decides nothing about when to
+open or what to charge; it carries out whichever of the two it was given and reports what
+the park reads back as afterwards, which is not always the same thing: a scenario with
+free park entry will keep an entrance fee of 0 whatever it is asked for.
 
 ### Things the API will not tell you, learned the hard way
 
@@ -78,21 +92,67 @@ piece named by its `RideTypeDescriptor.StartTrackPiece` — `flatTrack3x3` is tr
 fails in the worst way: a wrong piece can place *something* that satisfies the game's
 "constructed" check while building nothing visible.
 
-A footprint of N tiles spans `-floor(N/2)` to `N-1-floor(N/2)` from the origin passed to
-`trackplace`, verified in game against a 1x1 stall and a 1x4 Ferris Wheel.
+The tiles a footprint covers, relative to that origin, follow no rule at all. A 3x3 is
+centred on its origin (-1..+1) and so is a 1x4 (-2..+1), but a 4x4 runs 0..3 from its
+origin and a 2x4 is centred on neither axis. An earlier version generalised
+`-floor(N/2)` to `N-1-floor(N/2)` from the 1x1 and 1x4 cases it had checked, which is
+off by two tiles on a dodgems: it placed the entrance three tiles clear of the ride,
+with every check in the tool agreeing the two were adjacent.
+
+So the offsets are read from the game — `context.getTrackSegment(type).elements`,
+divided by 32 and rotated — in `footprintOffsets`. `computeFootprintOffsets` survives
+only as a fallback for when there is no game to ask, and a test asserts it disagrees
+with the real 4x4, which is the point of not relying on it.
+
+**Rotation.** Reading the offsets from the game only helps if they are then turned the way
+the game turns them. One turn is `(dx, dy) → (dy, -dx)`, which is what OpenRCT2's
+`CoordsXY::rotate` does to every block of a piece in `TrackPlaceAction`. Turning the other
+way — `(dx, dy) → (-dy, dx)` — is a different bug from the one above and survived far
+longer, because it is *indistinguishable* on anything symmetric about its origin. A 3x3, a
+1x5 and a 1x1 all come out identical either way round, and rotations 0 and 2 are mirror
+images either way round, so the whole of the covered surface agreed with it. What it
+actually did was swap rotations 1 and 3 for every asymmetric footprint: a 1x4 at rotation 1
+was computed at -2..+1 along y when the game lays it at -1..+2, and a 4x4 at rotation 1 was
+computed on the quadrant the game uses for rotation 3.
+
+Because the same offsets drive access tiles, `sceneryToClear` and the buildability check,
+all three were being answered about ground the ride would never stand on — and the build
+still reported success, because the ride did go up, just not where the tool thought. A door
+placed against the computed edge of a 1x4 ends up two tiles clear of the real one.
+
+This is the failure mode the [tool-design](tool-design.md) rule is aimed at, so it is worth
+naming how it was settled rather than argued: the game's own `getTrackSegment` offsets at
+each rotation, OpenRCT2's C++ source, and a mutation test. The mutation is the damning one
+— flipping the rotation in shipped code broke no test at all, because every rotation any
+test covered was one of the ones that cannot tell the two apart. The tests now pin all four
+rotations of the 1x4, 2x4 and 4x4 pieces to the tiles the game lays, and one test states the
+rule itself, so it fails on the rule rather than on a table someone could regenerate wrong.
 
 **Queues.** A ride entrance needs a *queue* path on the tile its door opens onto, bound
 to that ride. An ordinary footpath touching the door looks identical through the API and
 does nothing. The binding is `FootpathElement.ride`, set by the game when the queue
 connects; check it rather than assuming.
 
+A queue is walkable in only one sense. A guest walks the whole length of a queue to reach
+the ride at the end of it, but cannot cut *through* one to get somewhere else, so it is
+not a shortcut to anywhere. A reachability search therefore expands from a queue tile
+to further queue tiles — following the line to its door — and never back out onto
+ordinary path (`walkableFromParkEntrance` in `src/park/paths.ts`). Getting this wrong is
+expensive in either direction: treating a queue as ordinary path marks everything behind
+it reachable when it is not, and refusing to expand from a queue at all marks every ride
+with more than a one-tile queue unreachable, which is worse, because that is the normal
+case.
+
 **Actions apply on the next tick.** Nothing a game action does is visible within the
 same `evaluate` call. Tools that need to act then verify use the deferred-result path
 described below.
 
-**One MCP tool, `evaluate`.** It takes a `code` string, runs it in the plugin context and
-returns the value, annotated `readOnlyHint: false` and `destructiveHint: true`. This is
-the whole action surface; the reasoning is in [architecture.md](architecture.md).
+**`evaluate` is the escape hatch, not the whole surface.** It takes a `code` string, runs
+it in the plugin context and returns the value, annotated `readOnlyHint: false` and
+`destructiveHint: true`. It was the entire action surface to begin with; the ten typed
+tools beside it were added in response to what runs showed the model fumbling, and
+`evaluate` covers what they still do not reach — tracked rides above all. The reasoning
+is in [architecture.md](architecture.md).
 
 The evaluation logic lives in `src/scripting.ts` rather than reusing the REST
 controller's, for two reasons.
@@ -117,13 +177,51 @@ contain cycles. And `map.rides` on a mature park is far larger than a local mode
 context window. `sanitize` walks the prototype chain for accessors, catches throwing
 getters and reports them inline, cuts cycles, drops functions, caps array length, object
 key count, string length and total node count, and truncates an over-long result with a
-note telling the model to narrow the query.
+note telling the model to narrow the query. It runs on two budgets: a tight one for
+`evaluate`, where the model wrote the query and can be told to narrow it, and a much
+looser one for typed tool results, whose shape the bridge chose and already bounds.
 
 **Input normalisation.** Models emit markdown code fences and trailing semicolons.
 Both are stripped rather than turned into a wasted turn.
 
+**Action names are checked before the game sees them.** `context.executeAction` and
+`context.queryAction` answer a name the game has never heard of with a null result and no
+error, which reads as success: `queryAction("set_ride_status")` returns
+`{"ok":true,"result":null}`, and so does every other misspelling. One run was told twice
+that a ride had been demolished, wrote that down, and then failed to build because the
+ride was still standing. Both invokers are now wrapped, an unknown name throws instead,
+and the message suggests the real one — `set_ride_status` is answered with "Did you mean
+ridesetstatus?", because the actual names are a single lowercase word with no separators
+and that is not a thing a model guesses.
+
+**Introspection had to be given back.** `Object.keys` returns `[]` on `map`, `park` and
+`context`: the native objects own no enumerable properties and keep everything behind
+prototype getters. Seven attempts at introspection across two runs found nothing at all,
+which is a model concluding the API is empty. Scripts are handed a `keys(value)` helper
+that walks the prototype chain, and inside a sanitised structure a property the value does
+not have renders as `"<undefined>"` rather than being dropped — so "this does not exist"
+and "this is null" stop looking the same.
+
 Failures come back as `{ ok: false, error }` rather than as a transport error, so the
 model sees the message and can correct itself.
+
+## Arguments are validated before a tool runs
+
+`src/mcp.ts` checks `tools/call` arguments against the slice of JSON Schema the tools
+declare, and refuses the call with an `isError` result rather than running it: type,
+`required`, unknown properties when `additionalProperties` is false, and `enum`,
+`minimum` and `maximum`. The last three are recent and matter more than they sound. Left
+to the game, a number outside its range comes back as "Value out of range" naming no
+field, which tells the model nothing it can act on; a run lost several turns sending
+`inspectionInterval: 30` meaning thirty minutes to a setting that is an index from 0 to 6.
+Each refusal names the property, the value that arrived and the legal set, and nothing
+else — a category without a fix is a message the model cannot use.
+
+Tools still range-check anything they are willing to be called with directly, and some
+constraints cannot be expressed in the schema at all: `build_flat_ride`'s four door
+coordinates are all-or-nothing because a shop legitimately has none, and `clear_scenery`'s
+two argument forms are mutually exclusive. Those are checked in the tool, by name, and
+refused with a message that says which form was meant.
 
 ## Endpoints
 
@@ -144,33 +242,70 @@ A game action does not take effect until a later tick, so a tool that creates a 
 then places track cannot do both in one call. `McpServer` supports deferred results for
 this: a tool returns `{ deferred: true, start }`, the MCP layer hijacks the connection
 with `context.connection.takeOver()`, and the response is written once `start` resolves.
-A 30 second timeout closes the socket if a tool never finishes. From the caller's side it
-is one request and one result.
+From the caller's side it is one request and one result.
 
-`build_flat_ride` uses this to run five actions in sequence, verifying each before the
-next, and reports which step failed.
+Three things can end such a call, and each has to end it exactly once. The tool resolves;
+a 30 second watchdog answers with an error result — "The tool did not finish in time;
+check the game state before retrying" — rather than leaving the caller with a dead socket;
+or the client goes away, in which case there is nobody left to answer and writing to the
+dropped socket would throw out of whatever tick the bridge happened to be in. All three
+funnel through one `finish` that settles the call, cancels the watchdog and drops whatever
+arrives second. The watchdog is armed *after* `start` returns, so a tool that finishes
+immediately is never beaten to the answer by its own timer.
+
+The subtler problem is that a deferred tool does most of its work inside `context.setTimeout`
+callbacks it schedules for itself, and a throw in one of those escapes into the game's tick
+loop: the MCP layer never sees it, and the caller waits out the full 30 seconds only to be
+told the tool was slow rather than what broke. So while deferred calls are in flight the
+game's timer is wrapped, every continuation is attributed to the call that scheduled it, and
+a later-tick failure comes back as that call's error. If a game build will not let its timer
+be wrapped, the wrap is abandoned and the watchdog remains the fallback — a slow answer is
+worse than a real one, but it is much better than taking the bridge down mid-tick.
+
+Six of the eleven tools are deferred: `build_flat_ride`, `build_path`, `clear_scenery`,
+`operate_ride`, `open_park` and `hire_staff`, which is every tool that acts.
+`build_flat_ride` is the longest, running up to six actions in sequence — `ridecreate`,
+`trackplace`, an entrance, an exit, `ridesetprice`, `ridesetstatus` — and reading the world
+back between them. It reports which step failed, and demolishes the ride it created when
+nothing lands on the ground, so a failed build does not leave an empty ride holding an id in
+`park_status`. `open_park` is the shortest and shows the shape at its smallest: send the
+action, read the park back a tick later, and if it did not take, try once through the plugin
+API's own setters — the route every run took by hand — before reporting whatever the second
+read says.
 
 ## Adding a tool
 
 ```ts
 @mcpToolController
-export class ParkTools {
+export class ThingTools {
     @mcpTool({
-        name: "Get park info",
+        name: "Do the thing",
         description: "…",
-        outputSchema: { /* … */ },
+        inputSchema: { type: "object", properties: { /* … */ }, required: [], additionalProperties: false },
         annotations: { readOnlyHint: true, destructiveHint: false }
     })
-    public getParkInfo() {
-        return getParkInfo();
+    public doTheThing(args: Record<string, unknown>) {
+        return doTheThing(args);
     }
 }
 ```
 
-Register the class in `src/tools/index.ts`. The tool name is derived from the method
-name, so `getParkInfo` becomes `get_park_info`. Tools with an `outputSchema` have their
-result validated against it, and a mismatch throws — leave it off for a tool whose
-result shape varies.
+Register the class in `src/tools/index.ts` — a class that is not registered there is not
+served, which is how upstream's three tools are kept out. The tool name is derived from
+the method name by `toToolName` in `src/tools/decorators.ts`, so `doTheThing` becomes
+`do_the_thing`; `@mcpTool`'s `name` is the human-readable title, not the tool name.
+
+An `outputSchema` is optional and no registered tool declares one, because these results
+change shape with what was found. A tool that declares one has its `structuredContent`
+validated against it and a mismatch throws — on the deferred path it comes back as that
+call's error result instead, since a throw inside a later tick would strand the caller.
+
+The consequence of having no output schemas is worth knowing before you go looking for
+somewhere to document a field: the tool's prose `description` and its `inputSchema`
+property descriptions are the only text that reaches the model. The field-level comments
+in `src/park/status.ts` and `src/park/sites.ts` — what `counter` means, why `hasQueue` is
+null for a shop, what `queueCutsOff` counts — are for whoever reads the code. If the model
+needs a fact, it has to be in the description, which is why they read long.
 
 ## Known limitations
 
@@ -193,6 +328,7 @@ assuming.
 npm --prefix servers/openrct2 install
 npm --prefix servers/openrct2 run build     # → out/mcp.js and out/mcp.min.js
 npm --prefix servers/openrct2 run copy      # → the OpenRCT2 plugin directory (macOS)
-npm --prefix servers/openrct2 test
+npm --prefix servers/openrct2 test        # the fake-game suite; it prints the count
 npm --prefix servers/openrct2 run lint
+npm --prefix servers/openrct2 run typecheck
 ```

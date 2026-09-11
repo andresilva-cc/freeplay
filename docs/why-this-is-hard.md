@@ -41,8 +41,9 @@ growth and reveals what the agent thinks matters by what it is willing to forget
 **The bridge should answer questions, not hand over the world.** "Which rides have
 queues over twenty minutes?" is a better tool than "give me every ride". Bridge design is
 context engineering, and getting it wrong is what makes the naive version fail. Freeplay's
-single `evaluate` tool sidesteps this for now by letting the model write its own
-projection — and caps the result when it forgets to.
+typed tools are each one answer to one question — `park_status` is the park as a player
+reads it off the screen, not `map.rides` — and `evaluate` remains for the questions
+nobody anticipated, capping its own result when the model asks for too much.
 
 **Decisions have different frequencies.** Strategic choices — pricing stance, expansion
 policy — happen rarely and deserve a large context. Tactical ones happen constantly and

@@ -50,18 +50,23 @@ speed:
     example: 'context.executeAction("pausetoggle", {}, function (r) {})'
 
 agent:
+  # The one system prompt. scripts/run.sh copies it to pi/SYSTEM.md on every run, and
+  # that copy is gitignored: edit this file, never the copy.
   system_prompt: games/openrct2/prompt.md
+  # Eleven, matching src/tools/index.ts. Every one is re-read by the model each turn.
   tools:
     # Perception: what a player reads off the screen.
     - park_status
     - guest_feedback
     - list_ride_objects
     - find_build_sites
-    # Action: the mechanics of carrying out a decision.
+    # Action: the mechanics of carrying out a decision. These are the deferred ones —
+    # they act, then answer once the work has landed a few ticks later.
     - clear_scenery
     - build_flat_ride
     - build_path
     - operate_ride
+    - open_park
     - hire_staff
     # Everything else.
     - evaluate

@@ -22,10 +22,12 @@ nor OpenRCT2 is baked into the design.
 ```
 
 The model sees the park through tools that report what a player reads off the screen,
-and changes it through tools that carry out a decision it has already made. Where that
-line sits — and why it matters — is [docs/tool-design.md](docs/tool-design.md).
-`evaluate` runs arbitrary JavaScript against the plugin API and remains available for
-everything the other tools do not cover.
+and changes it through tools that carry out a decision it has already made. Eleven of
+them, because every tool is re-read by the model on every turn and a small model handles
+a handful far better than dozens. Where that line sits — and why it matters — is
+[docs/tool-design.md](docs/tool-design.md). `evaluate` runs arbitrary JavaScript against
+the plugin API and remains available for everything the other tools do not cover,
+tracked rides above all.
 
 ## Prerequisites
 
@@ -70,9 +72,13 @@ $EDITOR .env
 ```
 
 The script verifies both the bridge and the model endpoint before starting, copies
-`games/openrct2/prompt.md` into place as the system prompt, and launches pi with the
-bridge's tools and nothing else. Everything pi needs lives in `./pi`, so your global pi
-configuration is untouched.
+`games/openrct2/prompt.md` to `pi/SYSTEM.md` as the system prompt, and launches pi with
+the bridge's tools and nothing else. Everything pi needs lives in `./pi`, so your global
+pi configuration is untouched. `prompt.md` is the copy to edit — `pi/SYSTEM.md` is
+generated on every run and gitignored.
+
+It also compares the plugin build the game is running against the one in `out/`, and warns
+if they differ, so a run is not spent testing code that is not loaded.
 
 While the bridge is up you can also poke at it directly — `http://127.0.0.1:8080/swagger`
 for the REST surface, `/dashboard` for a status page.
@@ -88,6 +94,16 @@ it just produced. OpenRCT2's plugin hot reloading is silent when it does not fir
 testing against a stale bundle is an expensive way to spend an afternoon. Turn hot
 reloading on with `enable_hot_reloading` under `[plugin]` in OpenRCT2's `config.ini`,
 edited while the game is closed.
+
+The park logic has a test suite — around three hundred tests over a fake game that queues
+actions the way the real one does, rotates track pieces the way the game does, and throws
+on an action it does not model rather than answering "that worked". It also has an inert
+mode where actions are accepted and never applied, so a tool that reports success for work
+that did not happen fails the suite:
+
+```bash
+npm --prefix servers/openrct2 test
+```
 
 ## What this is at the moment
 
@@ -106,6 +122,7 @@ way at all.
 | Path | What it is |
 |---|---|
 | `servers/openrct2/` | The OpenRCT2 plugin that serves MCP from inside the game |
+| `servers/openrct2/test/` | Tests for the park logic, against a fake game |
 | `games/openrct2/` | The system prompt and the game definition |
 | `pi/` | Repo-local pi configuration: provider, models, settings |
 | `scripts/run.sh` | Preflight checks, then launch |
