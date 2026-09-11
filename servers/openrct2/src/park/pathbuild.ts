@@ -28,11 +28,24 @@ export interface BuildPathOutcome {
     detail: string;
 }
 
-function key(x: number, y: number): string {
-    return String(x) + "," + String(y);
+/**
+ * Route between two tiles at the same height, around obstructions.
+ *
+ * Plain breadth-first search returns *a* shortest path and breaks ties arbitrarily,
+ * which produces staircases: a diagonal drawn as a dozen alternating steps. Turning is
+ * given a cost so equally short routes come out as straight runs with few corners,
+ * which is what a person dragging a path would produce.
+ */
+const TURN_COST = 4;
+
+interface Node {
+    x: number;
+    y: number;
+    /** Direction taken to arrive here, or -1 at the start. */
+    from: number;
+    cost: number;
 }
 
-/** Shortest walkable route between two tiles at the same height, around obstructions. */
 function route(from: Tile, to: Tile): Tile[] | null {
     const grid = readMapGrid();
     const startCell = grid.at(from.x, from.y);
@@ -42,28 +55,43 @@ function route(from: Tile, to: Tile): Tile[] | null {
     }
 
     const z = startCell.baseZ;
+    const best: Record<string, number> = {};
     const cameFrom: Record<string, string | null> = {};
-    const queue: Tile[] = [from];
-    cameFrom[key(from.x, from.y)] = null;
+    const open: Node[] = [{ x: from.x, y: from.y, from: -1, cost: 0 }];
 
-    let reached = false;
+    const stateKey = function (x: number, y: number, dir: number): string {
+        return String(x) + "," + String(y) + "," + String(dir);
+    };
 
-    while (queue.length > 0 && !reached) {
-        const current = queue.shift() as Tile;
+    best[stateKey(from.x, from.y, -1)] = 0;
+    cameFrom[stateKey(from.x, from.y, -1)] = null;
+
+    let goalKey: string | null = null;
+
+    while (open.length > 0) {
+        // Small maps and short routes: a linear scan is cheaper than a heap.
+        let pick = 0;
+        for (let i = 1; i < open.length; i++) {
+            if (open[i].cost < open[pick].cost) {
+                pick = i;
+            }
+        }
+
+        const current = open.splice(pick, 1)[0];
+        const currentKey = stateKey(current.x, current.y, current.from);
+
+        if (current.cost > (best[currentKey] ?? Infinity)) {
+            continue;
+        }
 
         if (current.x === to.x && current.y === to.y) {
-            reached = true;
+            goalKey = currentKey;
             break;
         }
 
-        for (let i = 0; i < NEIGHBOURS.length; i++) {
-            const x = current.x + NEIGHBOURS[i].dx;
-            const y = current.y + NEIGHBOURS[i].dy;
-
-            if (typeof cameFrom[key(x, y)] !== "undefined") {
-                continue;
-            }
-
+        for (let d = 0; d < NEIGHBOURS.length; d++) {
+            const x = current.x + NEIGHBOURS[d].dx;
+            const y = current.y + NEIGHBOURS[d].dy;
             const cell = grid.at(x, y);
 
             if (!cell || !cell.owned || !cell.flat || cell.baseZ !== z || (!cell.clear && !cell.path)) {
@@ -76,17 +104,23 @@ function route(from: Tile, to: Tile): Tile[] | null {
                 continue;
             }
 
-            cameFrom[key(x, y)] = key(current.x, current.y);
-            queue.push({ x: x, y: y });
+            const cost = current.cost + 1 + (current.from !== -1 && current.from !== d ? TURN_COST : 0);
+            const key = stateKey(x, y, d);
+
+            if (cost < (best[key] ?? Infinity)) {
+                best[key] = cost;
+                cameFrom[key] = currentKey;
+                open.push({ x: x, y: y, from: d, cost: cost });
+            }
         }
     }
 
-    if (!reached) {
+    if (goalKey === null) {
         return null;
     }
 
     const tiles: Tile[] = [];
-    let cursor: string | null = key(to.x, to.y);
+    let cursor: string | null = goalKey;
 
     while (cursor !== null) {
         const parts = cursor.split(",");
