@@ -792,3 +792,203 @@ test("open_park reports a park that never opened as a failure", function () {
         assert.equal(readParkStatus().parkOpen, false);
     }, { inert: true });
 });
+
+/**
+ * Money is in tenths throughout this codebase: 25 is 2.50. Reported in whole units, every
+ * price the model reads is a tenth of what guests are really charged, so a ride it believes
+ * costs 0.20 gets "corrected" upwards and the queue empties.
+ */
+test("a ride's price is reported in the tenths the game holds it in", function () {
+    withPark(function (game) {
+        game.rides = [ride(0, null, null)];
+        game.rides[0].price = [25];
+    }, function (game) {
+        assert.deepEqual(game.rides[0].price, [25], "the game holds a 2.50 ticket as 25 tenths");
+        assert.equal(summary(0).price, game.rides[0].price[0],
+            "and park_status reports that number unchanged, not the 2 whole units it rounds to");
+    });
+});
+
+/**
+ * `price` and `value` together are the whole diagnosis of an overpriced ride: charge far
+ * above what a guest thinks it is worth and they walk past, which looks exactly like a ride
+ * nobody can reach. Either field echoing the other makes that diagnosis impossible.
+ */
+test("a ride's value is its own number and never an echo of its price", function () {
+    withPark(function (game) {
+        game.rides = [ride(0, null, null)];
+        game.rides[0].price = [25];
+        game.rides[0].value = 340;
+    }, function (game) {
+        const held = game.rides[0];
+
+        assert.notEqual(held.price[0], held.value,
+            "the two numbers the game holds are different to begin with, or this proves nothing");
+
+        const found = summary(0);
+
+        assert.equal(found.price, held.price[0], "the price is what the ride charges");
+        assert.equal(found.value, held.value, "the value is what the game says a guest thinks it is worth");
+        assert.notEqual(found.price, found.value, "and they are still two numbers when they come back");
+    });
+});
+
+/**
+ * A ride reporting `totalCustomers: 0` reads as a ride nobody can get to, and that is what
+ * the model acts on: it rebuilds paths to a ride that has served customers all month.
+ */
+test("totalCustomers and totalProfit are read off the ride, not reported as nobody and nothing", function () {
+    withPark(function (game) {
+        game.rides = [ride(0, null, null)];
+        game.rides[0].totalCustomers = 137;
+        game.rides[0].totalProfit = 4210;
+    }, function (game) {
+        const held = game.rides[0];
+        const found = summary(0);
+
+        assert.equal(found.totalCustomers, held.totalCustomers, "137 guests have ridden it and it has to say so");
+        assert.equal(found.totalProfit, held.totalProfit, "the takings are their own field, not the head count");
+        assert.notEqual(found.totalCustomers, 0,
+            "a hard-coded zero here is indistinguishable from a ride no guest can reach");
+    });
+});
+
+/** The one number that says a queue is too long. Hard-coded to 0, no queue is ever too long. */
+test("the queue time comes off the station the game holds", function () {
+    withPark(function (game) {
+        for (let x = 11; x <= 15; x++) {
+            game.addPath(x, 10, true, 0);
+        }
+
+        game.rides = [ride(0, { x: 16, y: 10, direction: 2 }, null)];
+        game.rides[0].stations[0].queueTime = 23;
+    }, function (game) {
+        const station = game.rides[0].stations[0];
+
+        assert.equal(station.queueTime, 23, "the game holds a twenty-three minute wait on the station");
+
+        const found = summary(0);
+
+        assert.equal(found.queueTime, station.queueTime, "and park_status reports the station's own number");
+        assert.equal(found.guestsCanReach, true, "on a ride guests really can queue for");
+    });
+});
+
+/**
+ * Happiness is out of 255 and cash is per guest, so a sum reads as a plausible number rather
+ * than as an obvious fault - and every existing guest test uses a crowd of identical guests,
+ * where a sum and a mean cannot be told apart.
+ */
+test("average happiness and average cash are means of the sample, not sums of it", function () {
+    withPark(function (game) {
+        game.addGuest({ happiness: 100, cash: 0 });
+        game.addGuest({ happiness: 200, cash: 1000 });
+    }, function (game) {
+        const held = game.guests;
+
+        assert.deepEqual(held.map(function (guest) { return guest.happiness; }), [100, 200],
+            "two guests, deliberately unequal: identical guests make a sum look like a mean");
+
+        let happiness = 0;
+        let cash = 0;
+
+        for (let i = 0; i < held.length; i++) {
+            happiness += held[i].happiness;
+            cash += held[i].cash;
+        }
+
+        const feedback = readGuestFeedback(100);
+
+        assert.equal(feedback.sampled, held.length, "both guests in the park were read");
+        assert.equal(feedback.averageHappiness, happiness / held.length,
+            "happiness is the average of the two, 150, and not their sum");
+        assert.equal(feedback.averageCash, cash / held.length, "and cash carried is an average too");
+        assert.ok(feedback.averageHappiness <= 255,
+            "happiness is out of 255, so a sum runs off the top of the scale it is reported on");
+    });
+});
+
+/**
+ * Eight park-wide figures, all read from `park` in one object literal, and none of them
+ * asserted anywhere. Rating is out of 999 and guests is a head count: swap those two and the
+ * model reads a park of 42 guests as a park in serious rating trouble, or the reverse.
+ */
+test("each park-wide figure comes from its own field", function () {
+    withPark(function (game) {
+        // All different, so any field carrying another's value shows up as a mismatch.
+        game.parkValues.rating = 850;
+        game.parkValues.guests = 42;
+        game.parkValues.cash = 123456;
+        game.parkValues.bankLoan = 7000;
+        game.parkValues.maxBankLoan = 250000;
+        game.parkValues.suggestedGuestMaximum = 333;
+        game.parkValues.companyValue = 98765;
+        game.parkValues.entranceFee = 15;
+    }, function (game) {
+        const held = game.parkValues;
+        const status = readParkStatus();
+
+        assert.deepEqual(
+            {
+                rating: status.rating, guests: status.guests, cash: status.cash,
+                bankLoan: status.bankLoan, maxBankLoan: status.maxBankLoan,
+                suggestedGuestMaximum: status.suggestedGuestMaximum,
+                companyValue: status.companyValue, entranceFee: status.entranceFee
+            },
+            {
+                rating: held.rating, guests: held.guests, cash: held.cash,
+                bankLoan: held.bankLoan, maxBankLoan: held.maxBankLoan,
+                suggestedGuestMaximum: held.suggestedGuestMaximum,
+                companyValue: held.companyValue, entranceFee: held.entranceFee
+            },
+            "every figure is the one the park holds under that same name");
+        assert.notEqual(status.rating, status.guests,
+            "the rating out of 999 and the head count are never the same number here");
+    });
+});
+
+/**
+ * The rule `status.ts` and `build.ts` both exist to keep: a stall is served from ONE tile,
+ * the neighbour on the side it faces, and `shopServingTile` is the single answer to which.
+ * build.test.ts pins a path against the back wall; this pins the near miss the loose
+ * any-neighbour rule also accepts - a path that stops one tile beyond the counter, touching
+ * it but not standing on it. The model is told to run build_path to `counter`, so a stall
+ * reported reachable from a tile that is not the counter is a fix it never makes.
+ */
+test("a stall is judged by its counter tile, not by a neighbour of the counter", function () {
+    withPark(function (game) {
+        // Rotation 2 faces +x, so the counter is 12,10 and nowhere else.
+        stall(game, 0, 11, 10, 2);
+        // Path guests can walk to that reaches 13,10 - the far side of the counter - taking
+        // the long way round so that nothing on the route stands on 12,10 itself.
+        game.addPath(11, 12);
+        game.addPath(12, 12);
+        game.addPath(13, 12);
+        game.addPath(13, 11);
+        game.addPath(13, 10);
+    }, function (game) {
+        const walkable = walkableFromParkEntrance();
+
+        assert.equal(hasPath(game, 12, 10), false, "the counter itself is bare ground");
+        assert.equal(tileIsWalkable(walkable, { x: 12, y: 10 }), false, "so no guest stands on it");
+        assert.equal(tileIsWalkable(walkable, { x: 13, y: 10 }), true,
+            "while the tile just past it is joined to the park and full of guests");
+
+        const found = summary(0);
+
+        assert.deepEqual(found.counter, { x: 12, y: 10 }, "the counter is the neighbour its rotation points at");
+        assert.equal(found.guestsCanReach, false,
+            "a path beside the counter is not a path on it: guests walk past and buy nothing");
+
+        // Standing on the counter itself is what serves it.
+        game.addPath(12, 10);
+
+        assert.equal(tileIsWalkable(walkableFromParkEntrance(), { x: 12, y: 10 }), true,
+            "the counter tile now carries path joined to the network");
+
+        const served = summary(0);
+
+        assert.deepEqual(served.counter, { x: 12, y: 10 }, "the counter has not moved");
+        assert.equal(served.guestsCanReach, true, "and only now is the stall served");
+    });
+});

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { FakeGame } from "./fakeGame.ts";
-import { findBuildSites } from "../src/park/sites.ts";
+import { MAX_ACCESS_OPTIONS, findBuildSites } from "../src/park/sites.ts";
+import { SiteTools } from "../src/tools/sites.ts";
 
 /** Ride type 33 is the 3x3 merry-go-round; 37 is the 1x4 ferris wheel; 28 a 1x1 stall. */
 function gameWith(rideType: number, build?: (game: FakeGame) => void): { game: FakeGame; restore: () => void } {
@@ -924,6 +925,201 @@ test("a door with a queue belonging to another ride is not offered", function ()
             "building there would re-chain ride 6's queue and leave it with none: " + doors.join(" "));
         assert.ok(doors.indexOf("10,9") >= 0, "the plain path tiles either side of it are untouched");
         assert.ok(doors.indexOf("10,11") >= 0);
+    } finally {
+        restore();
+    }
+});
+
+test("accessTotal counts every door position, not the ones that fit in the window", function () {
+    // `access` is a window; `accessTotal` is what tells the model it is one. A 4x4 in open
+    // ground has sixteen tiles around it and the window holds eight, so a field that
+    // reported the window's own length would say "eight of eight" forever and no caller
+    // would ever think to look past the list it was handed.
+    const { restore } = openPark(25);
+
+    try {
+        const sites = findBuildSites(0, 5).sites || [];
+        assert.ok(sites.length > 0);
+
+        const open = sites.filter(function (site) {
+            return site.accessTotal === 16;
+        });
+
+        assert.ok(open.length > 0, "a 4x4 in open ground has sixteen door positions: "
+            + sites.map(function (site) { return String(site.accessTotal); }).join(" "));
+
+        sites.forEach(function (site) {
+            const where = String(site.x) + "," + String(site.y);
+
+            assert.ok(site.access.length <= MAX_ACCESS_OPTIONS, where + " overflowed the window");
+            assert.ok(site.accessTotal >= site.access.length,
+                where + ": accessTotal " + String(site.accessTotal) + " is below the " + String(site.access.length)
+                    + " options it is supposed to be counting");
+        });
+
+        assert.ok(open.some(function (site) { return site.accessTotal > site.access.length; }),
+            "no site reported more positions than it listed, so the window reads as the whole list");
+    } finally {
+        restore();
+    }
+});
+
+/**
+ * A park with exactly one 3x3 site, whose two doors are (14,11) and (14,12).
+ *
+ * Everything is pinned to one place so a door's own numbers can be asserted rather than
+ * searched for: the owned strip is five wide and three tall with its top-right corner cut
+ * off, which leaves (11,11) the only origin a 3x3 fits at with doors it can reach.
+ */
+function oneDoorPark(): FakeGame {
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            game.own(x, y, x >= 10 && x <= 14 && y >= 10 && y <= 12 && !(x === 14 && y === 10));
+        }
+    }
+
+    return game;
+}
+
+test("pathDistance is walked in tiles, not measured across the diagonal", function () {
+    // The only footpath sits three tiles across and three down from the door at (14,11).
+    // A guest walks orthogonally, so that is six tiles. Chebyshev - the metric that counts
+    // a diagonal step as one - calls it three, and would have the model believe every
+    // stretch of queue it has to lay is half the length it really is.
+    const game = oneDoorPark();
+    game.addPath(17, 14);
+
+    const restore = game.install();
+
+    try {
+        const sites = findBuildSites(0, 50).sites || [];
+        assert.equal(sites.length, 1, "the park is built to hold exactly one site");
+
+        const doorAt = function (x: number, y: number) {
+            return sites[0].access.filter(function (option) {
+                return option.door && option.door.x === x && option.door.y === y;
+            })[0];
+        };
+
+        const far = doorAt(14, 11);
+        const near = doorAt(14, 12);
+
+        assert.ok(far && near, "both doors are offered");
+        assert.equal(far.pathDistance, 6, "(14,11) to (17,14) is 3 across and 3 down, which is 6 tiles of walking");
+        assert.equal(near.pathDistance, 5, "(14,12) to (17,14) is 3 across and 2 down");
+
+        // Chebyshev would make both of these 3, and the site's own distance 3 with them.
+        assert.equal(sites[0].pathDistance, 5, "the site reports its nearest door");
+    } finally {
+        restore();
+    }
+});
+
+test("needsClearing covers the door tile, not just the tile the building stands on", function () {
+    // A tree on the door is as much in the way as a tree under the entrance: the queue has
+    // to reach that tile. Reporting the option as clear sends the model to build_flat_ride
+    // without the clear_scenery the door needs, and sceneryToClear will not cover for it -
+    // that counts the ride's own ground, which here is bare.
+    const game = oneDoorPark();
+    game.addPath(17, 14);
+    game.addScenery(14, 11);
+
+    const restore = game.install();
+
+    try {
+        const sites = findBuildSites(0, 50).sites || [];
+        assert.equal(sites.length, 1);
+        assert.equal(sites[0].sceneryToClear, 0, "nothing stands on the ride's own ground");
+
+        const doorAt = function (x: number, y: number) {
+            return sites[0].access.filter(function (option) {
+                return option.door && option.door.x === x && option.door.y === y;
+            })[0];
+        };
+
+        assert.equal(doorAt(14, 11).needsClearing, true, "the tree is on this option's door");
+        assert.equal(doorAt(14, 12).needsClearing, false, "and only on that one");
+    } finally {
+        restore();
+    }
+});
+
+/** A stall on (12,12) whose only possible serving tile, (11,12), carries a path or a queue. */
+function stallServedBy(queue: boolean): FakeGame {
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Burger Bar", rideType: [28] }];
+
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            game.own(x, y, y === 12 && (x === 11 || x === 12));
+        }
+    }
+
+    game.addPath(11, 12, queue);
+    return game;
+}
+
+test("a stall is not offered a serving tile that is a queue", function () {
+    // Guests in a queue are walking to a ride, not stopping at a counter, so a stall whose
+    // only neighbour is queue sells nothing. Worth pinning rather than inferring from the
+    // path case: the two halves of `cell.path && !cell.queue` fail in opposite directions,
+    // and dropping the queue half reads as widening the search rather than breaking it.
+    const served = stallServedBy(false);
+    let restore = served.install();
+
+    try {
+        const sites = findBuildSites(0, 10, 0).sites || [];
+
+        assert.equal(sites.length, 1, "an ordinary footpath beside the stall is the best serving tile there is");
+        assert.deepEqual([sites[0].x, sites[0].y], [12, 12]);
+        assert.deepEqual([sites[0].access[0].x, sites[0].access[0].y], [11, 12]);
+    } finally {
+        restore();
+    }
+
+    const queued = stallServedBy(true);
+    restore = queued.install();
+
+    try {
+        const result = findBuildSites(0, 10, 0);
+
+        assert.deepEqual(result.sites, [], "the same spot, served only by a queue, is not a site");
+        assert.match(String(result.note), /serving tile/);
+    } finally {
+        restore();
+    }
+});
+
+test("the tool clamps `limit` into range instead of passing it through", function () {
+    // The schema refuses anything outside 1..50 before the handler runs, so the clamp is
+    // what holds when the handler is reached any other way. 5000 walks a whole park into
+    // one reply; 0 returns an empty list, which reads as "nowhere fits" rather than as a
+    // limit of zero.
+    const game = new FakeGame(40, 40);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(10, 0);
+
+    for (let y = 1; y <= 36; y++) {
+        game.addPath(10, y);
+    }
+
+    const restore = game.install();
+
+    try {
+        // What an unclamped limit does here, so the two numbers below are the clamp and
+        // not a coincidence of how many sites this park happens to hold.
+        assert.ok((findBuildSites(0, 5000).sites || []).length > 50, "the park has more than 50 sites to give");
+        assert.equal((findBuildSites(0, 0).sites || []).length, 0);
+
+        const tools = new SiteTools();
+
+        assert.equal((tools.findBuildSites({ rideObject: 0, limit: 5000 }).sites || []).length, 50,
+            "50 is what reaches findBuildSites");
+        assert.equal((tools.findBuildSites({ rideObject: 0, limit: 0 }).sites || []).length, 1, "and 1");
+        assert.equal((tools.findBuildSites({ rideObject: 0 }).sites || []).length, 3, "an absent limit is 3");
     } finally {
         restore();
     }

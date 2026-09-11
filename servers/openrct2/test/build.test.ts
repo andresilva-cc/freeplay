@@ -5,6 +5,7 @@ import { FakeGame } from "./fakeGame.ts";
 import type { FakeElement } from "./fakeGame.ts";
 import { buildFlatRide } from "../src/park/build.ts";
 import type { BuildOutcome } from "../src/park/build.ts";
+import { tileIsWalkable, walkableFromParkEntrance } from "../src/park/paths.ts";
 import { BuildTools } from "../src/tools/build.ts";
 import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
 
@@ -880,4 +881,104 @@ test("a turned ride is laid on the tiles the tool checked its doors against", fu
             restore();
         }
     });
+});
+
+test("an ordinary path at the door, with no queue on it, is still not reachable", function () {
+    // The other no-queue test puts the ride where nothing reaches it, so it passes whether
+    // or not `reachable` asks for a queue at all. Here the door tile carries ordinary
+    // footpath joined to the park and the exit is connected too: the queue is the only
+    // thing missing, and it is what decides whether a guest ever boards.
+    const { game, restore } = park();
+
+    // The entrance at 12,10 faces the ride, so its door opens onto 11,10 - which touches
+    // the main path at 10,10, so guests can walk right up to the building.
+    game.addPath(11, 10);
+
+    // And a way back out for the exit at 16,10, whose door is 17,10.
+    for (let x = 10; x <= 17; x++) {
+        game.addPath(x, 14);
+    }
+    for (let y = 10; y <= 14; y++) {
+        game.addPath(17, y);
+    }
+
+    try {
+        const outcome = build({ entrance: { x: 12, y: 10 }, exit: { x: 16, y: 10 } });
+        const door = game.tile(11, 10).elements.filter(function (e) { return e.type === "footpath"; })[0];
+        const walkable = walkableFromParkEntrance();
+
+        assert.ok(door, "the door tile lost its path");
+        assert.notEqual(door.isQueue, true, "the door tile has to carry ordinary path, not a queue");
+        assert.equal(tileIsWalkable(walkable, { x: 11, y: 10 }), true, "guests can walk to the door");
+        assert.equal(tileIsWalkable(walkable, { x: 17, y: 10 }), true, "and away from the exit");
+
+        assert.equal(outcome.ok, true, JSON.stringify(outcome.steps));
+        assert.equal(outcome.reachable, false,
+            "guests crowd a door with no queue and never board, however walkable the tile in front of it is");
+        assert.match(step(outcome, "access"), /NO QUEUE/, "and the access step has to name the half that is missing");
+    } finally {
+        restore();
+    }
+});
+
+test("a stall is judged by its counter, not by a tile next to its counter", function () {
+    const { game, restore } = park();
+
+    // Rotation 2 faces +x, so a stall at 11,10 is served from 12,10 and nowhere else. The
+    // path stops one tile short of it, at 13,10 - a neighbour OF THE COUNTER, which is not
+    // the counter. It joins the park the long way round so 12,10 itself stays bare.
+    for (let x = 11; x <= 13; x++) {
+        game.addPath(x, 13);
+    }
+    for (let y = 10; y <= 12; y++) {
+        game.addPath(13, y);
+    }
+
+    try {
+        const outcome = build({ rideObject: 1, x: 11, y: 10, rotation: 2, entrance: undefined, exit: undefined });
+        const walkable = walkableFromParkEntrance();
+
+        assert.equal(tileIsWalkable(walkable, { x: 13, y: 10 }), true, "the tile beside the counter is reachable");
+        assert.ok(!game.tile(12, 10).elements.some(function (e) { return e.type === "footpath"; }),
+            "and the counter tile itself carries no path at all");
+
+        assert.equal(outcome.ok, true, "the stall was built");
+        assert.equal(outcome.reachable, false, "but a path beside the counter serves nobody");
+        assert.match(step(outcome, "access"), /NO PATH guests can reach at 12,10/, "the counter tile is not named");
+    } finally {
+        restore();
+    }
+});
+
+test("called directly, past the MCP layer, rotation 7 is passed on rather than wrapped to 3", function () {
+    // The schema bounds rotation 0-3, so this cannot arrive over MCP. The `% 4` it stands
+    // in for was real: 7 silently became 3, the ride went up facing a way nobody asked
+    // for, and nothing said so. The game refuses a direction it does not know, so handing
+    // 7 on fails loudly - which is the outcome a model can act on.
+    const { game, restore } = park();
+    const directions: unknown[] = [];
+
+    // The game's own refusal, as the fake has no notion of an illegal direction.
+    dropAction(function (name, args) {
+        if (name !== "trackplace") {
+            return false;
+        }
+
+        directions.push(args.direction);
+        return (args.direction as number) > 3;
+    });
+
+    try {
+        const outcome = callTool({
+            rideObject: 0, x: 14, y: 10, rotation: 7, price: 10, open: true,
+            entranceX: 12, entranceY: 10, exitX: 16, exitY: 10
+        });
+
+        assert.deepEqual(directions, [7], "7 has to reach the game as 7, not quietly become 3");
+        assert.equal(outcome.ok, false, "a rotation the game will not take must not report a ride");
+        assert.equal(game.rides.length, 0, "and must leave nothing standing in the park");
+        assert.equal(trackTiles(game, 0).length, 0, "nor any track on the ground");
+    } finally {
+        restore();
+    }
 });

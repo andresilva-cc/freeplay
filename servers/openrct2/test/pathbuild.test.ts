@@ -564,3 +564,51 @@ test("the route a queue severs is severed on the map, not only in the sentence",
         assert.equal(footpathAt(game, 10, 7).isQueue, false, "the corridor north of the wall is untouched");
     });
 });
+
+/**
+ * The default surfaces, asserted as the literal object numbers the game knows rather than
+ * through the constants — a test that imports `DEFAULT_QUEUE_OBJECT` agrees with itself
+ * whichever way round the two are defined. Swapping them surfaces every queue as ordinary
+ * path in the game, which is the one thing a guest reads to tell a queue from a walkway.
+ */
+test("a queue laid with no surfaceObject is surfaced 11, and a path 1", function () {
+    withGame(parkWithGate, function (game) {
+        const queued = callTool({ fromX: 10, fromY: 6, toX: 10, toY: 8, queue: true });
+
+        assert.equal(queued.ok, true, queued.detail);
+
+        const laidQueue = game.attempted.filter(function (action) { return action.name === "footpathplace"; });
+
+        assert.ok(laidQueue.length > 0, "no footpath was ever asked for");
+        laidQueue.forEach(function (action) {
+            assert.equal(action.args.object, 11, "a queue with no surfaceObject has to go down as object 11");
+        });
+
+        for (let y = 6; y <= 8; y++) {
+            const path = footpathAt(game, 10, y);
+            assert.ok(path, "no footpath reached tile 10," + String(y));
+            assert.equal(path.isQueue, true);
+            assert.equal(path.surfaceObject, 11, "the queue on the map is not surfaced as one");
+        }
+    });
+
+    withGame(parkWithGate, function (game) {
+        const walkway = callTool({ fromX: 10, fromY: 6, toX: 10, toY: 8, queue: false });
+
+        assert.equal(walkway.ok, true, walkway.detail);
+
+        const laidPath = game.attempted.filter(function (action) { return action.name === "footpathplace"; });
+
+        assert.ok(laidPath.length > 0, "no footpath was ever asked for");
+        laidPath.forEach(function (action) {
+            assert.equal(action.args.object, 1, "an ordinary path with no surfaceObject has to go down as object 1");
+        });
+
+        for (let y = 6; y <= 8; y++) {
+            const path = footpathAt(game, 10, y);
+            assert.ok(path, "no footpath reached tile 10," + String(y));
+            assert.equal(path.isQueue, false);
+            assert.equal(path.surfaceObject, 1, "the walkway on the map is not surfaced as one");
+        }
+    });
+});

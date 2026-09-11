@@ -357,3 +357,12 @@ test("a tool's own result still renders an absent optional field as null", funct
     // nothing and must not read as an error marker.
     assert.deepEqual(sanitizeToolResult({ ok: true, name: undefined }), { ok: true, name: null });
 });
+
+test("a function is rendered as one wherever it turns up, not only as a property", function () {
+    // "drops functions from results" covers a function held as an object property, which
+    // sanitize handles in a different branch - it skips the key outright. A function
+    // returned on its own, or sitting in an array, goes down the type branch instead and
+    // nothing was watching it: a script that returned one rendered as its own source.
+    assert.equal(expectOk("(function(){})").result, "<function>");
+    assert.deepEqual(expectOk("[function(){}]").result, ["<function>"]);
+});

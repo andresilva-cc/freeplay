@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { FakeGame } from "./fakeGame.ts";
-import { computeFootprintOffsets, flatRideShape, footprintOffsets, perimeterOffsets, segmentOffsets } from "../src/park/flatRides.ts";
+import { computeFootprintOffsets, flatRideShape, flatRideTypes, footprintOffsets, perimeterOffsets, segmentOffsets } from "../src/park/flatRides.ts";
 
 test("flatRideShape knows the footprint of a square flat ride", function () {
     const carousel = flatRideShape(33);
@@ -324,6 +324,84 @@ test("the rotation the plugin uses is the one the game uses", function () {
             once.map(function (o) { return String(o.dx) + "," + String(o.dy); }).sort(),
             base.map(function (o) { return String(o.dy) + "," + String(-o.dx); }).sort()
         );
+    } finally {
+        restore();
+    }
+});
+
+/**
+ * Every row of the table, against the piece the game says that row's `trackType` is.
+ *
+ * Five of the twenty-four rows were named by a test; the other nineteen could carry any
+ * `trackType` and any size with the suite still green. That is the shape of the two bugs
+ * this project has already paid for: a wrong piece satisfied the game's "constructed"
+ * check while building nothing visible, and a wrong footprint put a ride's entrance two
+ * tiles clear of the ride.
+ *
+ * The expectation is read from the piece, never restated from the row, or the test just
+ * asserts the table equals itself.
+ */
+test("every row of the ride table matches the piece the game lays for it", function () {
+    const restore = new FakeGame(16, 16).install();
+
+    try {
+        const types = flatRideTypes();
+        assert.equal(types.length, 24, "the table describes every flat ride OpenRCT2 places in one piece");
+
+        types.forEach(function (rideType) {
+            const shape = flatRideShape(rideType);
+            assert.ok(shape, "ride type " + String(rideType) + " is listed but has no shape");
+
+            const label = "ride type " + String(rideType) + " (" + shape.name + ")";
+
+            // segmentOffsets, not footprintOffsets: footprintOffsets falls back to the
+            // computed shape when the game has no such piece, and the computed shape
+            // returns width * depth tiles by construction. A row naming a piece that does
+            // not exist would sail through the size check on the fallback alone.
+            const tiles = segmentOffsets(shape.trackType, 0);
+
+            assert.ok(tiles, label + ": the game has no track piece " + String(shape.trackType));
+            assert.equal(tiles.length, shape.width * shape.depth,
+                label + ": declared " + String(shape.width) + "x" + String(shape.depth) + " = "
+                    + String(shape.width * shape.depth) + " tiles, but piece " + String(shape.trackType)
+                    + " covers " + String(tiles.length));
+
+            if (shape.isShop) {
+                assert.deepEqual([shape.width, shape.depth], [1, 1],
+                    label + ": a shop is one tile, served from a neighbour it does not occupy");
+            }
+        });
+    } finally {
+        restore();
+    }
+});
+
+test("a shop's footprint is the one tile it stands on, every way round", function () {
+    // Pinned because everything downstream depends on it: the serving tile is worked out
+    // from the shop's own tile, so a shop that quietly covered two tiles would be served
+    // from a tile it was standing on.
+    const restore = new FakeGame(16, 16).install();
+
+    try {
+        let shops = 0;
+
+        flatRideTypes().forEach(function (rideType) {
+            const shape = flatRideShape(rideType);
+            assert.ok(shape);
+
+            if (!shape.isShop) {
+                return;
+            }
+
+            shops++;
+
+            for (let rotation = 0; rotation < 4; rotation++) {
+                assert.deepEqual(footprintOffsets(shape, rotation), [{ dx: 0, dy: 0 }],
+                    shape.name + " at rotation " + String(rotation));
+            }
+        });
+
+        assert.equal(shops, 7, "seven of the twenty-four rows are shops and stalls");
     } finally {
         restore();
     }

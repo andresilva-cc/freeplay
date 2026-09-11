@@ -48,6 +48,17 @@ export function flatRideShape(rideType: number): FlatRideShape | undefined {
 }
 
 /**
+ * Every ride type the table describes.
+ *
+ * Exists so a test can walk the whole table instead of the handful of rows anyone
+ * remembered to name. A row nothing reads is a row any `trackType` satisfies, and a wrong
+ * `trackType` builds nothing while the game still reports the ride as constructed.
+ */
+export function flatRideTypes(): number[] {
+    return Object.keys(FLAT_RIDE_SHAPES).map(function (key) { return Number(key); });
+}
+
+/**
  * The one tile a shop or stall is served from: its neighbour in the direction it is
  * rotated to face. 0 is -x, 1 is +y, 2 is +x, 3 is -y, the game's own TileDirectionDelta.
  *

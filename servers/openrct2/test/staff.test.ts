@@ -114,6 +114,40 @@ function refusal(result: ToolResult): string {
     return String(body.error);
 }
 
+type ExecuteAction = (name: string, args: Record<string, unknown>, callback?: (result: Record<string, unknown>) => void) => void;
+
+/**
+ * Run `side` the first time an action of this name is sent, standing in for the world
+ * moving on its own while a call is in flight. `restore()` puts the whole context back.
+ */
+function onFirstAction(name: string, side: () => void): void {
+    const scope = globalThis as unknown as { context: { executeAction: ExecuteAction } };
+    const real = scope.context.executeAction;
+    let fired = false;
+
+    scope.context.executeAction = function (actionName, args, callback) {
+        real(actionName, args, callback);
+
+        if (actionName === name && !fired) {
+            fired = true;
+            side();
+        }
+    };
+}
+
+/** hire_staff called straight on its handler, past the schema the MCP layer applies. */
+function hireDirect(args: Record<string, unknown>): Record<string, unknown> {
+    const result = new StaffTools().hireStaff(args);
+
+    assert.ok(isDeferredMcpResult(result), "hire_staff answers on the deferred path");
+
+    let answer: Record<string, unknown> | null = null;
+    result.start(function (value) { answer = value as Record<string, unknown>; });
+
+    assert.ok(answer, "hire_staff never answered");
+    return answer as unknown as Record<string, unknown>;
+}
+
 /** Staff of one kind standing in the park, counted off the map. */
 function staffOnMap(game: FakeGame, staffType: string): number {
     return game.staff.filter(function (member) {
@@ -274,5 +308,43 @@ test("called directly, past the MCP layer, it still refuses a staff type it does
         assert.match(String(body.error), /entertainer/);
         assert.equal(session.game.staff.length, 0, "and nobody was hired in the meantime");
         assert.equal(session.game.attempted.length, 0);
+    });
+});
+
+test("called directly, past the MCP layer, 30 is reported as 30 and never clamped to 10", function () {
+    // The schema refuses a count outside 1 to 10 before the tool is reached, so over MCP
+    // this is unreachable - and the clamp it guards against was a real shipped bug: a call
+    // for thirty came back saying ten had been asked for, so the model believed it had got
+    // what it wanted. The plugin's other entry points do not go through schema validation.
+    withSession(function (session) {
+        const body = hireDirect({ staffType: "handyman", count: 30 });
+
+        assert.equal(staffOnMap(session.game, "handyman"), 30,
+            "thirty were asked for, so thirty have to be standing in the park");
+        assert.equal(session.game.staff.length, 30, "and nobody else");
+        assert.equal(body.requested, 30, "the request reported back is the one that arrived, not one the tool decided on");
+        assert.equal(body.hired, 30);
+        assert.equal(body.ok, true, String(body.detail));
+    });
+});
+
+test("someone hired while the call is in flight is not counted as one of ours", function () {
+    // Counting the payroll instead of the type asked for reads three where two mechanics
+    // went in, because a handyman turned up in between. The existing type test seeds its
+    // strangers before the call, where a total count subtracts them again and agrees by
+    // accident.
+    withSession(function (session) {
+        onFirstAction("staffhire", function () {
+            session.game.addStaff("handyman");
+        });
+
+        const body = structured(callTool(session, "hire_staff", { staffType: "mechanic", count: 2 }));
+
+        assert.equal(staffOnMap(session.game, "mechanic"), 2, "two mechanics are standing in the park");
+        assert.equal(staffOnMap(session.game, "handyman"), 1, "beside a handyman this call had nothing to do with");
+        assert.equal(session.game.staff.length, 3, "so the payroll grew by three");
+        assert.equal(body.hired, 2, "and 2 is what was hired, not the 3 the payroll grew by");
+        assert.equal(body.totalStaff, 3, "which is the number totalStaff is for");
+        assert.equal(body.ok, true, String(body.detail));
     });
 });

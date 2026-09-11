@@ -6,6 +6,7 @@ import {
     countNewPathTiles,
     countPathTiles,
     findParkEntranceTiles,
+    queuePathServes,
     routeToParkNetwork,
     tileIsWalkable,
     walkableFromParkEntrance
@@ -165,5 +166,32 @@ test("a queue is still not a shortcut between two paths", function () {
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 7 }), true, "the queue itself");
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 8 }), false, "but not through it to open path");
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 9 }), false);
+    });
+});
+
+/**
+ * The twin of `queueServes` in status.ts, which has this test already. The two answer the
+ * same question about the same tile and are meant to agree, so a binding check dropped
+ * from one of them has to fail here too.
+ */
+test("a queue at the door bound to another ride does not serve this one", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+        // Ride 3's door tile, carrying a queue the game has bound to ride 7.
+        game.addPath(11, 6, true, 7);
+    }, function (game) {
+        const queue = game.tile(11, 6).elements.filter(function (element) {
+            return element.type === "footpath";
+        })[0];
+
+        assert.ok(queue, "the door tile carries no footpath at all");
+        assert.equal(queue.isQueue, true, "and what it carries is a queue");
+        assert.equal(queue.ride, 7, "which the map says belongs to ride 7");
+
+        assert.equal(queuePathServes({ x: 11, y: 6 }, 3), false,
+            "a queue bound to ride 7 is no queue for ride 3: guests crowd the door and never board");
+        assert.equal(queuePathServes({ x: 11, y: 6 }, 7), true,
+            "but it does serve the ride it is bound to");
     });
 });
