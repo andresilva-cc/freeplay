@@ -1,5 +1,6 @@
 import { flatRideShape } from "./flatRides.js";
-import { findParkEntranceTiles, walkableFromParkEntrance } from "./paths.js";
+import { DIRECTION_VECTORS } from "./map.js";
+import { findParkEntranceTiles, tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
 
 /** Bit positions in Ride.flags, from OpenRCT2's RideFlag enum. */
 const RIDE_FLAG_BROKEN_DOWN = 1 << 7;
@@ -19,8 +20,12 @@ export interface RideSummary {
     totalCustomers: number;
     totalProfit: number;
     queueTime: number;
-    /** Whether a queue is bound to the entrance. Without one, guests never board. */
+    /** A queue is bound to the entrance. Necessary, but on its own it proves nothing. */
     hasQueue: boolean;
+    /** The queue can be walked to from the park entrance. This is the one that matters. */
+    guestsCanReach: boolean;
+    /** A path leads away from the exit, back to the rest of the park. */
+    exitConnected: boolean;
     entrance: { x: number; y: number } | null;
     exit: { x: number; y: number } | null;
     downtime: number;
@@ -60,6 +65,12 @@ export interface ParkStatus {
     /** The game's own notifications, newest last. It names problems before you find them. */
     messages: string[];
     rides: RideSummary[];
+}
+
+/** The tile a door opens onto: one step further out than the building itself. */
+function doorTile(access: CoordsXYZD): { x: number; y: number } {
+    const towardsRide = DIRECTION_VECTORS[access.direction % 4];
+    return { x: access.x / 32 - towardsRide.dx, y: access.y / 32 - towardsRide.dy };
 }
 
 function queueServes(entrance: CoordsXYZD | null, rideId: number): boolean {
@@ -115,6 +126,8 @@ export function readParkStatus(): ParkStatus {
         staff[type] = (staff[type] || 0) + 1;
     }
 
+    const walkableNow = walkableFromParkEntrance();
+
     const rides: RideSummary[] = map.rides.map(function (ride) {
         const station = ride.stations.length > 0 ? ride.stations[0] : undefined;
         const entrance = station && station.entrance ? station.entrance : null;
@@ -132,6 +145,10 @@ export function readParkStatus(): ParkStatus {
             totalProfit: ride.totalProfit,
             queueTime: station ? station.queueTime : 0,
             hasQueue: queueServes(entrance, ride.id),
+            guestsCanReach: entrance !== null
+                && queueServes(entrance, ride.id)
+                && tileIsWalkable(walkableNow, doorTile(entrance)),
+            exitConnected: exit !== null && tileIsWalkable(walkableNow, doorTile(exit)),
             entrance: entrance ? { x: entrance.x / 32, y: entrance.y / 32 } : null,
             exit: exit ? { x: exit.x / 32, y: exit.y / 32 } : null,
             downtime: ride.downtime,
@@ -158,8 +175,7 @@ export function readParkStatus(): ParkStatus {
         }
     }
 
-    const walkable = walkableFromParkEntrance();
-    const reachableKeys = Object.keys(walkable);
+    const reachableKeys = Object.keys(walkableNow);
     const sample: { x: number; y: number }[] = [];
     const stride = Math.max(1, Math.floor(reachableKeys.length / 12));
 
