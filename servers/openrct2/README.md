@@ -57,12 +57,15 @@ session state, and the connected client's session id becomes unknown.
 | `clear_scenery` | `tools/clear.ts` | Strip a rectangle of ground, or a square centred on a tile |
 | `build_flat_ride` | `tools/build.ts` | Create, place, entrance, exit, price, open |
 | `build_path` | `tools/path.ts` | A path or queue, optionally along given waypoints |
+| `remove_path` | `tools/pathRemove.ts` | Take the footpath or queue off a run of tiles, addressed the way `build_path` addresses one |
 | `operate_ride` | `tools/operate.ts` | Open, close, reprice, reschedule inspections for or demolish a ride that exists |
 | `open_park` | `tools/openPark.ts` | Open or close the park to guests, and set admission |
 | `hire_staff` | `tools/staff.ts` | Hire and place staff |
+| `buy_land` | `tools/land.ts` | Buy the land rights to a rectangle of tiles the scenario is selling |
+| `set_game_speed` | `tools/gameSpeed.ts` | Set the speed setting, and pause or unpause |
 | `evaluate` | `tools/eval.ts` | Arbitrary JavaScript against the plugin API |
 
-Eleven tools. Upstream's `DateTools`, `ParkTools` and `UiTools` remain in the tree but are
+Fourteen tools. Upstream's `DateTools`, `ParkTools` and `UiTools` remain in the tree but are
 deliberately not registered in `tools/index.ts`: `park_status` covers both reads, and
 every tool in the list is re-read by the model on every turn, so a redundant one costs
 context and invites the model to pick the weaker option.
@@ -151,13 +154,17 @@ timer. While deferred calls are in flight the game's timer is wrapped so that a 
 later tick comes back as that call's error result rather than escaping into the tick loop
 and leaving the caller to wait out the full 30 seconds.
 
-Six of the eleven tools are deferred — `build_flat_ride`, `build_path`, `clear_scenery`,
-`operate_ride`, `open_park`, `hire_staff`, which is every tool that acts. `build_flat_ride`
+Nine of the fourteen tools are deferred — `build_flat_ride`, `build_path`, `remove_path`,
+`clear_scenery`, `operate_ride`, `open_park`, `hire_staff`, `buy_land` and `set_game_speed`,
+which is every tool that acts. `build_flat_ride`
 is the longest: up to six actions (`ridecreate`, `trackplace`, entrance, exit,
 `ridesetprice`, `ridesetstatus`), reading the world back between them, and demolishing the
 ride it made if nothing lands on the ground. `open_park` is the shortest, and shows the
 pattern bare: send the action, read the park back, and if it did not take, try once through
-the plugin API's own setters before reporting what the second read says.
+the plugin API's own setters before reporting what the second read says. `set_game_speed`
+follows the same shape for the same reason: `pausetoggle` flips rather than sets, so the
+state is read before the action is sent and again afterwards, and `context.paused` is the
+one retry.
 
 `build_flat_ride`'s `ok` means the ride exists with its track on the ground, and nothing
 more; `doorsAttached`, `open` and `reachable` are separate. It used to return `ok: false`

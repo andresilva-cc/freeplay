@@ -4,9 +4,22 @@ import type { BuildOutcome } from "../park/build.js";
 import type { DeferredMcpResult } from "./types.js";
 
 const DOOR_FIELDS = ["entranceX", "entranceY", "exitX", "exitY"];
-/** Kept in step with operate_ride, which bounds the same two values. */
+/**
+ * Kept in step with operate_ride, which bounds the same two values, and there for the same
+ * reason: the price is in tenths, and 2000 is 100.00 a ride. It is a units guard, not a view
+ * on what a ticket is worth - a guest's `value` runs in the tens, so nothing inside the bound
+ * is a price the model might have wanted and been refused, while a currency unit sent as if
+ * it were tenths is the mistake that costs a turn and reads as a mechanic nobody explained.
+ */
 const MAX_PRICE = 2000;
 const MAX_INSPECTION_INTERVAL = 6;
+/**
+ * OpenRCT2's own interval for a newly built ride - every 30 minutes. Unlike `price`, which
+ * is required because defaulting an economic decision makes it, sending this is what a
+ * player who never opens the ride's inspection dropdown already gets. Changing it to
+ * anything else would be the choice.
+ */
+const DEFAULT_INSPECTION_INTERVAL = 2;
 const MAX_COLOUR = 30;
 const MAX_ROTATION = 3;
 
@@ -47,11 +60,11 @@ export class BuildTools {
             "For everything else you choose where the doors go with `entranceX`/`entranceY` and `exitX`/`exitY`, from the site's",
             "`access` options. Each carries a `side`, so two with the same `side` put both doors on one face.",
             "All four go together: give one and you must give all four.",
-            "It builds no paths: use `build_path` for the queue and for the walk away from the exit.",
+            "It builds no paths: the queue and the walk away from the exit are `build_path`.",
             "`ok` means the ride EXISTS with its track on the ground — nothing more. Read `doorsAttached`, `open`",
-            "and `reachable` for the rest. `ok: true` with any of those false is a ride you already own:",
-            "fix what is missing, never build a second copy.",
-            "`reachable` is normally false straight after building — you still have to lay the queue and the exit path.",
+            "and `reachable` for the rest. `ok: true` with any of those false is a ride you already own, and",
+            "calling this again builds and pays for a second one.",
+            "`reachable` is false straight after building until the queue and the exit path are laid.",
             "The only build that leaves nothing behind is `ok: false`; anything else means a ride is standing, and",
             "`operate_ride` with `demolish` is how it goes away.",
             "This does not build roller coasters; those need track laid piece by piece with `evaluate`."
@@ -63,7 +76,7 @@ export class BuildTools {
                 x: { type: "integer", minimum: 0, description: "Tile x of the build origin, copied from a find_build_sites site's `x`. The origin is inside the footprint but it is NOT its centre and NOT a corner: a 4x4 runs 0..3 from it, a 1x4 runs -2..+1, a 3x3 runs -1..+1. Derive nothing from it — the ground the ride stands on is the site's `fromX`/`fromY`/`toX`/`toY`." },
                 y: { type: "integer", minimum: 0, description: "Tile y of the build origin, copied from a find_build_sites site's `y`. Same rule as `x`: it is not the centre of anything." },
                 rotation: { type: "integer", minimum: 0, maximum: MAX_ROTATION, description: "Which way the ride faces, 0-3. Use the `rotation` from the site you picked; it is not wrapped, so 4 is refused rather than read as 0." },
-                price: { type: "integer", minimum: 0, maximum: MAX_PRICE, description: "Ticket price in tenths of a currency unit: 10 means 1.00. Charge above what guests think the ride is worth and they walk past; park_status reports each ride's `value`. 0 is free." },
+                price: { type: "integer", minimum: 0, maximum: MAX_PRICE, description: "Ticket price in tenths of a currency unit: 10 means 1.00. Charge above what guests think the ride is worth and they walk past; park_status reports each ride's `value`. A ride being built has no `value` yet - it appears once the ride has been rated, which happens shortly after it opens with guests able to reach it - and `operate_ride` sets the price again at any time afterwards. 0 is free." },
                 entranceX: { type: "integer", minimum: 0, description: "Tile x for the entrance building. Must be one of the site's `access` options. Required with entranceY, exitX and exitY for anything that is not a shop." },
                 entranceY: { type: "integer", minimum: 0, description: "Tile y for the entrance building." },
                 exitX: { type: "integer", minimum: 0, description: "Tile x for the exit building. Must be a different `access` option from the entrance: one tile holds one door." },
@@ -77,7 +90,7 @@ export class BuildTools {
                     minimum: 0,
                     maximum: MAX_INSPECTION_INTERVAL,
                     enum: [0, 1, 2, 3, 4, 5, 6],
-                    description: "How often mechanics inspect. An index into the game's seven inspection intervals, NOT a number of minutes: 0 every 10 minutes, 1 every 20, 2 every 30, 3 every 45, 4 every hour, 5 every two hours, 6 never. Default 2."
+                    description: "How often mechanics inspect. An index into the game's seven inspection intervals, NOT a number of minutes: 0 every 10 minutes, 1 every 20, 2 every 30, 3 every 45, 4 every hour, 5 every two hours, 6 never. Default 2, which is the interval OpenRCT2 itself gives a newly built ride."
                 }
             },
             required: ["rideObject", "x", "y", "rotation", "price", "open"],
@@ -133,7 +146,7 @@ export class BuildTools {
             colour1: number(args.colour1, 0),
             colour2: number(args.colour2, 0),
             entranceObject: number(args.entranceObject, 0),
-            inspectionInterval: number(args.inspectionInterval, 2),
+            inspectionInterval: number(args.inspectionInterval, DEFAULT_INSPECTION_INTERVAL),
             entrance: given.length === DOOR_FIELDS.length
                 ? { x: number(args.entranceX, -1), y: number(args.entranceY, -1) }
                 : undefined,

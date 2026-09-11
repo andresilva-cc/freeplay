@@ -136,6 +136,31 @@ function onFirstAction(name: string, side: () => void): void {
     };
 }
 
+/**
+ * Run `side` once the first action of this name has actually been applied, standing in for
+ * the world changing between one queued action and the next. `onFirstAction` fires while
+ * the actions are still being queued, which is too early to let one of a batch succeed and
+ * the rest fail. `restore()` puts the whole context back.
+ */
+function afterFirstApplied(name: string, side: () => void): void {
+    const scope = globalThis as unknown as { context: { executeAction: ExecuteAction } };
+    const real = scope.context.executeAction;
+    let fired = false;
+
+    scope.context.executeAction = function (actionName, args, callback) {
+        real(actionName, args, function (result) {
+            if (callback) {
+                callback(result);
+            }
+
+            if (actionName === name && !fired) {
+                fired = true;
+                side();
+            }
+        });
+    };
+}
+
 /** hire_staff called straight on its handler, past the schema the MCP layer applies. */
 function hireDirect(args: Record<string, unknown>): Record<string, unknown> {
     const result = new StaffTools().hireStaff(args);
@@ -235,19 +260,97 @@ test("a hiring the game refuses is reported as the refusal it was", function () 
     });
 });
 
-test("a short hire names no money problem the tool never checked", function () {
+test("a short hire quotes the reason the game gave and invents no other", function () {
     // "check you can afford them" used to be appended to every partial hire, with the park's
     // cash never read. `StaffHireNewAction` carries no cost - staff draw wages monthly, and
-    // hiring itself is free - so money could not have been the reason either way.
+    // hiring itself is free - so money could not have been the reason either way. The cure
+    // for a made-up cause is the game's own words, not the absence of a cause: the count on
+    // its own left the model with nothing to act on.
     withSession(function (session) {
         session.game.refuse.staffhire = true;
 
         const body = structured(callTool(session, "hire_staff", { staffType: "mechanic", count: 2 }));
 
         assert.equal(session.game.staff.length, 0, "the game turned both of them down");
-        assert.equal(String(body.detail), "Only 0 of 2 were hired.",
-            "the count is the whole message; what stopped them was never established");
-        assert.doesNotMatch(String(body.detail), /afford|cash|money/);
+        assert.equal(String(body.detail), "Only 0 of 2 were hired. The game refused every one: Refused: test refusal.",
+            "the count, and the game's own words for why, and nothing the tool made up");
+        assert.doesNotMatch(String(body.detail), /afford|cash|money/,
+            "money was never read and the game never mentioned it");
+        assert.doesNotMatch(String(body.detail), /costume/,
+            "a mechanic wears no costume, so the entertainer explanation must not leak onto one");
+    });
+});
+
+test("an entertainer a scenario has no costume for is refused in the game's words, not as a bare count", function () {
+    // Measured in the running game: hire_staff {entertainer, 3} came back "Only 0 of 3 were
+    // hired." while the game had said "Can't hire new staff: Value out of range". Forest
+    // Frontiers loads no entertainer costume, so StaffHireNewAction refuses costume 0 - the
+    // only costume this tool asks for - and no entertainer can ever be hired there. With the
+    // count alone the model retries forever.
+    withSession(function (session) {
+        session.game.entertainerCostumes = 0;
+
+        const body = structured(callTool(session, "hire_staff", { staffType: "entertainer", count: 3 }));
+
+        assert.equal(session.game.staff.length, 0, "nobody is standing in the park");
+        assert.equal(body.ok, false);
+        assert.equal(body.hired, 0);
+        assert.equal(body.requested, 3);
+        assert.match(String(body.detail), /Value out of range/, "the game's own words for the refusal");
+        assert.match(String(body.detail), /costume/, "and what they mean, which is the whole of the problem");
+        assert.match(String(body.detail), /no entertainer can be hired/,
+            "a model that is not told this retries the same hire for the rest of the game");
+    });
+});
+
+test("a park that has the costume hires entertainers as normal", function () {
+    // The other half: the refusal is a property of the scenario, so the working path must be
+    // untouched by the explanation for the broken one.
+    withSession(function (session) {
+        const body = structured(callTool(session, "hire_staff", { staffType: "entertainer", count: 2 }));
+
+        assert.equal(staffOnMap(session.game, "entertainer"), 2, "both are standing in the park");
+        assert.equal(body.ok, true, String(body.detail));
+        assert.equal(String(body.detail), "Hired 2 entertainer.");
+    });
+});
+
+test("the costume explanation is only ever given about an entertainer", function () {
+    // It is decoded from an InvalidParameters refusal, and `staffhire` reaches that two ways:
+    // a staff type out of range, which STAFF_TYPES makes impossible, and a missing costume,
+    // which only an entertainer has. Said about a mechanic it would be a guess.
+    withSession(function (session) {
+        session.game.entertainerCostumes = 0;
+        session.game.refuse.staffhire = true;
+
+        const handymen = structured(callTool(session, "hire_staff", { staffType: "handyman", count: 2 }));
+
+        assert.equal(session.game.staff.length, 0, "the game turned both of them down");
+        assert.doesNotMatch(String(handymen.detail), /costume/,
+            "a handyman refused for some other reason must not be explained as a missing costume");
+    });
+});
+
+test("entertainers hired alongside a refusal report the count and the reason together", function () {
+    // A partial hire is the case a single collapsed message gets most wrong: the model has to
+    // see both that somebody turned up and that the rest were refused, and why.
+    withSession(function (session) {
+        session.game.entertainerCostumes = 1;
+
+        // The park loses its costume part way through: the first hire lands, the rest do not.
+        afterFirstApplied("staffhire", function () {
+            session.game.entertainerCostumes = 0;
+        });
+
+        const body = structured(callTool(session, "hire_staff", { staffType: "entertainer", count: 3 }));
+
+        assert.equal(staffOnMap(session.game, "entertainer"), 1, "one entertainer made it into the park");
+        assert.equal(body.ok, false);
+        assert.equal(body.hired, 1, "counted off the map, not off the three hirings that were sent");
+        assert.match(String(body.detail), /Only 1 of 3/);
+        assert.match(String(body.detail), /Value out of range/, "with the game's reason for the two that failed");
+        assert.doesNotMatch(String(body.detail), /no entertainer can be hired/,
+            "one of them was hired, so 'none can be' would be false");
     });
 });
 

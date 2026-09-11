@@ -2,9 +2,12 @@ import { getMcpToolDefinitions } from "./decorators.js";
 import { BuildTools } from "./build.js";
 import { ClearTools } from "./clear.js";
 import { EvalTools } from "./eval.js";
+import { GameSpeedTools } from "./gameSpeed.js";
+import { LandTools } from "./land.js";
 import { OpenParkTools } from "./openPark.js";
 import { OperateTools } from "./operate.js";
 import { PathTools } from "./path.js";
+import { PathRemoveTools } from "./pathRemove.js";
 import { SiteTools } from "./sites.js";
 import { StaffTools } from "./staff.js";
 import { StatusTools } from "./status.js";
@@ -20,9 +23,12 @@ export function getMcpToolControllers(): McpToolClass[] {
         BuildTools,
         ClearTools,
         EvalTools,
+        GameSpeedTools,
+        LandTools,
         OpenParkTools,
         OperateTools,
         PathTools,
+        PathRemoveTools,
         SiteTools,
         StaffTools,
         StatusTools

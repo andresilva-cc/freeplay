@@ -24,7 +24,12 @@ run in a sandboxed interpreter inside the game process with access to:
 
 Everything a human player can do is a game action, including setting game speed
 (`gamesetspeed`) and pausing (`pausetoggle`). That uniformity is what makes the API
-usable as an agent interface rather than merely as a modding interface.
+usable as an agent interface rather than merely as a modding interface — and it is why
+the clock is a tool the model holds rather than something the harness does to it. Both of
+those actions have a trap in them: `gamesetspeed` takes a speed *setting*, 1 to 4, and the
+loop runs `1 << (speed - 1)` updates, so 4 is eight times normal and there is no 8;
+`pausetoggle` flips rather than sets, so firing it without reading `context.paused` first
+does the opposite of what was asked half the time.
 
 ## What upstream already solved
 
@@ -49,7 +54,7 @@ plugin API, and it is not exposed over MCP.
 
 ## What Freeplay adds
 
-Eleven tools, and the three inherited ones are gone. Upstream's `getDate`, `getParkInfo`
+Fourteen tools, and the three inherited ones are gone. Upstream's `getDate`, `getParkInfo`
 and `showError` are still in the tree but are no longer registered in `src/tools/index.ts`:
 `park_status` covers both reads, and every tool in the list is re-read by the model on
 every turn, so a redundant one costs context and invites it to pick the weaker option.
@@ -65,19 +70,34 @@ what each one does is in its own description, which is what the model reads.
 | `clear_scenery` | Strip a rectangle of ground, or a square centred on a tile |
 | `build_flat_ride` | Create, place, entrance, exit, price, open |
 | `build_path` | A path or queue, along given waypoints or between two tiles |
+| `remove_path` | Take the footpath or queue off a run of tiles, and report what guests can still reach and which rides lost their queue |
 | `operate_ride` | Open, close, reprice, reschedule inspections for or demolish a ride that already exists |
 | `open_park` | Open or close the park to guests, and set admission |
 | `hire_staff` | Hire and place staff |
+| `buy_land` | Buy the land rights to a rectangle of tiles, and report what the scenario would not sell |
+| `set_game_speed` | Set the speed setting, and pause or unpause |
 | `evaluate` | Arbitrary JavaScript against the plugin API |
 
-`open_park` is the newest and the smallest, and it is there for a reason worth stating:
-opening the park is two single game actions with undiscoverable argument shapes —
-`parksetparameter` takes `0` for close and `1` for open, and neither name resembles what
-it does — so five of five playable runs skipped them and hand-wrote
-`park.setFlag("open", true)` through `evaluate`. The tool decides nothing about when to
-open or what to charge; it carries out whichever of the two it was given and reports what
-the park reads back as afterwards, which is not always the same thing: a scenario with
-free park entry will keep an entrance fee of 0 whatever it is asked for.
+`open_park` is the smallest, and it is there for a reason worth stating: opening the park
+is two single game actions with undiscoverable argument shapes — `parksetparameter` takes
+`0` for close and `1` for open, and neither name resembles what it does — so five of five
+playable runs skipped them and hand-wrote `park.setFlag("open", true)` through `evaluate`.
+The tool decides nothing about when to open or what to charge; it carries out whichever of
+the two it was given and reports what the park reads back as afterwards, which is not
+always the same thing: a scenario with free park entry will keep an entrance fee of 0
+whatever it is asked for.
+
+`set_game_speed` is the same story about the clock, and `remove_path` and `buy_land` are
+the two most recent. `remove_path` closed a gap rather than an ergonomic problem: nothing
+could delete a footpath at all, while `build_path` could lay a path over a queue (which
+unbinds it from its ride) or a queue across a through route (which splits the park, because
+guests cannot walk through one). It takes `build_path`'s own addressing, so that call's
+`route` passed back as `waypoints` lifts exactly what it laid, and it reports how much of
+the network is still reachable from the gate and any ride whose bound queue went with the
+path. `buy_land` wraps `landbuyrights`, which is the only lever a plugin has over park
+boundaries during a scenario: its sibling `landsetrights` carries the game's `EditorOnly`
+flag, so there is no selling land back and no making an unlisted tile buyable, and ground
+height (`landsetheight`, `landraise`, `landlower`) is not reachable through any tool here.
 
 ### Things the API will not tell you, learned the hard way
 
@@ -149,7 +169,7 @@ described below.
 
 **`evaluate` is the escape hatch, not the whole surface.** It takes a `code` string, runs
 it in the plugin context and returns the value, annotated `readOnlyHint: false` and
-`destructiveHint: true`. It was the entire action surface to begin with; the ten typed
+`destructiveHint: true`. It was the entire action surface to begin with; the thirteen typed
 tools beside it were added in response to what runs showed the model fumbling, and
 `evaluate` covers what they still do not reach — tracked rides above all. The reasoning
 is in [architecture.md](architecture.md).
@@ -262,8 +282,9 @@ a later-tick failure comes back as that call's error. If a game build will not l
 be wrapped, the wrap is abandoned and the watchdog remains the fallback — a slow answer is
 worse than a real one, but it is much better than taking the bridge down mid-tick.
 
-Six of the eleven tools are deferred: `build_flat_ride`, `build_path`, `clear_scenery`,
-`operate_ride`, `open_park` and `hire_staff`, which is every tool that acts.
+Nine of the fourteen tools are deferred: `build_flat_ride`, `build_path`, `remove_path`,
+`clear_scenery`, `operate_ride`, `open_park`, `hire_staff`, `buy_land` and
+`set_game_speed`, which is every tool that acts.
 `build_flat_ride` is the longest, running up to six actions in sequence — `ridecreate`,
 `trackplace`, an entrance, an exit, `ridesetprice`, `ridesetstatus` — and reading the world
 back between them. It reports which step failed, and demolishes the ride it created when

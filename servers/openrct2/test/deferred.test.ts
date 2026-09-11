@@ -518,9 +518,9 @@ test("every mutating tool is reachable through tools/call", function () {
         const names = body.result.tools.map(function (tool) { return tool.name; }).sort();
 
         assert.deepEqual(names, [
-            "build_flat_ride", "build_path", "clear_scenery", "evaluate", "find_build_sites",
+            "build_flat_ride", "build_path", "buy_land", "clear_scenery", "evaluate", "find_build_sites",
             "guest_feedback", "hire_staff", "list_ride_objects", "open_park", "operate_ride",
-            "park_status"
+            "park_status", "remove_path", "set_game_speed"
         ]);
     });
 });

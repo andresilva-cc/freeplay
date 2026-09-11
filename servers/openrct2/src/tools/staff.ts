@@ -8,6 +8,20 @@ const STAFF_TYPES: Record<string, number | undefined> = {
     entertainer: 3
 };
 
+/**
+ * GameActions::Status::InvalidParameters.
+ *
+ * `StaffHireNewAction` reaches it two ways: a staff type outside 0-3, which `STAFF_TYPES`
+ * makes impossible here, and an entertainer costume the park has not got. So for an
+ * entertainer it means the costume, and nothing else.
+ */
+const INVALID_PARAMETERS = 1;
+
+/** The game's own words for a refusal. Same shape `src/park/build.ts` quotes them in. */
+function actionError(result: GameActionResult): string {
+    return (result.errorTitle || "") + (result.errorMessage ? ": " + result.errorMessage : "");
+}
+
 @mcpToolController
 export class StaffTools {
     @mcpTool({
@@ -17,7 +31,9 @@ export class StaffTools {
             "inspect rides, security deter vandals, entertainers keep queueing guests happy.",
             "Staff are hired near the park entrance and wander freely; set patrol areas with evaluate if you",
             "want them somewhere specific. Hiring itself costs nothing; each member of staff is paid a wage",
-            "every month for as long as they are employed."
+            "every month for as long as they are employed.",
+            "`hired` is counted off the map afterwards, so it is who is standing in the park and not how many",
+            "hirings were sent. When the game turns one down, `detail` carries its own words for why."
         ].join(" "),
         inputSchema: {
             type: "object",
@@ -67,6 +83,10 @@ export class StaffTools {
                 };
 
                 const before = countOfType();
+                // Kept so a refusal can be quoted rather than left as a count. The count on
+                // its own sent the model round the same failed hire forever, because the
+                // reason it could not work was the one thing missing from it.
+                const refusals: GameActionResult[] = [];
 
                 for (let i = 0; i < count; i++) {
                     context.executeAction("staffhire", {
@@ -74,21 +94,57 @@ export class StaffTools {
                         staffType: staffType,
                         costumeIndex: 0,
                         staffOrders: 0
-                    }, function () { /* verified by re-read */ });
+                    }, function (result) {
+                        if (result && result.error) {
+                            refusals.push(result);
+                        }
+                    });
                 }
 
                 context.setTimeout(function () {
                     const hired = countOfType() - before;
+                    const reasons: string[] = [];
+                    let allInvalidParameters = refusals.length > 0;
+
+                    for (let i = 0; i < refusals.length; i++) {
+                        const text = actionError(refusals[i]);
+
+                        if (reasons.indexOf(text) < 0) {
+                            reasons.push(text);
+                        }
+
+                        if (refusals[i].error !== INVALID_PARAMETERS) {
+                            allInvalidParameters = false;
+                        }
+                    }
+
+                    // Read, not assumed: the game was asked for an entertainer and turned
+                    // every one down as an invalid parameter. `staffhire`'s only other route
+                    // to that is a staff type out of range, which cannot happen from here,
+                    // so what it is refusing is costume 0 - and costume 0 is the only costume
+                    // this tool ever asks for.
+                    const noCostume = name === "entertainer" && hired === 0 && allInvalidParameters;
 
                     resolve({
                         ok: hired === count,
                         requested: count,
                         hired: hired,
                         totalStaff: map.getAllEntities("staff").length,
-                        // No cause named: `staffhire` costs nothing, so money is never why one failed.
+                        // `staffhire` costs nothing, so money is never why one failed.
                         detail: hired === count
                             ? "Hired " + String(hired) + " " + name + "."
                             : "Only " + String(hired) + " of " + String(count) + " were hired."
+                            + (reasons.length > 0
+                                ? " The game refused " + (refusals.length === count ? "every one" : String(refusals.length))
+                                    + ": " + reasons.join("; ") + "."
+                                : "")
+                            + (noCostume
+                                ? " An entertainer is hired wearing a costume and this park has none loaded,"
+                                    + " so the game refuses every entertainer costume there is to ask for."
+                                    + " That is a property of the scenario: no entertainer can be hired in it,"
+                                    + " and trying again will get the same answer. Handymen, mechanics and"
+                                    + " security are not affected."
+                                : "")
                     });
                 }, 250);
             }

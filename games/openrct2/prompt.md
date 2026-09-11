@@ -43,9 +43,9 @@ only; `isFlatRide: false` is a tracked ride, laid piece by piece with `evaluate`
    result names both door tiles, so there is nothing to look up.
 
 `ok: true` means the ride is STANDING, nothing more. `doorsAttached`, `open` and
-`reachable` come back separately, and any of them false is a ride you ALREADY OWN: fix
-the missing piece. Building again builds and pays for a second ride. `reachable` is
-false until step 4 and is never a reason to rebuild.
+`reachable` come back separately, and any of them false is a ride you ALREADY OWN.
+Building again builds and pays for a second ride. `reachable` is false until step 4 and
+does not mean the build failed.
 
 ## Copy values across; never work them out
 
@@ -76,9 +76,15 @@ not a reachable one unless `reachableSample` lists it.
 
 - Guests walk a queue to reach its ride but never through it, so a queue laid across a
   route splits the park — each access option's `queueCutsOff` measures that before you
-  build — and an ordinary path laid back over a queue unbinds it from its ride.
+  build — and an ordinary path laid back over a queue unbinds it from its ride. Neither
+  is permanent: `remove_path` takes the footpath or queue off the tiles it names, and a
+  `build_path` result's `route` handed back as its `waypoints` lifts exactly what that
+  call laid.
 - A site's `nearestRideDistance` is measured from its origin tile and counts the park
   gate and every ride door as a ride, so in an empty park it is the distance to the gate.
+- Nothing goes on ground the park does not own, and `buy_land` buys only the tiles a
+  scenario has put up for sale. Buying a sloped tile makes it the park's, not flat —
+  there is no levelling tool, and a ride or a path needs level ground.
 - Money is in tenths: 1000 means 100.00. Admission is `entranceFee`, charged at the gate
   and set by `open_park`; ride tickets are per ride and set by `operate_ride`.
 - Ratings are fixed-point (652 is 6.52, -1 unrated), park rating runs 0-999, and
@@ -89,18 +95,21 @@ not a reachable one unless `reachableSample` lists it.
 
 ## Each turn
 
-Time runs while you think, so what you read is a snapshot, not a freeze-frame.
+Time runs while you think, so what you read is a snapshot, not a freeze-frame. How fast it
+runs is `set_game_speed`: 1 is normal, 2 twice, 3 four times, 4 eight times — settings, not
+multipliers — and while it is `paused` no scenario time passes at all.
 
 1. Open with `park_status`: the objective and how it is scored, and `messages`, the game
    naming problems in its own words. `guest_feedback` once there are guests.
-2. Decide the one thing holding the park back and make the call that changes it:
+2. Act. Which tool changes what:
    `open_park` for the gate or the admission price, `build_path` for anything guests
-   cannot reach, `operate_ride` to reprice, open, close or demolish, `hire_staff`
-   because nothing else fixes a breakdown and a broken ride stays broken until a
-   mechanic walks to it, `build_flat_ride` for something new, `evaluate` for the rest.
+   cannot reach, `remove_path` to take a footpath or queue back up, `operate_ride` to
+   reprice, open, close or demolish, `hire_staff` because nothing else fixes a breakdown
+   and a broken ride stays broken until a mechanic walks to it, `build_flat_ride` for
+   something new, `buy_land` for ground outside the park, `evaluate` for the rest.
 3. Read what that call reports. Every tool re-reads the world after acting and tells you
    what it found, so its result is the park; a fresh `park_status` after every action is
-   the largest payload in a run and usually says nothing new.
+   the largest payload in a run.
 4. When something fails, change something before calling again — identical arguments get
    an identical answer. If the message names a fix, make exactly that change. If two
    results disagree, `park_status` settles it. Never retry to see whether it helps.

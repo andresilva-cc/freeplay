@@ -64,9 +64,9 @@ nothing loads it at runtime.
 
 **`pi/` and `.mcp.json`** — [pi](https://pi.dev) is the harness, with
 [pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) attaching it to the
-plugin's MCP endpoint. The adapter's `directTools` mode registers all eleven bridge tools
+plugin's MCP endpoint. The adapter's `directTools` mode registers all fourteen bridge tools
 as first-class tools with their real schemas, rather than behind a discovery proxy the
-model would have to search before it could call anything. Eleven tools is well inside the
+model would have to search before it could call anything. Fourteen tools is well inside the
 range where that is the right trade; a server with a hundred would want the proxy. The
 adapter's own two tools are turned off so the bridge's are the only ones the model sees:
 the `mcp` discovery proxy with `--exclude-tools mcp` in `scripts/run.sh`, and `mcpScript`
@@ -75,7 +75,7 @@ with `"scriptMode": false` in `.mcp.json`.
 pi is configured through a repo-local agent directory (`PI_CODING_AGENT_DIR`), so a run
 is self-contained and does not read or write a developer's global pi setup.
 
-## Why one tool first, and eleven now
+## Why one tool first, and fourteen now
 
 `evaluate` takes a JavaScript string, runs it in the plugin context, and returns the
 result. It reaches the whole plugin API, which means it reaches every game action, and
@@ -89,10 +89,12 @@ which actions a model actually reaches for and which it fumbles, and nobody knew
 yet. One general tool answers the question; a hand-picked set of typed tools assumes the
 answer.
 
-The runs answered it, and there are now ten typed tools beside `evaluate`. Each exists
+The runs answered it, and there are now thirteen typed tools beside `evaluate`. Each exists
 because transcripts showed the same failure repeatedly: the model could not discover a
 ride's footprint, could not find anywhere to put one, laid paths that connected nothing,
-could not open the park without hand-writing `park.setFlag("open", true)`, and in one run
+could not take a path back up once laid — across eight sessions it cut its own park in
+two eight times, was told so, and had no lever to undo it — could not open the park
+without hand-writing `park.setFlag("open", true)`, and in one run
 spent ten calls inventing `ride.open = true` and `queryAction("set_ride_status")` —
 neither of which exists, and the game answers an unknown action name with a cheerful
 null. `evaluate` stayed, because the typed tools do not reach tracked rides and were
@@ -129,6 +131,6 @@ more than they otherwise would:
   and skip re-processing it, but only if it does not change. Nothing injects a timestamp
   or per-turn preamble at the top of the prompt.
 - **A short tool list.** Small models handle a handful of tools far better than dozens.
-  Eleven is a deliberate ceiling, not an accident: a tool earns its place by fixing a
+  Fourteen is a deliberate ceiling, not an accident: a tool earns its place by fixing a
   failure a run actually showed, and the three inherited from upstream were dropped for
   failing that test.

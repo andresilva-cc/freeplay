@@ -22,9 +22,11 @@ nor OpenRCT2 is baked into the design.
 ```
 
 The model sees the park through tools that report what a player reads off the screen,
-and changes it through tools that carry out a decision it has already made. Eleven of
+and changes it through tools that carry out a decision it has already made. Fourteen of
 them, because every tool is re-read by the model on every turn and a small model handles
-a handful far better than dozens. Where that line sits — and why it matters — is
+a handful far better than dozens. That includes the game's own clock: a person playing
+controls the speed and the pause key, so the model does too. Where that line sits — and
+why it matters — is
 [docs/tool-design.md](docs/tool-design.md). `evaluate` runs arbitrary JavaScript against
 the plugin API and remains available for everything the other tools do not cover,
 tracked rides above all.
@@ -95,7 +97,7 @@ testing against a stale bundle is an expensive way to spend an afternoon. Turn h
 reloading on with `enable_hot_reloading` under `[plugin]` in OpenRCT2's `config.ini`,
 edited while the game is closed.
 
-The park logic has a test suite — around three hundred tests over a fake game that queues
+The park logic has a test suite — over four hundred tests over a fake game that queues
 actions the way the real one does, rotates track pieces the way the game does, and throws
 on an action it does not model rather than answering "that worked". It also has an inert
 mode where actions are accepted and never applied, so a tool that reports success for work

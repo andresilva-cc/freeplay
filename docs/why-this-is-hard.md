@@ -91,7 +91,10 @@ model decision costs seconds. Inference dominates by orders of magnitude.
 
 The lever that actually controls throughput is `gamesetspeed`, which is a first-class
 game action — the simulation can fast-forward between decisions with rendering left on.
-So runs are rendered by default, and nothing is lost.
+So runs are rendered by default, and nothing is lost. That lever is the model's, through
+`set_game_speed`: a person playing works the speed and pause keys constantly, so pacing is
+part of the game rather than something the harness does around it, and a model that spends
+scenario months deliberating at speed 4 has made a play mistake that shows up in the score.
 
 One related assumption is worth retiring until someone verifies it: "run headless, then
 re-render the interesting runs" depends on deterministic replay from a seed and command

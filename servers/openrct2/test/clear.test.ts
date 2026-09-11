@@ -208,7 +208,103 @@ test("when nothing is applied, it does not claim to have cleared anything", func
         assert.equal(outcome.tilesStillBlocked, 9, "all nine tiles still have their scenery");
         assert.equal(countElements(game, "small_scenery"), 9, "and the scenery really is still there");
         assert.doesNotMatch(outcome.detail, /Cleared/);
+        assert.doesNotMatch(outcome.detail, /a ride, a path/,
+            "scenery that is still standing is not a ride, and saying so sends the model somewhere else");
     }, { inert: true });
+});
+
+test("a removal the park cannot pay for is reported as the money it was, not as a ride in the way", function () {
+    // Measured in the running game: clear_scenery on 37,72 - plain small scenery on owned,
+    // flat, clear land - came back saying the tile was "occupied by something that is not
+    // scenery", while the game had answered {error: 4, "Not enough cash - requires £15.00"}.
+    // Set cash and the identical call went through. A model told a ride is in the way
+    // bulldozes elsewhere and never finds out it only needed money.
+    withPark(function (game) {
+        game.sceneryRemovalCost = 150;
+        game.parkValues.cash = 100;
+        game.addScenery(10, 10);
+
+        const outcome = clear(10, 10, 1);
+
+        assert.equal(hasElement(game, 10, 10, "small_scenery"), true, "the scenery is still on the ground");
+        assert.equal(game.parkValues.cash, 100, "and the park never paid for a removal that did not happen");
+        assert.equal(outcome.ok, false);
+        assert.equal(outcome.tilesRefused, 1, "one tile kept its scenery because the game said no");
+        assert.equal(outcome.tilesOccupied, 0, "and nothing on it was a ride, a path or a park structure");
+        assert.equal(outcome.notEnoughCash, true, "which is the one fact that makes this fixable");
+        assert.deepEqual(outcome.refusals, ["Can't remove this: Not enough cash - requires £15.00"],
+            "the game's own words, not a paraphrase");
+        assert.match(outcome.detail, /Not enough cash/);
+        assert.doesNotMatch(outcome.detail, /a ride, a path/,
+            "the tile held nothing but scenery, so no structure may be blamed for it");
+    });
+});
+
+test("with the money there, the identical call clears the same tile", function () {
+    // The other half of the measurement: money was the whole of it, so the tool must not
+    // be reporting a permanent obstruction.
+    withPark(function (game) {
+        game.sceneryRemovalCost = 150;
+        game.parkValues.cash = 1000;
+        game.addScenery(10, 10);
+
+        const outcome = clear(10, 10, 1);
+
+        assert.equal(hasElement(game, 10, 10, "small_scenery"), false, "the scenery came down");
+        assert.equal(game.parkValues.cash, 850, "and the park paid the game's price for it");
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(outcome.notEnoughCash, false);
+        assert.deepEqual(outcome.refusals, []);
+    });
+});
+
+test("some tiles blocked and some unaffordable reports both counts and both reasons", function () {
+    // The mixed case must not collapse into whichever reason is counted first: one of these
+    // is fixed with cash and the other never is.
+    withPark(function (game) {
+        game.sceneryRemovalCost = 150;
+        game.parkValues.cash = 150;
+        game.addScenery(9, 9);
+        game.addScenery(9, 10);
+        game.addPath(10, 10);
+        game.tile(11, 11).elements.push({ type: "track", baseZ: 96, ride: 0, trackType: 262 });
+
+        const outcome = clear(10, 10, 3);
+
+        // 150 pays for exactly one of the two pieces of scenery, so the other is refused.
+        assert.equal(countElements(game, "small_scenery"), 1, "one piece was affordable and one was not");
+        assert.equal(game.parkValues.cash, 0, "every penny the park had went on the one it could pay for");
+        assert.equal(hasElement(game, 10, 10, "footpath"), true, "the path was never touched");
+        assert.equal(hasElement(game, 11, 11, "track"), true, "nor was the ride");
+
+        assert.equal(outcome.ok, false);
+        assert.equal(outcome.tilesOccupied, 2, "the path tile and the ride tile");
+        assert.equal(outcome.tilesRefused, 1, "and the one piece of scenery the park could not pay for");
+        assert.equal(outcome.tilesStillBlocked, 3, "all three are still in the way");
+        assert.equal(outcome.notEnoughCash, true);
+        assert.match(outcome.detail, /occupied by something that is not scenery/,
+            "the ride and the path still get the message that is right for them");
+        assert.match(outcome.detail, /Not enough cash/,
+            "and the unaffordable tile still gets the message that is right for it");
+    });
+});
+
+test("a refusal the tool has no name for is quoted rather than explained away", function () {
+    // Money is only the reason that was measured. Anything else the game says comes back in
+    // its own words, the way src/park/build.ts quotes a refused trackplace.
+    withPark(function (game) {
+        game.refuse.smallsceneryremove = true;
+        game.addScenery(10, 10);
+
+        const outcome = clear(10, 10, 1);
+
+        assert.equal(hasElement(game, 10, 10, "small_scenery"), true, "the scenery survived");
+        assert.equal(outcome.tilesRefused, 1);
+        assert.equal(outcome.tilesOccupied, 0);
+        assert.equal(outcome.notEnoughCash, false, "the game never said anything about money");
+        assert.deepEqual(outcome.refusals, ["Refused: test refusal"]);
+        assert.match(outcome.detail, /Refused: test refusal/);
+    });
 });
 
 test("each size clears exactly the square it names, tile for tile", function () {

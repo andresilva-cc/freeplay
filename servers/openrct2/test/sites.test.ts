@@ -608,11 +608,15 @@ test("finding nothing says which constraint nothing got past", function () {
         assert.equal(result.ok, true);
         assert.equal((result.sites || []).length, 0);
         assert.match(String(result.note), /4x4/, "the size that would not fit has to be in the message");
-        assert.match(String(result.note), /Buy or level land/, "and the fix for the constraint that failed");
-        // docs/tool-design.md: naming the land constraint is mechanics; proposing a different
-        // ride is the model's decision, and a refusal that makes it is the tool playing.
+        assert.match(String(result.note), /owned, level tiles all at one height/,
+            "and the constraint nothing got past");
+        // docs/tool-design.md: naming the constraint is mechanics; naming a lever picks which
+        // constraint to relax, which is the model's call - and "level land" named a lever no
+        // tool has, which is what teaches it to invent action names.
         assert.doesNotMatch(String(result.note), /smaller ride|list_ride_objects/,
             "what to build instead is not the refusal's to suggest");
+        assert.doesNotMatch(String(result.note), /[Bb]uy|[Ll]evel land/,
+            "nor which constraint to relax");
     } finally {
         restore();
     }
@@ -631,7 +635,12 @@ test("finding nothing says which constraint nothing got past", function () {
     try {
         const result = findBuildSites(0, 3);
         assert.match(String(result.note), /entrance and one for the exit/);
-        assert.match(String(result.note), /clear_scenery|buy the land/, "and what to do about it");
+        // clear_scenery could never have changed this answer: scenery is explicitly not a
+        // blocker for an access tile, so the old "clear_scenery around one of them" pointed
+        // at a call that does nothing here. State what a usable tile is instead.
+        assert.match(String(result.note), /Scenery alone never disqualifies/, "and what a usable tile is");
+        assert.doesNotMatch(String(result.note), /clear_scenery|buy the land/,
+            "without naming a lever, one of which was inert here");
     } finally {
         restore();
     }

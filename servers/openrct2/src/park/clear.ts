@@ -2,6 +2,13 @@ import { readMapGrid, toWorld } from "./map.js";
 
 const STEP_DELAY_MS = 200;
 
+/**
+ * GameActions::Status::InsufficientFunds. The game answers a removal it will not fund with
+ * this and a message naming the price, and the refusal looks from the outside exactly like
+ * a tile nothing would ever clear.
+ */
+const INSUFFICIENT_FUNDS = 4;
+
 /** A rectangle of tiles, both corners included. */
 export interface TileRect {
     left: number;
@@ -13,8 +20,20 @@ export interface TileRect {
 export interface ClearAreaOutcome {
     ok: boolean;
     tilesRequested: number;
-    /** Tiles still not bare: occupied by something unremovable, or outside the park. */
+    /** Tiles still not bare, for whatever reason: the sum of the three counts below. */
     tilesStillBlocked: number;
+    /** Tiles a ride, a path or a park structure stands on. Nothing here removes those. */
+    tilesOccupied: number;
+    /** Tiles whose scenery is still standing because the game refused to take it down.
+     *  A different problem from an occupied tile and usually a cheaper one: `refusals`
+     *  carries the game's own words for it. */
+    tilesRefused: number;
+    /** Tiles outside the park's land. */
+    tilesOutsidePark: number;
+    /** The game's reason for each refusal, in its own words, one entry per distinct reason. */
+    refusals: string[];
+    /** True when at least one refusal was the game saying the park cannot pay for it. */
+    notEnoughCash: boolean;
     /** The tiles this call actually worked on, whichever form asked for them. A square
      *  centred on a site's origin is not the site's footprint, so the caller can see which
      *  ground was taken rather than assuming it got the one it meant. */
@@ -48,6 +67,11 @@ export function rectTileCount(area: TileRect): number {
     return (bounds.right - bounds.left + 1) * (bounds.bottom - bounds.top + 1);
 }
 
+/** The game's own words for a refusal. Same shape `src/park/build.ts` quotes them in. */
+function actionError(result: GameActionResult): string {
+    return (result.errorTitle || "") + (result.errorMessage ? ": " + result.errorMessage : "");
+}
+
 /**
  * Removes scenery, walls and banners from a rectangle of tiles, both corners included.
  * Nothing else is touched: rides, paths and park structures are left alone and reported as
@@ -57,10 +81,19 @@ export function rectTileCount(area: TileRect): number {
  * ride's footprint. `find_build_sites` reports a site's origin, and a flat ride is not
  * centred on it: a 4x4 runs 0..3 from the origin, a 2x2 runs 0..1, a 1x4 runs -2..+1.
  * `centredSquare` is still the shape for ordinary ground, and turns into one of these.
+ *
+ * A tile that is still not bare afterwards is sorted by what the world says about it, not
+ * by assumption. `clearable` says whether what survived is scenery or a structure, so a
+ * refused removal is never reported as a ride standing on the ground; and the game's own
+ * answer to each removal is kept, so the refusal is quoted rather than guessed at. Told
+ * "occupied by a ride" when the truth was "Not enough cash", a model bulldozes elsewhere
+ * and never learns it only needed money.
  */
 export function clearRect(area: TileRect, done: (outcome: ClearAreaOutcome) => void): void {
     const bounds = normaliseRect(area);
     const tiles: { x: number; y: number }[] = [];
+    /** Every refusal the game gave, keyed by the tile it was asked about. */
+    const refused: Record<string, GameActionResult[]> = {};
 
     for (let x = bounds.left; x <= bounds.right; x++) {
         for (let y = bounds.top; y <= bounds.bottom; y++) {
@@ -68,10 +101,25 @@ export function clearRect(area: TileRect, done: (outcome: ClearAreaOutcome) => v
         }
     }
 
+    const recorder = function (key: string): (result: GameActionResult) => void {
+        return function (result) {
+            if (!result || !result.error) {
+                return;
+            }
+
+            if (!refused[key]) {
+                refused[key] = [];
+            }
+
+            refused[key].push(result);
+        };
+    };
+
     for (let i = 0; i < tiles.length; i++) {
         const tile = map.getTile(tiles[i].x, tiles[i].y);
         const x = toWorld(tiles[i].x);
         const y = toWorld(tiles[i].y);
+        const record = recorder(String(tiles[i].x) + "," + String(tiles[i].y));
 
         for (let e = 0; e < tile.numElements; e++) {
             const element = tile.getElement(e);
@@ -80,30 +128,39 @@ export function clearRect(area: TileRect, done: (outcome: ClearAreaOutcome) => v
                 const scenery = element as SmallSceneryElement;
                 context.executeAction("smallsceneryremove", {
                     x: x, y: y, z: scenery.baseZ, object: scenery.object, quadrant: scenery.quadrant
-                }, function () { /* verified by re-read */ });
+                }, record);
             } else if (element.type === "large_scenery") {
                 const scenery = element as LargeSceneryElement;
                 context.executeAction("largesceneryremove", {
                     x: x, y: y, z: scenery.baseZ, direction: scenery.direction, tileIndex: scenery.sequence
-                }, function () { /* verified by re-read */ });
+                }, record);
             } else if (element.type === "banner") {
                 const banner = element as BannerElement;
                 context.executeAction("bannerremove", {
                     x: x, y: y, z: banner.baseZ, direction: banner.direction
-                }, function () { /* verified by re-read */ });
+                }, record);
             } else if (element.type === "wall") {
                 const wall = element as WallElement;
                 context.executeAction("wallremove", {
                     x: x, y: y, z: wall.baseZ, direction: wall.direction
-                }, function () { /* verified by re-read */ });
+                }, record);
             }
         }
     }
 
     context.setTimeout(function () {
         const grid = readMapGrid();
-        let blocked = 0;
+        let occupied = 0;
+        let stillThere = 0;
         let unowned = 0;
+        let notEnoughCash = false;
+        const reasons: string[] = [];
+
+        const noteReason = function (text: string): void {
+            if (reasons.indexOf(text) < 0) {
+                reasons.push(text);
+            }
+        };
 
         for (let i = 0; i < tiles.length; i++) {
             const cell = grid.at(tiles[i].x, tiles[i].y);
@@ -113,26 +170,67 @@ export function clearRect(area: TileRect, done: (outcome: ClearAreaOutcome) => v
                 continue;
             }
 
-            if (!cell.clear) {
-                blocked++;
+            if (cell.clear) {
+                continue;
+            }
+
+            // What survived decides which problem this is. Only scenery left means the
+            // removal was turned down; anything else means a ride, a path or a structure
+            // is standing there and no bulldozing was ever going to move it.
+            if (!cell.clearable) {
+                occupied++;
+                continue;
+            }
+
+            stillThere++;
+            const answers = refused[String(tiles[i].x) + "," + String(tiles[i].y)] || [];
+
+            for (let a = 0; a < answers.length; a++) {
+                if (answers[a].error === INSUFFICIENT_FUNDS) {
+                    notEnoughCash = true;
+                }
+
+                noteReason(actionError(answers[a]));
+            }
+
+            if (answers.length === 0) {
+                noteReason("the game accepted the removal without an error and the scenery is still standing");
             }
         }
 
+        const blocked = occupied + stillThere + unowned;
+        const parts: string[] = [];
+
+        if (blocked === 0) {
+            parts.push("Cleared " + String(tiles.length) + " tiles.");
+        }
+
+        if (unowned > 0) {
+            parts.push(String(unowned) + " of " + String(tiles.length) + " tiles are outside the park's land.");
+        }
+
+        if (occupied > 0) {
+            parts.push(String(occupied) + " of " + String(tiles.length)
+                + " are occupied by something that is not scenery - a ride, a path or a park structure."
+                + " Those have to be removed on their own terms.");
+        }
+
+        if (stillThere > 0) {
+            parts.push("The game would not take the scenery down on " + String(stillThere) + " of "
+                + String(tiles.length) + " tiles. It said: " + reasons.join("; ") + ".");
+        }
+
         done({
-            ok: blocked === 0 && unowned === 0,
+            ok: blocked === 0,
             tilesRequested: tiles.length,
-            tilesStillBlocked: blocked + unowned,
+            tilesStillBlocked: blocked,
+            tilesOccupied: occupied,
+            tilesRefused: stillThere,
+            tilesOutsidePark: unowned,
+            refusals: reasons,
+            notEnoughCash: notEnoughCash,
             area: bounds,
-            detail: (blocked === 0 && unowned === 0
-                ? "Cleared " + String(tiles.length) + " tiles."
-                : "")
-                + (unowned > 0
-                    ? String(unowned) + " of " + String(tiles.length) + " tiles are outside the park's land."
-                    : "")
-                + (blocked > 0
-                    ? " " + String(blocked) + " are occupied by something that is not scenery - a ride, a path or a"
-                        + " park structure. Those have to be removed on their own terms."
-                    : "")
+            detail: parts.join(" ")
         });
     }, STEP_DELAY_MS);
 }

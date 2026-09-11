@@ -518,7 +518,7 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
 
         assert.deepEqual(
             Object.keys(toolsByName).sort(),
-            ["build_flat_ride", "build_path", "clear_scenery", "evaluate", "find_build_sites", "guest_feedback", "hire_staff", "list_ride_objects", "open_park", "operate_ride", "park_status"]
+            ["build_flat_ride", "build_path", "buy_land", "clear_scenery", "evaluate", "find_build_sites", "guest_feedback", "hire_staff", "list_ride_objects", "open_park", "operate_ride", "park_status", "remove_path", "set_game_speed"]
         );
 
         assert.equal(toolsByName.evaluate.annotations?.readOnlyHint, false);

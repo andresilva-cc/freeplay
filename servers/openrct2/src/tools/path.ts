@@ -22,7 +22,7 @@ export class PathTools {
             "Lay a footpath or a queue line. Coordinates are tile coordinates, and every tile you name is paved.",
             "Give `waypoints` to draw the line yourself — a list of corners, laid as straight runs between them.",
             "That is how you control the shape of your park. With only `fromX/fromY` and `toX/toY` the tool picks",
-            "the line for you, which is convenient but means it is choosing your layout.",
+            "the line for you, which means it is choosing your layout.",
             "Give either all four of `fromX`, `fromY`, `toX`, `toY`, or `waypoints`; nothing is defaulted.",
             "Either way it routes around trees, because you cannot see them from here.",
             "Set `queue: true` to build a queue line: a ride's entrance needs a queue tile touching its door,",

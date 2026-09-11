@@ -56,9 +56,12 @@ path does not.
 | `clear_scenery` | Removing scenery from a named patch of ground | Whether felling it is worth the money and the rating |
 | `build_flat_ride` | The create/place/entrance/exit sequence, with correct arguments | What, where, which way round, which doors, what price, whether to open |
 | `build_path` | Placement and routing around obstacles | Where paths go, and whether a run is a queue |
+| `remove_path` | Taking the footpath or queue off named tiles, and what that cost: how much of the network guests can still reach, and any ride whose bound queue went with it | Which tiles to take up, and whether to lay anything back |
 | `operate_ride` | The open, close, reprice, inspect and demolish actions, and what the ride is doing afterwards | Whether a ride should be open, what it should cost, how often it needs inspecting, whether to tear it down |
 | `open_park` | The two actions that admit guests and set admission | When to open, and what to charge |
 | `hire_staff` | The hiring action | Who to hire and how many |
+| `buy_land` | The purchase action, what it cost, the scenario's price per tile, and which of the tiles asked for are not for sale | Whether the park needs more ground, and where |
+| `set_game_speed` | The speed setting and the pause toggle, neither of whose argument shapes is discoverable, and what the game reads back as afterwards | When to run fast, when to run slow, and when to pause |
 | `evaluate` | The whole plugin API, unrestricted | Everything else |
 
 Note what none of them do: none rank options by "best", none choose a site, none decide
@@ -85,6 +88,31 @@ the description says plainly that the tool is then choosing the layout.
 
 Routing better would have hidden the problem. A tool that makes a decision *well* is
 still making it.
+
+### The other half of that decision was missing entirely
+
+Nothing could remove a footpath at all, and `build_path`'s own messages named two
+situations whose only remedy is removal: an ordinary path laid over a queue unbinds it from
+its ride, and a queue laid across a through route splits the park, because guests cannot
+walk through one. Across eight sessions the model severed its park eight times, was told
+accurately what it had done each time, and looped — correct diagnosis, no lever. Naming a
+mistake the model cannot undo is the same defect as not naming it, one step later, and it
+is easier to miss because the tool that names it is working perfectly.
+
+`remove_path` takes the same addressing as `build_path` — `fromX`/`fromY`/`toX`/`toY` or
+`waypoints` — so a `build_path` result's own `route` handed back as `waypoints` lifts
+exactly the tiles that call laid. It routes around nothing, deliberately: a tile either
+carries a footpath or it does not, so there is nothing to route *around*, and the run is
+the literal line, turning once along x and then along y. The two halves of `build_path`'s
+hard case therefore do not both recur here — only the layout half does, and it is the
+caller's line.
+
+What it reports is what removal costs: `tilesRemoved` counted by re-reading each tile,
+how much of the path network is still reachable from the park entrance, and
+`ridesLeftWithoutQueue` — any ride whose bound queue went with the path, which is the
+damage that is otherwise invisible. It puts nothing back and suggests nothing. A ride
+entrance, a ride exit and the park gate are not footpaths, so a run crossing one is refused
+by name rather than reporting a short removal the model has no way to explain.
 
 ## How we got here
 
@@ -136,6 +164,20 @@ The two forms share no argument at all, so which one a call means is never a jud
 half a form is refused rather than completed with a default — a `toX` with no `toY` quietly
 squared off would clear different ground from the ground that was named, and clearing is
 destructive and costs money.
+
+That form is now the one `buy_land` takes as well, for the same reason rather than for
+consistency's sake: the ground a purchase is about is a rectangle, a `find_build_sites` site
+reports its bounds under exactly `fromX`, `fromY`, `toX` and `toY`, and all four are
+required, so buying the ground a site stands on computes nothing on the way across. Buying
+resolves exactly one situation — a tile the park does not own — and the description says so,
+because the neighbouring problems look identical from the model's side and are not reachable
+at all: `landsetrights`, which unowns land or puts it up for sale, carries the game's
+`EditorOnly` flag, so land cannot be sold back and a tile the scenario is not selling cannot
+be made buyable; and levelling is a different surface again (`landsetheight`, `landraise`,
+`landlower`) that nothing in this bridge touches. A rectangle that is half for sale buys the
+half that is and names the tiles it did not get, which is the same rule as everywhere else:
+read the map back and report what is there, rather than failing the whole call or claiming
+the whole rectangle.
 
 The general lesson is worth more than the tool. When a tool keeps needing a workaround, the
 question is not what to default; it is what the arguments are asserting about the world, and
@@ -382,7 +424,7 @@ tool that passed its own tests, and most were found by asking what a result woul
 if it were wrong, not by a run failing. The model's actual play has still barely been
 measured.
 
-## The clock is the harness's problem, not the model's
+## The clock is the model's problem, and that is a reversal
 
 A local model takes seconds to tens of seconds per decision. If the game is running
 while it thinks, thinking time is charged against the scenario clock, and a slower model
@@ -390,7 +432,27 @@ scores worse for being slow rather than for playing worse. In a test run the gam
 advanced a full scenario year while the bridge was being debugged, and the objective
 failed on time alone.
 
-So pacing belongs to the harness: pause while the model decides, advance a fixed number
-of ticks after it acts. `gamesetspeed` and `pausetoggle` are ordinary game actions, which
-makes this straightforward — but it has to be deliberate, or every run silently measures
-inference speed instead of play.
+This page used to conclude from that that pacing belonged to the harness — pause while the
+model decides, advance a fixed number of ticks after it acts. That is no longer the
+decision, and the earlier one is recorded here rather than quietly deleted.
+
+The argument that overturned it is this document's own rule pointed at the clock. A human
+playing OpenRCT2 controls game speed and the pause key, and uses them constantly: running
+fast through a quiet stretch and pausing to lay out a junction are both *playing*, not
+scaffolding around playing. A harness that paces the game for the model takes that away and
+makes a decision on its behalf, which is the thing the whole page is against — and it makes
+the runs measure a different game from the one a person plays.
+
+So `set_game_speed` hands both levers over, and the model spends or saves scenario time the
+way a player does. This is knowingly a lever over its own scoring: a model that leaves the
+game at speed 4 while it deliberates will lose months it did not mean to spend, and that
+will show up as a failed objective. That is the point. Mispacing is now a play failure and
+reads as one in the transcript, where before it was invisible in the harness's settings.
+
+The tool states the mechanic and nothing else. Both actions have undiscoverable shapes —
+`gamesetspeed` takes a setting that looks like a multiplier and is not (the loop runs
+`1 << (speed - 1)` updates, so 1, 2, 3, 4 mean normal, twice, four times and eight times,
+and asking for 8 meaning eight times is out of range), and `pausetoggle` flips rather than
+sets, so asking to pause twice unpauses unless something reads the state first. Carrying
+those is mechanics. Saying when to use them would be playing, so the description says
+plainly that when to run fast, when to run slow and when to pause are the model's.

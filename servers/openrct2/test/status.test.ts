@@ -810,6 +810,92 @@ test("a ride's price is reported in the tenths the game holds it in", function (
 });
 
 /**
+ * A rating and "no rating yet" are different answers and have to look different.
+ *
+ * Measured in the running game: a freshly built ride reads excitement -1, intensity 0,
+ * nausea 0 and value null, and the same ride once the game has rated it reads excitement
+ * 182, intensity 140, value 39. The -1 is RIDE_RATING_UNDEFINED in a signed 16-bit field,
+ * which the plugin API hands over raw - `value` is the only one it converts. Reported as a
+ * number it reads as a rating of -0.1, and a ride the game has not looked at yet becomes a
+ * ride the game hates.
+ */
+test("a ride the game has not rated reports no ratings rather than the sentinel", function () {
+    withPark(function (game) {
+        game.rides = [ride(0, null, null)];
+        // Exactly what the game holds for a ride it has not rated.
+        game.rides[0].excitement = -1;
+        game.rides[0].intensity = 0;
+        game.rides[0].value = null;
+    }, function (game) {
+        const held = game.rides[0];
+
+        assert.equal(held.excitement, -1, "the game is holding the undefined-rating sentinel");
+        assert.equal(held.value, null, "and no value, because it works one out from the ratings");
+
+        const found = summary(0);
+
+        assert.equal(found.excitement, null, "-1 is not a rating and must not be reported as one");
+        assert.equal(found.intensity, null, "and 0 alongside it is not a measurement either");
+        assert.equal(found.value, null);
+    });
+});
+
+test("once the game rates a ride, the ratings it worked out are reported unchanged", function () {
+    withPark(function (game) {
+        game.rides = [ride(0, null, null)];
+        game.rides[0].excitement = -1;
+        game.rides[0].intensity = 0;
+        game.rides[0].value = null;
+        // The numbers the same ride came back with after the game rated it.
+        game.rateRide(0, { excitement: 182, intensity: 140, value: 39 });
+    }, function (game) {
+        const held = game.rides[0];
+        const found = summary(0);
+
+        assert.equal(found.excitement, held.excitement, "182, the number the game holds");
+        assert.equal(found.intensity, held.intensity);
+        assert.equal(found.value, held.value);
+        assert.notEqual(found.excitement, null, "a rated ride must not read as an unrated one");
+    });
+});
+
+test("a rated ride that scored zero is a measurement, not a missing one", function () {
+    // The game rates every shop 0.00 across the board, so keying "unrated" off a falsy or
+    // low rating would report a rated stall as never measured. Only the sentinel means it.
+    withPark(function (game) {
+        game.rides = [ride(0, null, null)];
+        game.rateRide(0, { excitement: 0, intensity: 0, value: 0 });
+    }, function (game) {
+        assert.equal(game.rides[0].excitement, 0, "the game holds a real rating of 0.00");
+
+        const found = summary(0);
+
+        assert.equal(found.excitement, 0, "which is a measurement and comes back as the number it is");
+        assert.equal(found.intensity, 0);
+        assert.equal(found.value, 0);
+    });
+});
+
+test("a ride the game has only just created has no ratings and no value", function () {
+    // Through the game's own ridecreate rather than a literal, so the state under test is
+    // the one a build actually leaves behind.
+    withPark(function () { /* the ride is created inside the run */ }, function (game) {
+        context.executeAction("ridecreate", { rideType: 33, rideObject: 0 }, function () { /* read back */ });
+        game.applyQueuedActions();
+
+        assert.equal(game.rides.length, 1, "the fake created the ride");
+        assert.equal(game.rides[0].excitement, -1, "and left it unrated, the way the game does");
+        assert.equal(game.rides[0].value, null);
+
+        const found = summary(game.rides[0].id);
+
+        assert.equal(found.excitement, null, "so park_status has nothing to report for it");
+        assert.equal(found.intensity, null);
+        assert.equal(found.value, null);
+    });
+});
+
+/**
  * `price` and `value` together are the whole diagnosis of an overpriced ride: charge far
  * above what a guest thinks it is worth and they walk past, which looks exactly like a ride
  * nobody can reach. Either field echoing the other makes that diagnosis impossible.
@@ -1024,4 +1110,21 @@ test("`price` against `value` is stated as a symptom, not as a price to charge",
     assert.match(text, /Price well above it and they walk past/);
     assert.match(text, /looks exactly like a ride nobody can reach/, "the two causes it separates");
     assert.doesNotMatch(text, /\bshould\b|\brecommend|\badvis/i, "and no instruction on what to charge");
+});
+
+test("the description says a null rating is a measurement that has not been taken yet", function () {
+    // Without it, a model that sees null where it expected a number reads the tool as broken
+    // and goes looking for the rating somewhere else. When ratings appear is a rule of the
+    // game it cannot read anywhere: they arrive a little after the ride opens with guests
+    // able to reach it.
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "parkStatus";
+    });
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /null until the ride has been rated/, "which fields are null and when");
+    assert.match(text, /after it opens/, "and when the rating turns up");
+    assert.match(text, /has not measured the ride yet/,
+        "null is the absence of a measurement, not a low one");
 });

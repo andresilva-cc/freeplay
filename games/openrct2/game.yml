@@ -40,12 +40,19 @@ launch:
 
 speed:
   # Rendering stays on: inference dominates wall-clock, so frame time is not the
-  # bottleneck. Game speed is the throughput lever.
+  # bottleneck. Game speed is the throughput lever, and the model holds it: both actions
+  # below are wrapped by the set_game_speed tool.
   action: gamesetspeed
-  values: [1, 2, 4, 8]
+  # The game's own range, from GameSetSpeedAction::IsValidSpeed. These are speed SETTINGS,
+  # not multipliers: the loop runs 1 << (speed - 1) updates, so 1 is normal, 2 is twice,
+  # 3 is four times and 4 is eight times. 5 to 8 exist only with the game's debugging
+  # tools on, which a plugin can neither read nor enable.
+  values: [1, 2, 3, 4]
   default: 1
+  # speed 4, i.e. eight times normal.
   example: 'context.executeAction("gamesetspeed", { speed: 4 }, function (r) {})'
   pause:
+    # Toggles rather than sets, so read context.paused before firing it.
     action: pausetoggle
     example: 'context.executeAction("pausetoggle", {}, function (r) {})'
 
@@ -53,7 +60,7 @@ agent:
   # The one system prompt. scripts/run.sh copies it to pi/SYSTEM.md on every run, and
   # that copy is gitignored: edit this file, never the copy.
   system_prompt: games/openrct2/prompt.md
-  # Eleven, matching src/tools/index.ts. Every one is re-read by the model each turn.
+  # Fourteen, matching src/tools/index.ts. Every one is re-read by the model each turn.
   tools:
     # Perception: what a player reads off the screen.
     - park_status
@@ -65,8 +72,12 @@ agent:
     - clear_scenery
     - build_flat_ride
     - build_path
+    - remove_path
     - operate_ride
     - open_park
     - hire_staff
+    - buy_land
+    # The clock. A human player controls game speed, so the model does too.
+    - set_game_speed
     # Everything else.
     - evaluate

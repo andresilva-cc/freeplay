@@ -8,6 +8,20 @@ const RIDE_FLAG_QUEUE_FULL = 1 << 9;
 const RIDE_FLAG_CRASHED = 1 << 10;
 
 /**
+ * RIDE_RATING_UNDEFINED, the game's own "this ride has not been rated yet".
+ *
+ * It is a sentinel stored in a signed 16-bit field, and the plugin API hands the ratings
+ * over raw, so it arrives as -1 and reads exactly like a rating of -0.1. `value` is the
+ * one the API does convert, to null, and it converts it because the game refuses to work
+ * a value out for a ride with no ratings - the two are set by the same step. Nothing on
+ * `Ride` marks the ride as rated, and `intensity` and `nausea` sit at 0 until it is
+ * (measured: a fresh build reads excitement -1, intensity 0, nausea 0), so neither of
+ * them can tell an unrated ride from a genuinely dull one. This is the test the game
+ * itself uses, against the one field that carries the sentinel.
+ */
+const RIDE_RATING_UNDEFINED = -1;
+
+/**
  * Every stream in the game's own ExpenditureType. All of them, because the sum is
  * reported as net profit: leaving construction and land out of it showed a month in
  * profit that the game's own finance graph showed in the red.
@@ -32,12 +46,13 @@ export interface RideSummary {
     id: number;
     name: string;
     status: string;
-    /** Fixed-point: 652 means 6.52. -1 means not yet rated. */
-    excitement: number;
-    intensity: number;
+    /** Fixed-point: 652 means 6.52. Null until the ride has been rated. */
+    excitement: number | null;
+    intensity: number | null;
     price: number;
-    /** What the ride is worth to a guest. Charge far above this and they refuse to ride. */
-    value: number;
+    /** What the ride is worth to a guest. Charge far above this and they refuse to ride.
+     *  Null until the ride has been rated, which is when the game works it out. */
+    value: number | null;
     totalCustomers: number;
     totalProfit: number;
     queueTime: number;
@@ -233,14 +248,18 @@ export function readParkStatus(): ParkStatus {
         const counter = overTheCounter
             ? shopCounterTile(station ? station.start : null, ride.id)
             : null;
+        // A rated ride can legitimately score zero - the game rates every shop 0.00 - so
+        // only the sentinel separates "not measured yet" from "measured and low".
+        const rated = ride.excitement !== RIDE_RATING_UNDEFINED;
 
         return {
             id: ride.id,
             name: ride.name,
             status: ride.status,
-            excitement: ride.excitement,
-            intensity: ride.intensity,
+            excitement: rated ? ride.excitement : null,
+            intensity: rated ? ride.intensity : null,
             price: ride.price.length > 0 ? ride.price[0] : 0,
+            // Already null from the API when the game has not worked one out. Passed through.
             value: ride.value,
             totalCustomers: ride.totalCustomers,
             totalProfit: ride.totalProfit,

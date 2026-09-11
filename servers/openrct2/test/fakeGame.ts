@@ -15,6 +15,8 @@ export interface FakeElement {
     type: string;
     baseZ?: number;
     hasOwnership?: boolean;
+    /** Surface only: the scenario has put this tile up for sale, so landbuyrights can take it. */
+    forSale?: boolean;
     slope?: number;
     isQueue?: boolean;
     ride?: number | null;
@@ -41,6 +43,10 @@ export interface FakeRide {
     status: string;
     price: number[];
     stations: FakeStation[];
+    /**
+     * Fixed-point ratings. -1 in `excitement` is the game's RIDE_RATING_UNDEFINED, which the
+     * plugin API hands over raw; `intensity` and `nausea` sit at 0 while it does.
+     */
     excitement: number;
     intensity: number;
     totalCustomers: number;
@@ -48,7 +54,9 @@ export interface FakeRide {
     downtime: number;
     reliability: number;
     flags: number;
-    value: number;
+    /** Null while the ride has no ratings: the plugin API converts RIDE_VALUE_UNDEFINED
+     *  itself, so this is the one sentinel that never reaches a plugin as a number. */
+    value: number | null;
 }
 
 export interface FakeGuest {
@@ -75,6 +83,11 @@ interface QueuedAction {
 const STAFF_TYPE_NAMES: Record<number, string> = {
     0: "handyman", 1: "mechanic", 2: "security", 3: "entertainer"
 };
+
+/** Money the way the game prints it in an error: tenths of a unit, so 150 is £15.00. */
+function formatMoney(tenths: number): string {
+    return "£" + (tenths / 10).toFixed(2);
+}
 
 /**
  * Offsets of each flat-ride piece, unrotated, in tiles.
@@ -175,6 +188,20 @@ export class FakeGame {
     public inert: boolean;
     /** Action names to refuse, to test a step failing mid-sequence. */
     public refuse: Record<string, boolean> = {};
+    /**
+     * What taking one piece of small or large scenery down costs, in tenths of a currency
+     * unit. Zero - the default - keeps removal free, which is how every suite that predates
+     * the money check sees it. Set it and removals are paid for out of `parkValues.cash`,
+     * and refused with the game's own InsufficientFunds once the park cannot afford one.
+     */
+    public sceneryRemovalCost = 0;
+    /**
+     * How many entertainer costumes this park has loaded. `staffhire` names a costume by
+     * index and the game refuses any index past them, so 0 is a scenario where no
+     * entertainer can be hired at all - which is what Forest Frontiers is. One - the
+     * default - leaves costume 0 there, the only one this plugin ever asks for.
+     */
+    public entertainerCostumes = 1;
     /** Staff hired through the staffhire action, or put there by `addStaff`. */
     public readonly staff: FakeStaff[] = [];
     /** Guests in the park, as `map.getAllEntities("guest")` returns them. */
@@ -190,7 +217,19 @@ export class FakeGame {
         guests: 0,
         suggestedGuestMaximum: 200,
         entranceFee: 0,
-        companyValue: 150000
+        companyValue: 150000,
+        /** What one tile of land costs, in tenths, as the scenario sets it. */
+        landPrice: 200
+    };
+    /**
+     * The clock, as `context` reports it. `speed` is the game's own setting and not a
+     * multiplier - the real loop runs `1 << (speed - 1)` updates per frame - and only 1 to
+     * 4 are accepted, exactly as `GameSetSpeedAction::IsValidSpeed` accepts them without
+     * debugging tools. `pausetoggle` flips `paused` rather than setting it.
+     */
+    public readonly gameValues = {
+        speed: 1,
+        paused: false
     };
     /** Park flags by name, as `park.getFlag` reads them. Unset names are false. */
     public readonly parkFlags: Record<string, boolean> = { open: false };
@@ -238,6 +277,15 @@ export class FakeGame {
         this.tile(x, y).elements[0].hasOwnership = owned;
     }
 
+    /**
+     * Put a tile up for sale, the way a scenario does. Only tiles marked this way can be
+     * bought: the game answers `landbuyrights` on anything else with an error it then
+     * ignores, so an unsold tile is silently left alone rather than failing the call.
+     */
+    public putUpForSale(x: number, y: number, forSale = true): void {
+        this.tile(x, y).elements[0].forSale = forSale;
+    }
+
     public addScenery(x: number, y: number, type = "small_scenery"): void {
         this.tile(x, y).elements.push({ type: type, baseZ: 96, object: 0, direction: 0 });
     }
@@ -278,6 +326,22 @@ export class FakeGame {
         this.guests.push(added);
         this.parkValues.guests = this.guests.length;
         return added;
+    }
+
+    /**
+     * The step the game runs a little after a ride opens: it works the ratings out and
+     * fills `value` in from them, which is why an unrated ride has neither.
+     */
+    public rateRide(id: number, ratings: { excitement: number; intensity: number; value: number }): void {
+        const ride = this.findRide(id);
+
+        if (!ride) {
+            throw new Error("the fake game has no ride " + String(id) + " to rate");
+        }
+
+        ride.excitement = ratings.excitement;
+        ride.intensity = ratings.intensity;
+        ride.value = ratings.value;
     }
 
     /** Put a staff member in the park without going through the hiring action. */
@@ -326,8 +390,12 @@ export class FakeGame {
             this.rides.push({
                 id: id, name: "Ride " + String(id), type: args.rideType as number, status: "closed",
                 price: [0], stations: [{ start: null, entrance: null, exit: null, length: 0, queueTime: 0 }],
-                excitement: -1, intensity: -1, totalCustomers: 0, totalProfit: 0,
-                downtime: 0, reliability: 100, flags: 0, value: 40
+                // The state a real freshly built ride is in, measured in the running game:
+                // excitement is the RIDE_RATING_UNDEFINED sentinel, intensity and nausea are
+                // left at 0, and value comes back null. A fake that handed out a rating and a
+                // value here would let the unrated case pass untested.
+                excitement: -1, intensity: 0, totalCustomers: 0, totalProfit: 0,
+                downtime: 0, reliability: 100, flags: 0, value: null
             });
             return { error: 0, ride: id };
         }
@@ -458,7 +526,18 @@ export class FakeGame {
         }
 
         if (action.name === "staffhire") {
-            this.staff.push({ staffType: STAFF_TYPE_NAMES[args.staffType as number] || "handyman" });
+            const staffType = STAFF_TYPE_NAMES[args.staffType as number] || "handyman";
+
+            // StaffHireNewAction checks an entertainer's costume index against the costumes
+            // this park has loaded and refuses anything past them, which is how a scenario
+            // with no entertainer costume at all turns down every entertainer there is.
+            if (staffType === "entertainer" && (args.costumeIndex as number) >= this.entertainerCostumes) {
+                return {
+                    error: 1, errorTitle: "Can't hire new staff", errorMessage: "Value out of range"
+                };
+            }
+
+            this.staff.push({ staffType: staffType });
             return { error: 0 };
         }
 
@@ -491,19 +570,121 @@ export class FakeGame {
             return { error: 0 };
         }
 
+        if (action.name === "gamesetspeed") {
+            const speed = args.speed as number;
+
+            // GameSetSpeedAction::IsValidSpeed. 5 to 8 exist only with debugging tools on,
+            // which a plugin can neither set nor read, so they are out of range here.
+            if (speed < 1 || speed > 4 || Math.floor(speed) !== speed) {
+                return {
+                    error: 1, errorTitle: "Invalid parameter", errorMessage: "Value out of range"
+                };
+            }
+
+            this.gameValues.speed = speed;
+            return { error: 0 };
+        }
+
+        if (action.name === "pausetoggle") {
+            // The action toggles. Something that fires it to reach a state it is already in
+            // leaves the game in the other one, which is the bug this models.
+            this.gameValues.paused = !this.gameValues.paused;
+            return { error: 0 };
+        }
+
+        if (action.name === "landbuyrights") {
+            // Only LandBuyRightSetting::buyLand is modelled. Answering for a setting this
+            // does not carry out would be the same lie as answering for an unknown action.
+            if (args.setting !== 0) {
+                throw new Error("the fake game only applies landbuyrights setting 0 (buy land), not "
+                    + String(args.setting));
+            }
+
+            return this.buyLandRights(args);
+        }
+
         if (action.name === "smallsceneryremove" || action.name === "largesceneryremove"
             || action.name === "wallremove" || action.name === "bannerremove") {
             const removing = action.name.replace("remove", "");
             const type = removing === "smallscenery" ? "small_scenery"
                 : (removing === "largescenery" ? "large_scenery" : removing);
+            // Only scenery is charged for: WallRemoveAction sets cost 0 and BannerRemoveAction
+            // refunds, which is the same split the tool's own description states.
+            const price = removing === "smallscenery" || removing === "largescenery"
+                ? this.sceneryRemovalCost
+                : 0;
+
+            if (price > this.parkValues.cash) {
+                // GameActions::Status::InsufficientFunds, worded the way the game words it.
+                return {
+                    error: 4, errorTitle: "Can't remove this",
+                    errorMessage: "Not enough cash - requires " + formatMoney(price), cost: price
+                };
+            }
+
+            this.parkValues.cash -= price;
             const tile = this.tile(tileX, tileY);
             tile.elements = tile.elements.filter(function (e) { return e.type !== type; });
-            return { error: 0 };
+            return { error: 0, cost: price };
         }
 
         // An action the fake does not model must not read as one that worked. Answering
         // `error: 0` to anything at all is the same lie the tools are being tested for.
         throw new Error("the fake game does not apply the \"" + action.name + "\" action");
+    }
+
+    /**
+     * Buys the land rights to a world-coordinate rectangle, the way LandBuyRightsAction does.
+     *
+     * The game walks the rectangle a tile at a time. A tile the park already owns is skipped
+     * at no cost; a tile the scenario has not put up for sale answers `notOwned`, and the
+     * action ignores that error and carries on, so a rectangle that is half for sale buys the
+     * half that is and reports no failure at all. The whole cost is then checked against the
+     * park's cash before anything is applied, so a rectangle the park cannot afford buys none
+     * of it. Buying replaces the tile's ownership flags outright, which is why the for-sale
+     * mark does not survive the purchase.
+     */
+    private buyLandRights(args: Record<string, number & boolean>): Record<string, unknown> {
+        const left = Math.min(args.x1 as number, args.x2 as number) / 32;
+        const right = Math.max(args.x1 as number, args.x2 as number) / 32;
+        const top = Math.min(args.y1 as number, args.y2 as number) / 32;
+        const bottom = Math.max(args.y1 as number, args.y2 as number) / 32;
+        const buyable: { x: number; y: number }[] = [];
+
+        for (let y = top; y <= bottom; y++) {
+            for (let x = left; x <= right; x++) {
+                if (!this.inBounds(x, y)) {
+                    continue;
+                }
+
+                const surface = this.tile(x, y).elements[0];
+
+                if (surface.hasOwnership || surface.forSale !== true) {
+                    continue;
+                }
+
+                buyable.push({ x: x, y: y });
+            }
+        }
+
+        const cost = buyable.length * this.parkValues.landPrice;
+
+        if (cost > this.parkValues.cash) {
+            // GameActions::Status::InsufficientFunds, worded the way the game words it.
+            return {
+                error: 4, errorTitle: "Can't buy land...",
+                errorMessage: "Not enough cash - requires " + formatMoney(cost), cost: cost
+            };
+        }
+
+        for (let i = 0; i < buyable.length; i++) {
+            const surface = this.tile(buyable[i].x, buyable[i].y).elements[0];
+            surface.hasOwnership = true;
+            surface.forSale = false;
+        }
+
+        this.parkValues.cash -= cost;
+        return { error: 0, cost: cost };
     }
 
     /**
@@ -658,6 +839,19 @@ function installGlobals(game: FakeGame): () => void {
             }
         },
         queryAction: function () { /* no-op */ },
+        get gameSpeed() { return game.gameValues.speed; },
+        get paused() { return game.gameValues.paused; },
+        /**
+         * The plugin API's own setter, which is not a game action: it takes effect at once
+         * rather than on a later tick. `inert` still holds it, because inert is the fake's
+         * way of saying the world does not change, and a tool that got its way through a
+         * setter there would report a pause the game never took.
+         */
+        set paused(value: boolean) {
+            if (!game.inert) {
+                game.gameValues.paused = value;
+            }
+        },
         getAllObjects: function () { return game.rideObjects; },
         getTrackSegment: function (type: number) {
             const offsets = TRACK_PIECE_OFFSETS[type];
@@ -708,6 +902,7 @@ function installGlobals(game: FakeGame): () => void {
             }
         },
         get companyValue() { return game.parkValues.companyValue; },
+        get landPrice() { return game.parkValues.landPrice; },
         get messages() { return game.messages; },
         getFlag: function (flag: string) { return game.parkFlags[flag] === true; },
         setFlag: function (flag: string, value: boolean) {

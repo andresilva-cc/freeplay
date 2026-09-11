@@ -303,28 +303,35 @@ function facingDirection(offsets: Offset[], perimeter: Offset): number | null {
  * Which constraint nothing got past, so the caller knows what to change rather than
  * re-guessing coordinates. "Nothing found" with no reason produced whole turns of the
  * model inventing tiles instead of asking a different question.
+ *
+ * It names the constraint and stops there. Naming a lever - buy land, level it, clear the
+ * scenery - picks which constraint to relax, which is the caller's call, and two of those
+ * three were false here anyway: no tool levels ground, and scenery never disqualifies a
+ * tile in the first place, so clear_scenery could not have changed either answer.
  */
 function whyNothingFound(shape: FlatRideShape, footprintFits: number, accessFits: number): string {
     const size = String(shape.width) + "x" + String(shape.depth);
 
     if (footprintFits === 0) {
         return "Nothing found: nowhere in the park is a " + size + " block of owned, level tiles all at"
-            + " one height. Trees do not count against it, but rides, paths and slopes do. Buy or level"
-            + " land.";
+            + " one height. Trees do not count against it, but rides, paths and slopes do.";
     }
 
     if (accessFits === 0) {
         return shape.isShop
             ? "Nothing found: " + String(footprintFits) + " tiles fit the shop, but on every one the"
-                + " serving tile - its neighbour in direction `rotation` - is unowned, sloped or built"
-                + " on. Ask for a different `rotation`, or buy the land beside it."
+                + " serving tile - its neighbour in direction `rotation` - is unowned, sloped, at a"
+                + " different height, or carries something other than scenery or an ordinary footpath."
             : "Nothing found: " + String(footprintFits) + " places fit the " + size + " footprint, but none"
                 + " has two usable tiles beside it, and a ride needs one for the entrance and one for the"
-                + " exit. clear_scenery around one of them, or buy the land next to it.";
+                + " exit. A tile counts only when it is owned, level, at the ride's height and carrying"
+                + " nothing but scenery, and the tile its door opens onto is owned and carries nothing but"
+                + " scenery, a footpath, or a queue belonging to no ride. Scenery alone never disqualifies"
+                + " either.";
     }
 
     return "Nothing found: " + String(accessFits) + " places fit with room for doors, but none could be"
-        + " measured against a footpath. build_path out from the park entrance first.";
+        + " measured against a footpath.";
 }
 
 export function findBuildSites(rideObjectIndex: number, limit: number, rotation?: number): SiteSearchResult {
