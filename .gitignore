@@ -10,11 +10,13 @@ out/
 # pi agent state (repo-local agent dir)
 pi/SYSTEM.md
 pi/sessions/
+sessions/
 pi/packages/
 pi/logs/
 pi/auth.json
 pi/trust.json
 pi/models-store.json
+pi/mcp-cache.json
 
 # Editor / agent tooling
 .claude/

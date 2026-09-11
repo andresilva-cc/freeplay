@@ -48,6 +48,7 @@ fi
 cp "$REPO_ROOT/games/openrct2/prompt.md" "$REPO_ROOT/pi/SYSTEM.md"
 
 export PI_CODING_AGENT_DIR="$REPO_ROOT/pi"
+export PI_CODING_AGENT_SESSION_DIR="$REPO_ROOT/pi/sessions"
 
 echo "bridge:  ${BRIDGE_URL}"
 echo "model:   ${OMLX_MODEL} via ${MODEL_BASE_URL}"

@@ -42,7 +42,10 @@ map.rides.map(function (r) { return { id: r.id, name: r.name, status: r.status }
   `monthsElapsed`, `monthProgress` (0–65536).
 - `scenario` — `name`, `details`, `objective`, `status`, `parkRatingWarningDays`,
   `companyValueRecord`. Read `scenario.objective` first: it defines what winning means.
-- `context` — action execution, object lookup, string formatting.
+- `context` — action execution and object lookup. `context.getAllObjects("ride")` lists
+  every loaded ride object; each has `index`, `identifier`, `name` and `rideType` (an
+  array of the type numbers it can be built as). **This is the only way to discover what
+  you are allowed to build — guessing indices does not work.**
 
 A `Ride` has `id`, `name`, `type`, `classification`, `status` (`"closed" | "open" |
 "testing" | "simulating"`), `excitement`, `intensity`, `nausea` (fixed-point: `652`
@@ -69,6 +72,13 @@ return out;
 If `out` comes back `null` the action was queued rather than applied inline — confirm it
 with a follow-up read, e.g. `map.getRide(0).status`.
 
+**Test before you act.** `context.queryAction(name, args, callback)` takes the same
+arguments and returns the same result, including `cost`, without changing anything. Use
+it whenever you are unsure about an argument. Rejections say `Value out of range` without
+naming the field, so when one is rejected, re-query varying one argument at a time rather
+than guessing whole argument sets. Never loop `executeAction` over a range of values to
+find a working one — if one iteration succeeds you have made dozens of real changes.
+
 Actions you will need most:
 
 | Action | Args |
@@ -80,10 +90,25 @@ Actions you will need most:
 | `staffhire` | `{ autoPosition: true, staffType, costumeIndex: 0, staffOrders: 0 }` — staffType 0 handyman, 1 mechanic, 2 security, 3 entertainer |
 | `stafffire` | `{ id }` |
 | `parkmarketing` | `{ type, item, duration }` |
-| `ridecreate` | `{ rideType, rideObject, entranceObject, colour1, colour2, inspectionInterval }` |
+| `ridecreate` | `{ rideType, rideObject, entranceObject, colour1, colour2, inspectionInterval }` — `inspectionInterval` is 0–6, NOT minutes; colours are 0–30 |
 | `ridedemolish` | `{ ride, modifyType: 0 }` |
 | `gamesetspeed` | `{ speed }` — 1, 2, 4 or 8 |
 | `pausetoggle` | `{}` |
+
+Creating a ride means looking the object up first:
+
+```
+var o = context.getAllObjects("ride")[22];   // e.g. Merry-Go-Round
+var out = null;
+context.executeAction("ridecreate", {
+    rideType: o.rideType[0], rideObject: o.index, entranceObject: 0,
+    colour1: 0, colour2: 0, inspectionInterval: 2
+}, function (r) { out = r; });
+return out;
+```
+
+`ridecreate` only registers the ride. It still needs track or a placement, plus an
+entrance and an exit, before it will open.
 
 The full set also covers footpaths, track, scenery, land, water and terrain
 (`footpathplace`, `trackplace`, `landraise`, `smallsceneryplace`, …). Building coasters
