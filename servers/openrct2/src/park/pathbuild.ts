@@ -113,6 +113,7 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
     }
 
     const grid = readMapGrid();
+    const reachableBefore = Object.keys(walkableFromParkEntrance()).length;
     let replacedExistingPath = 0;
     let replacedQueue = 0;
 
@@ -148,6 +149,10 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
         const placed = countPathTiles(tiles);
         const walkable = walkableFromParkEntrance();
         const connected = tileIsWalkable(walkable, request.from) && tileIsWalkable(walkable, request.to);
+        // Measure the damage rather than warn about it in the abstract: a queue laid across
+        // a through route cuts everything beyond it off from the park entrance.
+        const reachableAfter = Object.keys(walkable).length;
+        const lost = reachableBefore + placed - reachableAfter;
 
         done({
             ok: placed === tiles.length && connected,
@@ -166,11 +171,14 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
                     ? " WARNING: " + String(replacedQueue) + " tiles replaced an existing queue line with ordinary path,"
                         + " which unbinds it from its ride. Rebuild that queue."
                     : "")
-                + (replacedExistingPath > 0
-                    ? " WARNING: " + String(replacedExistingPath) + " of those tiles replaced an ordinary footpath."
-                        + " Guests cannot walk through a queue to get anywhere else, so if that tile was part of a"
-                        + " through route, it is now cut in two."
-                    : "")
+                + (lost > 0
+                    ? " WARNING: " + String(lost) + " path tiles are no longer reachable from the park entrance."
+                        + " Guests cannot walk through a queue, so this run cut an existing route in two."
+                        + " Move the queue off the main path, or lay a path around it."
+                    : (replacedExistingPath > 0
+                        ? " " + String(replacedExistingPath) + " tiles replaced an ordinary footpath, but nothing was"
+                            + " cut off by it."
+                        : ""))
         });
     }, STEP_DELAY_MS);
 }
