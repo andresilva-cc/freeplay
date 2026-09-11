@@ -1,5 +1,7 @@
 {
   "defaultProjectTrust": "always",
   "enableInstallTelemetry": false,
-  "sessionDir": "sessions"
+  "sessionDir": "sessions",
+  "lastChangelogVersion": "0.85.1",
+  "theme": "dark"
 }

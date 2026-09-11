@@ -17,11 +17,13 @@ set -a
 . "$REPO_ROOT/.env"
 set +a
 
-: "${OMLX_BASE_URL:?set OMLX_BASE_URL in .env}"
 : "${OMLX_API_KEY:?set OMLX_API_KEY in .env}"
 : "${OMLX_MODEL:?set OMLX_MODEL in .env}"
 BRIDGE_PORT="${FREEPLAY_BRIDGE_PORT:-8080}"
 BRIDGE_URL="http://127.0.0.1:${BRIDGE_PORT}"
+
+# pi/models.json is the single source for the endpoint; pi does not expand $ENV there.
+MODEL_BASE_URL=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["providers"]["omlx"]["baseUrl"])' "$REPO_ROOT/pi/models.json")
 
 if ! curl -fsS -m 3 "${BRIDGE_URL}/v1" >/dev/null 2>&1; then
   cat >&2 <<EOF
@@ -36,8 +38,9 @@ EOF
   exit 1
 fi
 
-if ! curl -fsS -m 5 -H "Authorization: Bearer ${OMLX_API_KEY}" "${OMLX_BASE_URL}/models" >/dev/null 2>&1; then
-  echo "error: no answer from ${OMLX_BASE_URL}. Is oMLX running and is OMLX_API_KEY right?" >&2
+if ! curl -fsS -m 5 -H "Authorization: Bearer ${OMLX_API_KEY}" "${MODEL_BASE_URL}/models" >/dev/null 2>&1; then
+  echo "error: no answer from ${MODEL_BASE_URL}. Is oMLX running, and is OMLX_API_KEY right?" >&2
+  echo "       The endpoint is set in pi/models.json, not .env." >&2
   exit 1
 fi
 
@@ -47,7 +50,7 @@ cp "$REPO_ROOT/games/openrct2/prompt.md" "$REPO_ROOT/pi/SYSTEM.md"
 export PI_CODING_AGENT_DIR="$REPO_ROOT/pi"
 
 echo "bridge:  ${BRIDGE_URL}"
-echo "model:   ${OMLX_MODEL} via ${OMLX_BASE_URL}"
+echo "model:   ${OMLX_MODEL} via ${MODEL_BASE_URL}"
 echo
 
 # --no-builtin-tools leaves `evaluate` as the only tool the model can see, and

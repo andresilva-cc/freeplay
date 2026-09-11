@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"01a091f5-79b4-7129-9ae6-f98bd8f89b7f","timestamp":"2026-09-11T19:32:58.933Z","cwd":"/Users/andresilva/Projects/freeplay"}
+{"type":"session_info","id":"3360a2b3","parentId":null,"timestamp":"2026-09-11T19:32:58.934Z","name":"freeplay-openrct2"}
+{"type":"model_change","id":"454a371c","parentId":"3360a2b3","timestamp":"2026-09-11T19:33:05.800Z","provider":"omlx","modelId":"Qwen3.6-35B-A3B-4bit"}
+{"type":"thinking_level_change","id":"0d945dda","parentId":"454a371c","timestamp":"2026-09-11T19:33:05.800Z","thinkingLevel":"medium"}
+{"type":"message","id":"d7933734","parentId":"0d945dda","timestamp":"2026-09-11T19:33:21.139Z","message":{"role":"user","content":[{"type":"text","text":"Play. Start by reading the scenario objective."}],"timestamp":1789155201137}}
+{"type":"message","id":"31ee711f","parentId":"d7933734","timestamp":"2026-09-11T19:33:21.150Z","message":{"role":"assistant","content":[],"api":"openai-completions","provider":"omlx","model":"Qwen3.6-35B-A3B-4bit","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1789155201147,"errorMessage":"Invalid URL"}}
