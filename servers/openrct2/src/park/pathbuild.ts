@@ -167,12 +167,13 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
             route: [],
             connectedToPark: false,
             detail: "No level, owned, unobstructed route between those points. Clear the way, or give"
-                + " waypoints that go round the obstruction."
+                + " waypoints that go round it. Existing queues also block a route: guests cannot walk"
+                + " through a queue, so paths are never laid across one."
         });
     }
 
     const grid = readMapGrid();
-    const reachableBefore = Object.keys(walkableFromParkEntrance()).length;
+    const reachableBefore = walkableFromParkEntrance();
     let replacedExistingPath = 0;
     let replacedQueue = 0;
 
@@ -205,18 +206,27 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
     }
 
     context.setTimeout(function () {
-        const placed = countPathTiles(tiles);
+        const placed = countPathTiles(tiles, request.queue);
         const walkable = walkableFromParkEntrance();
         const first = request.points[0];
         const last = request.points[request.points.length - 1];
         const connected = tileIsWalkable(walkable, first) && tileIsWalkable(walkable, last);
-        // Measure the damage rather than warn about it in the abstract: a queue laid across
-        // a through route cuts everything beyond it off from the park entrance.
-        const reachableAfter = Object.keys(walkable).length;
-        const lost = reachableBefore + placed - reachableAfter;
+        // Severance is tiles that used to be walkable and no longer are. Comparing raw
+        // totals instead double-counted: laying an unconnected stub left the totals equal
+        // and reported the whole run as "cut off", telling the model to move a queue that
+        // had broken nothing.
+        let lost = 0;
+
+        for (const tile in reachableBefore) {
+            if (reachableBefore[tile] && !walkable[tile]) {
+                lost++;
+            }
+        }
 
         done({
-            ok: placed === tiles.length && connected,
+            // `ok` is whether the path got laid. Whether it reaches the park is
+            // `connectedToPark`: a queue built before its connecting path is not a failure.
+            ok: placed === tiles.length,
             tilesPlaced: placed,
             tilesRouted: tiles.length,
             route: tiles,

@@ -63,13 +63,14 @@ export function footprintOffsets(shape: FlatRideShape, rotation: number): Offset
     const alongX = (rotation % 2) === 0 ? shape.depth : shape.width;
     const alongY = (rotation % 2) === 0 ? shape.width : shape.depth;
 
-    const firstX = -Math.floor(alongX / 2);
-    const firstY = -Math.floor(alongY / 2);
+    // `|| 0` because -Math.floor(1 / 2) is -0, which leaks into every returned offset.
+    const firstX = -Math.floor(alongX / 2) || 0;
+    const firstY = -Math.floor(alongY / 2) || 0;
     const offsets: Offset[] = [];
 
     for (let dx = firstX; dx < firstX + alongX; dx++) {
         for (let dy = firstY; dy < firstY + alongY; dy++) {
-            offsets.push({ dx: dx, dy: dy });
+            offsets.push({ dx: dx || 0, dy: dy || 0 });
         }
     }
 

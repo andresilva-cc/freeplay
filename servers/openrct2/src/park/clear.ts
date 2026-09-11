@@ -1,4 +1,5 @@
 import { readMapGrid, toWorld } from "./map.js";
+import { footprintOffsets } from "./flatRides.js";
 
 const STEP_DELAY_MS = 200;
 
@@ -14,14 +15,13 @@ export interface ClearAreaOutcome {
  * paths and park structures are left alone and reported as still blocking.
  */
 export function clearArea(cx: number, cy: number, size: number, done: (outcome: ClearAreaOutcome) => void): void {
-    const half = Math.floor(size / 2);
-    const tiles: { x: number; y: number }[] = [];
-
-    for (let dx = -half; dx <= half; dx++) {
-        for (let dy = -half; dy <= half; dy++) {
-            tiles.push({ x: cx + dx, y: cy + dy });
-        }
-    }
+    // Use the same offsets a ride of this footprint would occupy, so clearing a site
+    // clears exactly it. A naive -half..+half loop spans size+1 tiles on even sizes:
+    // asking for 4 felled 25 trees rather than 16.
+    const offsets = footprintOffsets({ width: size, depth: size, trackType: 0, isShop: false, name: "area" }, 0);
+    const tiles = offsets.map(function (offset) {
+        return { x: cx + offset.dx, y: cy + offset.dy };
+    });
 
     for (let i = 0; i < tiles.length; i++) {
         const tile = map.getTile(tiles[i].x, tiles[i].y);
@@ -40,6 +40,11 @@ export function clearArea(cx: number, cy: number, size: number, done: (outcome: 
                 const scenery = element as LargeSceneryElement;
                 context.executeAction("largesceneryremove", {
                     x: x, y: y, z: scenery.baseZ, direction: scenery.direction, tileIndex: scenery.sequence
+                }, function () { /* verified by re-read */ });
+            } else if (element.type === "banner") {
+                const banner = element as BannerElement;
+                context.executeAction("bannerremove", {
+                    x: x, y: y, z: banner.baseZ, direction: banner.direction
                 }, function () { /* verified by re-read */ });
             } else if (element.type === "wall") {
                 const wall = element as WallElement;

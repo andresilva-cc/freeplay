@@ -209,7 +209,10 @@ export function readParkStatus(): ParkStatus {
 }
 
 export interface GuestFeedback {
+    /** Guests in the park. */
     guests: number;
+    /** How many of them these counts came from. */
+    sampled: number;
     /** Every thought guests are having, most common first. */
     thoughts: { thought: string; count: number }[];
     averageHappiness: number;
@@ -247,6 +250,7 @@ export function readGuestFeedback(sampleSize: number): GuestFeedback {
 
     return {
         guests: guests.length,
+        sampled: sampled,
         thoughts: ordered,
         averageHappiness: sampled > 0 ? Math.round(happiness / sampled) : 0,
         averageCash: sampled > 0 ? Math.round(cash / sampled) : 0

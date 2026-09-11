@@ -260,7 +260,8 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                         const exitDoor = apronTile(access.exit);
                         const queued = queuePathServes(entranceDoor, created);
                         const exitOk = tileIsWalkable(nowWalkable, exitDoor);
-                        reachable = queued && tileIsWalkable(nowWalkable, entranceDoor);
+                        // Both halves matter: a ride guests can enter but not leave backs up.
+                        reachable = queued && tileIsWalkable(nowWalkable, entranceDoor) && exitOk;
 
                         steps.push({
                             step: "access",
@@ -303,6 +304,16 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                     context.setTimeout(function () {
                         const ride = map.getRide(created);
                         const opened = ride.status === "open";
+                        const actualPrice = ride.price.length > 0 ? ride.price[0] : 0;
+
+                        steps.push({
+                            step: "price",
+                            ok: actualPrice === request.price,
+                            detail: actualPrice === request.price
+                                ? "charging " + String(actualPrice)
+                                : "asked for " + String(request.price) + " but the ride is charging "
+                                    + String(actualPrice) + "; the scenario may fix ride prices."
+                        });
 
                         if (request.open && !opened) {
                             steps.push({ step: "open", ok: false, detail: "Ride is still " + ride.status + "." });

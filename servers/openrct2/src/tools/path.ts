@@ -48,11 +48,30 @@ export class PathTools {
 
         const queue = args.queue === true;
 
-        const waypoints = Array.isArray(args.waypoints)
-            ? (args.waypoints as { x?: unknown; y?: unknown }[]).map(function (point) {
-                return { x: number(point.x), y: number(point.y) };
-            })
-            : [];
+        const waypoints: { x: number; y: number }[] = [];
+
+        if (Array.isArray(args.waypoints)) {
+            const given = args.waypoints as { x?: unknown; y?: unknown }[];
+
+            for (let i = 0; i < given.length; i++) {
+                const point = given[i];
+
+                // Coercing a malformed point to -1 would quietly route from off the map.
+                if (!point || typeof point.x !== "number" || typeof point.y !== "number") {
+                    return {
+                        deferred: true,
+                        start: function (resolve) {
+                            resolve({
+                                ok: false,
+                                error: "waypoints[" + String(i) + "] needs a numeric x and y."
+                            });
+                        }
+                    };
+                }
+
+                waypoints.push({ x: Math.floor(point.x), y: Math.floor(point.y) });
+            }
+        }
 
         const request = {
             points: waypoints.length >= 2

@@ -134,11 +134,16 @@ export function tileIsWalkable(walkable: Record<string, boolean>, tile: Tile): b
     return walkable[key(tile.x, tile.y)] === true;
 }
 
-export function countPathTiles(tiles: Tile[]): number {
+/**
+ * How many of these tiles now carry a path of the kind we meant to lay. Checking only
+ * "is there a footpath here" would count tiles that were already paved, so a run where
+ * every placement silently failed still reported success.
+ */
+export function countPathTiles(tiles: Tile[], wantQueue: boolean): number {
     let placed = 0;
 
     for (let i = 0; i < tiles.length; i++) {
-        if (isPath(tiles[i].x, tiles[i].y)) {
+        if (isPath(tiles[i].x, tiles[i].y) && isQueue(tiles[i].x, tiles[i].y) === wantQueue) {
             placed++;
         }
     }

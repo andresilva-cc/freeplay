@@ -23,6 +23,8 @@ export interface AccessOption {
      *  Two options sharing a side make a short, straight queue. */
     side: string;
     door: DoorTile;
+    /** Trees or scenery stand on this tile or its door; clear_scenery them first. */
+    needsClearing: boolean;
     /** Tiles from the door to the nearest existing footpath. 0 means it is already on one. */
     pathDistance: number;
 }
@@ -39,7 +41,8 @@ export interface BuildSite {
     access: AccessOption[];
     /** How many positions exist in total, before this list was trimmed. */
     accessTotal: number;
-    /** Distance to the nearest footpath: from the best door, or from the shop itself. */
+    /** Distance to the nearest footpath: from the best door, or from the shop itself.
+     *  -1 when the park has no footpath at all. */
     pathDistance: number;
     /** Tiles to the nearest existing ride. Small numbers mean no room for queues between them. */
     nearestRideDistance: number;
@@ -114,6 +117,12 @@ function collectPathTiles(grid: MapGrid): { x: number; y: number }[] {
     }
 
     return tiles;
+}
+
+/** -1 rather than Infinity, which JSON turns into null. */
+function pathDistanceOrNone(paths: { x: number; y: number }[], x: number, y: number): number {
+    const distance = nearestPathDistance(paths, x, y);
+    return distance === Infinity ? -1 : distance;
 }
 
 function nearestPathDistance(paths: { x: number; y: number }[], x: number, y: number): number {
@@ -194,7 +203,10 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     const tile = { x: cx + perimeter[p].dx, y: cy + perimeter[p].dy };
                     const cell = grid.at(tile.x, tile.y);
 
-                    if (!cell || !cell.owned || !cell.flat || !cell.clear || cell.baseZ !== area.z) {
+                    // Scenery is not a blocker here any more than it is on the footprint:
+                    // a player fells it. Requiring bare ground dropped whole sites in a
+                    // forest because a tree stood where the entrance would go.
+                    if (!cell || !cell.owned || !cell.flat || !cell.clearable || cell.baseZ !== area.z) {
                         continue;
                     }
 
@@ -208,7 +220,7 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     const door = { x: tile.x + outward.dx, y: tile.y + outward.dy };
                     const doorCell = grid.at(door.x, door.y);
 
-                    if (!doorCell || !doorCell.owned) {
+                    if (!doorCell || !doorCell.owned || !doorCell.clearable) {
                         continue;
                     }
 
@@ -217,8 +229,9 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                         y: tile.y,
                         direction: direction,
                         side: SIDE_NAMES[direction % 4],
+                        needsClearing: !cell.clear || !doorCell.clear,
                         door: { x: door.x, y: door.y, isExistingPath: doorCell.path },
-                        pathDistance: nearestPathDistance(paths, door.x, door.y)
+                        pathDistance: pathDistanceOrNone(paths, door.x, door.y)
                     });
                 }
 
@@ -227,8 +240,12 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     continue;
                 }
 
+                const rank = function (distance: number): number {
+                    return distance < 0 ? Infinity : distance;
+                };
+
                 options.sort(function (left, right) {
-                    return left.pathDistance - right.pathDistance;
+                    return rank(left.pathDistance) - rank(right.pathDistance);
                 });
 
                 // Trimming purely by distance to a path can hide a whole side of the ride,
@@ -264,7 +281,9 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
 
 
 
-                if (distanceToPath === Infinity) {
+                // A park with no footpath anywhere leaves every distance infinite. Dropping
+                // those sites would report an empty park as an unbuildable one.
+                if (distanceToPath === Infinity && paths.length > 0) {
                     continue;
                 }
 
@@ -285,17 +304,20 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     access: shown,
                     accessTotal: options.length,
                     nearestRideDistance: nearestRide === Infinity ? -1 : nearestRide,
-                    pathDistance: distanceToPath
+                    pathDistance: distanceToPath === Infinity ? -1 : distanceToPath
                 });
             }
         }
     }
 
+    // Ordered by distance to a footpath only. Preferring bare ground over treed ground at
+    // equal distance would be a preference, not a measurement; sceneryToClear is reported
+    // so the caller can weigh it.
     found.sort(function (left, right) {
-        if (left.pathDistance !== right.pathDistance) {
-            return left.pathDistance - right.pathDistance;
-        }
-        return left.sceneryToClear - right.sceneryToClear;
+        const rank = function (distance: number): number {
+            return distance < 0 ? Infinity : distance;
+        };
+        return rank(left.pathDistance) - rank(right.pathDistance);
     });
 
     // Returning the top N by path distance hands back the same spot N times, which reads

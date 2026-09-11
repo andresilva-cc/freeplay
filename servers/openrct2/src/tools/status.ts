@@ -18,11 +18,11 @@ export class StatusTools {
             "Price well above it and they walk past, which looks exactly like a ride nobody can reach —",
             "customers stay at 0 while the queue sits empty.",
             "`messages` is the game telling you what is wrong in its own words — unreachable rides, breakdowns,",
-            "warnings about the park rating. Read it first; it usually names the problem outright.",
+            "warnings about the park rating. It often names a problem outright.",
             "`paths` gives the park entrance tiles and a sample of the paths guests can reach from it:",
             "those are the targets a new path or queue has to join up with.",
-            "`brokenDown` on a ride means it is earning nothing until a mechanic gets to it — hire one.",
-            "Call this before deciding anything; it is cheaper than piecing the same picture together with evaluate."
+            "`brokenDown` on a ride means it stays shut until a mechanic reaches it.",
+            "It is cheaper than piecing the same picture together with evaluate."
         ].join(" "),
         inputSchema: { type: "object", additionalProperties: false },
         annotations: {
@@ -39,11 +39,13 @@ export class StatusTools {
     @mcpTool({
         name: "Guest feedback",
         description: [
-            "What guests are thinking, counted across the park, most common first.",
+            "What guests are thinking, counted over a sample of them, most common first.",
             "This is the game telling you what is wrong in its own words: whether they cannot find a ride,",
             "think a price is too high, are hungry, lost, or want to go home.",
+            "`sampled` says how many guests the counts came from, against `guests` in the park —",
+            "the counts are of that sample, not of everyone.",
             "Also gives average happiness out of 255 and average cash carried.",
-            "When the park rating falls or guests leave, look here before guessing."
+            "This is the game's own account of why guests are unhappy."
         ].join(" "),
         inputSchema: {
             type: "object",
