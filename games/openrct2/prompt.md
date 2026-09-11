@@ -31,9 +31,13 @@ until the simple things are done.
 
 **`find_build_sites`** — where a given ride fits. Give it a `rideObject` index and it
 works out the footprint for you, in both orientations. Each site has the `x`, `y` and
-`rotation` to build with, `sceneryToClear` (trees in the way), and `access`: every tile
-where an entrance or exit fits, the `door` tile it opens onto, and that door's distance
-to the nearest path.
+`rotation` to build with, `sceneryToClear` (trees in the way), `nearestRideDistance`, and
+`access`: tiles where an entrance or exit fits, the `door` tile each opens onto, and that
+door's distance to the nearest path.
+
+Every ride needs a queue in front of its entrance and a path away from its exit, and
+those need tiles. A site with `nearestRideDistance` of 1 or 2 has no room for either, and
+you will end up with rides that cannot be reached. Leave a few tiles between them.
 
 **`clear_scenery`** — fell trees on a square. Costs money, and guests like scenery.
 

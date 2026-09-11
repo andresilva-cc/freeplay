@@ -38,6 +38,8 @@ export interface BuildSite {
     accessTotal: number;
     /** The shortest door-to-footpath distance among those options. */
     pathDistance: number;
+    /** Tiles to the nearest existing ride. Small numbers mean no room for queues between them. */
+    nearestRideDistance: number;
 }
 
 export interface SiteSearchResult {
@@ -72,6 +74,28 @@ function areaState(grid: MapGrid, cx: number, cy: number, offsets: Offset[]): { 
     }
 
     return z === null ? null : { z: z, scenery: scenery };
+}
+
+/** Tiles already occupied by a ride, so new sites can report how tight the fit is. */
+function collectRideTiles(): { x: number; y: number }[] {
+    const tiles: { x: number; y: number }[] = [];
+
+    for (let y = 0; y < map.size.y; y++) {
+        for (let x = 0; x < map.size.x; x++) {
+            const tile = map.getTile(x, y);
+
+            for (let i = 0; i < tile.numElements; i++) {
+                const type = tile.getElement(i).type;
+
+                if (type === "track" || type === "entrance") {
+                    tiles.push({ x: x, y: y });
+                    break;
+                }
+            }
+        }
+    }
+
+    return tiles;
 }
 
 function collectPathTiles(grid: MapGrid): { x: number; y: number }[] {
@@ -136,6 +160,7 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
 
     const grid = readMapGrid();
     const paths = collectPathTiles(grid);
+    const rideTiles = collectRideTiles();
     const rotations = typeof rotation === "number" ? [rotation % 4] : [0, 1];
     const found: BuildSite[] = [];
 
@@ -203,6 +228,14 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     continue;
                 }
 
+                let nearestRide = Infinity;
+                for (let i = 0; i < rideTiles.length; i++) {
+                    const distance = Math.abs(rideTiles[i].x - cx) + Math.abs(rideTiles[i].y - cy);
+                    if (distance < nearestRide) {
+                        nearestRide = distance;
+                    }
+                }
+
                 found.push({
                     x: cx,
                     y: cy,
@@ -211,6 +244,7 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     sceneryToClear: area.scenery,
                     access: shown,
                     accessTotal: options.length,
+                    nearestRideDistance: nearestRide === Infinity ? -1 : nearestRide,
                     pathDistance: shortest
                 });
             }
@@ -224,10 +258,30 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
         return left.sceneryToClear - right.sceneryToClear;
     });
 
+    // Returning the top N by path distance hands back the same spot N times, which reads
+    // as N options and is not. Keep them a footprint apart so the choice is a real one.
+    const spread = Math.max(shape.width, shape.depth) + 2;
+    const chosen: BuildSite[] = [];
+
+    for (let i = 0; i < found.length && chosen.length < limit; i++) {
+        let tooClose = false;
+
+        for (let c = 0; c < chosen.length; c++) {
+            if (Math.abs(chosen[c].x - found[i].x) + Math.abs(chosen[c].y - found[i].y) < spread) {
+                tooClose = true;
+                break;
+            }
+        }
+
+        if (!tooClose) {
+            chosen.push(found[i]);
+        }
+    }
+
     return {
         ok: true,
         ride: { name: rideObject.name, rideType: rideType, width: shape.width, depth: shape.depth },
-        sites: found.slice(0, limit),
+        sites: chosen,
         totalFound: found.length
     };
 }
