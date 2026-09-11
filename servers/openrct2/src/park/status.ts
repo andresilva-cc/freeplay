@@ -99,7 +99,8 @@ function recentMessages(count: number): string[] {
     const out: string[] = [];
 
     for (let i = start; i < all.length; i++) {
-        out.push(all[i].text);
+        // Messages carry colour and layout codes like {RED} and {NEWLINE}: noise to a reader.
+        out.push(all[i].text.replace(/\{[A-Z_]+\}/g, " ").replace(/\s+/g, " ").trim());
     }
 
     return out;

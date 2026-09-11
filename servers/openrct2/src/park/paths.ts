@@ -27,6 +27,24 @@ function isPath(x: number, y: number): boolean {
     return false;
 }
 
+function isQueue(x: number, y: number): boolean {
+    if (x < 0 || y < 0 || x >= map.size.x || y >= map.size.y) {
+        return false;
+    }
+
+    const tile = map.getTile(x, y);
+
+    for (let i = 0; i < tile.numElements; i++) {
+        const element = tile.getElement(i);
+
+        if (element.type === "footpath" && (element as FootpathElement).isQueue) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /**
  * The park entrance, found by shape: only its structure spans several tiles, so its
  * element sequence runs past 0. Ride entrances and exits are always a single tile.
@@ -67,7 +85,13 @@ export function findParkEntranceTiles(): Tile[] {
     return gate;
 }
 
-/** Every path tile guests can walk to from the park entrance. */
+/**
+ * Every path tile guests can walk to from the park entrance.
+ *
+ * A queue can be joined but not walked through: guests queue along it to reach one ride
+ * and cannot use it as a corridor to anywhere else. So queue tiles are reachable but are
+ * never expanded from, and anything lying beyond one is correctly treated as cut off.
+ */
 export function walkableFromParkEntrance(): Record<string, boolean> {
     const gate = findParkEntranceTiles();
     const seen: Record<string, boolean> = {};
@@ -87,6 +111,10 @@ export function walkableFromParkEntrance(): Record<string, boolean> {
 
     while (queue.length > 0) {
         const current = queue.shift() as Tile;
+
+        if (isQueue(current.x, current.y)) {
+            continue;
+        }
 
         for (let i = 0; i < NEIGHBOURS.length; i++) {
             const x = current.x + NEIGHBOURS[i].dx;
