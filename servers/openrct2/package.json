@@ -13,7 +13,7 @@
     "copy": "cp out/mcp.js \"$HOME/Library/Application Support/OpenRCT2/plugin/freeplay-bridge.js\"",
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
     "test": "node --import tsx --test ./test/*.test.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --project tsconfig.json && tsc --noEmit --project tsconfig.test.json",
     "watch": "nodemon --watch ./src --ext js,ts --exec \"npm run build && npm run copy\""
   },
   "dependencies": {
@@ -24,6 +24,7 @@
     "@rollup/plugin-node-resolve": "^16.0.3",
     "@rollup/plugin-terser": "^1.0.0",
     "@rollup/plugin-typescript": "^12.3.0",
+    "@types/node": "^22.20.2",
     "eslint": "^9.39.4",
     "globals": "^16.5.0",
     "nodemon": "^3.1.14",

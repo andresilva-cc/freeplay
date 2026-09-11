@@ -152,16 +152,19 @@ function callTool(args: Record<string, unknown>): OperateRideOutcome {
     return outcome as unknown as OperateRideOutcome;
 }
 
-function toolDefinition(): {
+/** The definition with each property schema readable as a plain record of its keywords. */
+interface ReadableToolDefinition {
     description?: string;
     inputSchema: { properties?: Record<string, Record<string, unknown>> };
-} {
+}
+
+function toolDefinition(): ReadableToolDefinition {
     const definitions = getMcpToolDefinitions(OperateTools).filter(function (definition) {
         return definition.name === "operate_ride";
     });
 
     assert.equal(definitions.length, 1, "operate_ride is registered once");
-    return definitions[0];
+    return definitions[0] as unknown as ReadableToolDefinition;
 }
 
 test("opening a finished ride reports the status the ride actually has", function () {
@@ -219,6 +222,27 @@ test("a new price is read back from the ride, not echoed from the request", func
         assert.equal(refused.ok, false, "a price that did not change is not a success");
         assert.equal(refused.price, 25, "the reported price is what the ride charges now");
         assert.match(refused.detail, /asked for price 40 but it is charging 25/);
+    } finally {
+        restore();
+    }
+});
+
+test("a price that did not take names no cause the tool never checked", function () {
+    // "the scenario may fix ride prices" used to be appended to every refused price, with no
+    // flag read. `RideSetPriceAction` consults no park flag at all, so a scenario was never
+    // the cause; the clause was a guess the model would have acted on.
+    const { game, restore } = park();
+    addRide(game, { price: 5 });
+    game.refuse.ridesetprice = true;
+
+    try {
+        const outcome = operate({ ride: 0, price: 40 });
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /asked for price 40 but it is charging 5\.$/,
+            "the sentence ends at what was asked for and what was read back");
+        assert.doesNotMatch(outcome.detail, /scenario/, "no cause is named that was never checked");
+        assert.doesNotMatch(outcome.detail, /fix ride prices/);
     } finally {
         restore();
     }

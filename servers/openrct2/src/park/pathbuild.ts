@@ -498,7 +498,6 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
                 + (lost > 0
                     ? " WARNING: " + String(lost) + " path tiles are no longer reachable from the park entrance."
                         + " Guests cannot walk through a queue, so this run cut an existing route in two."
-                        + " Move the queue off the main path, or lay a path around it."
                     : (replacedExistingPath > 0
                         ? " Nothing was cut off by it."
                         : ""))

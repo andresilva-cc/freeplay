@@ -664,10 +664,11 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                         steps.push({
                             step: "price",
                             ok: actualPrice === request.price,
+                            // No cause named: `ridesetprice` consults no park flag, so nothing readable explains this.
                             detail: actualPrice === request.price
                                 ? "charging " + String(actualPrice)
                                 : "asked for " + String(request.price) + " but the ride is charging "
-                                    + String(actualPrice) + "; the scenario may fix ride prices."
+                                    + String(actualPrice) + "."
                         });
 
                         if (request.open && !opened) {

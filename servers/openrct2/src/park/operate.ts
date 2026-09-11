@@ -108,8 +108,8 @@ export function operateRide(request: OperateRideRequest, done: (outcome: Operate
         const notes: string[] = [];
 
         if (!priceOk) {
-            notes.push("asked for price " + String(request.price) + " but it is charging " + String(price)
-                + "; the scenario may fix ride prices");
+            // No cause named: `ridesetprice` consults no park flag, so nothing readable explains this.
+            notes.push("asked for price " + String(request.price) + " but it is charging " + String(price));
         }
 
         if (!statusOk) {

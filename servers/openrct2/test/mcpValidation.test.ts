@@ -399,8 +399,7 @@ test("no registered tool declares an outputSchema, and the one class that does i
  *
  * These drive the plugin over a socket and assert on the bytes the client received. A
  * refusal that only exists on a response object is not a refusal. The reason phrase is
- * deliberately not asserted: HttpResponse has no text for 202 or 403 and writes "OK" for
- * both, which is a wart in src/http/response.ts rather than something to pin here.
+ * deliberately not asserted here; the status code is what these tests are about.
  */
 
 const PROTOCOL_VERSION = "2025-11-25";
@@ -503,7 +502,7 @@ test("an origin the player did not come from never reaches the game", function (
 test("the callers that are meant to reach it still do", function () {
     const app = createApplication();
 
-    [
+    const callers: Array<Record<string, string>> = [
         { Origin: "http://localhost:8080" },
         { Origin: "http://127.0.0.1:8080" },
         { Origin: "http://localhost" },
@@ -511,7 +510,9 @@ test("the callers that are meant to reach it still do", function () {
         // An MCP client over plain HTTP sends no Origin header at all; refusing that would
         // lock every real client out.
         {}
-    ].forEach(function (extra) {
+    ];
+
+    callers.forEach(function (extra) {
         const allowed = postBytes(app, INITIALIZE_BODY, headersWith(extra));
 
         assert.equal(allowed.statusCode, 200, JSON.stringify(extra) + " is a legitimate caller: " + allowed.body);

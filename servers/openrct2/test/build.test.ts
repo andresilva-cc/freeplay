@@ -548,6 +548,26 @@ test("the price is read back, not assumed", function () {
     }
 });
 
+test("a price the ride did not take names no cause the tool never checked", function () {
+    // The same guess operate_ride carried: an unconditional "the scenario may fix ride
+    // prices" on a price that did not land. No flag was read, and `RideSetPriceAction`
+    // reads none either, so there was nothing to read.
+    const { game, restore } = park();
+    game.refuse.ridesetprice = true;
+
+    try {
+        const outcome = build({ price: 25 });
+        const price = outcome.steps.filter(function (s) { return s.step === "price"; })[0];
+
+        assert.equal(price.ok, false);
+        assert.match(String(price.detail), /asked for 25 but the ride is charging 0\.$/,
+            "the step ends at what was asked for and what the ride charges");
+        assert.doesNotMatch(String(price.detail), /scenario/, "no cause is named that was never checked");
+    } finally {
+        restore();
+    }
+});
+
 /**
  * The tiles each footprint should end up on, written out rather than derived, so the
  * test disagrees with the code when the code is wrong. Taken from OpenRCT2's own track
@@ -667,7 +687,7 @@ test("the id in the outcome is the ride the new track belongs to", function () {
             "the first outcome's id names a ride whose track is somewhere else");
         assert.deepEqual(trackTiles(game, second.rideId as number), square(13, 15, 3, 3),
             "the second outcome's id names a ride whose track is somewhere else");
-        assert.equal(doorAt(game, 12, 16, false).ride, second.rideId, "the second ride's entrance is bound to the first");
+        assert.equal(doorAt(game, 12, 16, false)?.ride, second.rideId, "the second ride's entrance is bound to the first");
     } finally {
         restore();
     }

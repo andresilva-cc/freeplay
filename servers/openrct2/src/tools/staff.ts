@@ -84,9 +84,10 @@ export class StaffTools {
                         requested: count,
                         hired: hired,
                         totalStaff: map.getAllEntities("staff").length,
+                        // No cause named: `staffhire` costs nothing, so money is never why one failed.
                         detail: hired === count
                             ? "Hired " + String(hired) + " " + name + "."
-                            : "Only " + String(hired) + " of " + String(count) + " were hired; check you can afford them."
+                            : "Only " + String(hired) + " of " + String(count) + " were hired."
                     });
                 }, 250);
             }

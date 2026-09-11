@@ -73,6 +73,17 @@ class TestController extends HttpController {
     }
 }
 
+/** The descriptor a decorator is handed, refusing rather than passing `undefined` along. */
+function descriptorOf(target: object, key: string): PropertyDescriptor {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+
+    if (typeof descriptor === "undefined") {
+        throw new Error("TestController has no method named " + key);
+    }
+
+    return descriptor;
+}
+
 httpPath("/v1/test")(TestController);
 httpGet("/echo", {
     summary: "Echo request data",
@@ -81,7 +92,7 @@ httpGet("/echo", {
 })(
     TestController.prototype,
     "echo",
-    Object.getOwnPropertyDescriptor(TestController.prototype, "echo")
+    descriptorOf(TestController.prototype, "echo")
 );
 httpGet("/items/:id", {
     summary: "Lookup a param by id",
@@ -90,7 +101,7 @@ httpGet("/items/:id", {
 })(
     TestController.prototype,
     "lookup",
-    Object.getOwnPropertyDescriptor(TestController.prototype, "lookup")
+    descriptorOf(TestController.prototype, "lookup")
 );
 
 test("parseHttpRequest parses method, headers, query parameters, and body", function () {
@@ -189,10 +200,10 @@ test("registerControllers uses decorated controller classes and creates a new in
 });
 
 test("createApplication provides the automatic /v1 index and date controller response", function () {
-    const originalDate = (globalThis as typeof globalThis & { date?: unknown }).date;
-    const originalMap = (globalThis as typeof globalThis & { map?: unknown }).map;
-    const originalPark = (globalThis as typeof globalThis & { park?: unknown }).park;
-    (globalThis as typeof globalThis & { date?: unknown }).date = {
+    const originalDate = (globalThis as unknown as Record<string, unknown>).date;
+    const originalMap = (globalThis as unknown as Record<string, unknown>).map;
+    const originalPark = (globalThis as unknown as Record<string, unknown>).park;
+    (globalThis as unknown as Record<string, unknown>).date = {
         ticksElapsed: 123,
         monthsElapsed: 4,
         yearsElapsed: 5,
@@ -201,7 +212,7 @@ test("createApplication provides the automatic /v1 index and date controller res
         month: 8,
         year: 9
     };
-    (globalThis as typeof globalThis & { map?: unknown }).map = {
+    (globalThis as unknown as Record<string, unknown>).map = {
         rides: [{}, {}],
         getRide: function (index: number) {
             if (index === 0) {
@@ -231,7 +242,7 @@ test("createApplication provides the automatic /v1 index and date controller res
             return undefined;
         }
     };
-    (globalThis as typeof globalThis & { park?: unknown }).park = {
+    (globalThis as unknown as Record<string, unknown>).park = {
         name: "Mega Park",
         guests: 1234,
         rating: 999,
@@ -302,9 +313,9 @@ test("createApplication provides the automatic /v1 index and date controller res
             price: 2.5
         });
     } finally {
-        (globalThis as typeof globalThis & { date?: unknown }).date = originalDate;
-        (globalThis as typeof globalThis & { map?: unknown }).map = originalMap;
-        (globalThis as typeof globalThis & { park?: unknown }).park = originalPark;
+        (globalThis as unknown as Record<string, unknown>).date = originalDate;
+        (globalThis as unknown as Record<string, unknown>).map = originalMap;
+        (globalThis as unknown as Record<string, unknown>).park = originalPark;
     }
 });
 
@@ -375,18 +386,18 @@ test("createApplication only allows POST for /mcp", function () {
 
 test("createApplication implements the MCP initialize, tools/list, tools/call, and ping flow", function () {
     const app = createApplication();
-    const originalDate = (globalThis as typeof globalThis & { date?: unknown }).date;
-    const originalPark = (globalThis as typeof globalThis & { park?: unknown }).park;
-    const originalContext = (globalThis as typeof globalThis & { context?: unknown }).context;
-    const originalUi = (globalThis as typeof globalThis & { ui?: unknown }).ui;
+    const originalDate = (globalThis as unknown as Record<string, unknown>).date;
+    const originalPark = (globalThis as unknown as Record<string, unknown>).park;
+    const originalContext = (globalThis as unknown as Record<string, unknown>).context;
+    const originalUi = (globalThis as unknown as Record<string, unknown>).ui;
     const uiCalls: Array<{ title: string; message: string }> = [];
-    (globalThis as typeof globalThis & { date?: unknown }).date = {
+    (globalThis as unknown as Record<string, unknown>).date = {
         day: 10,
         month: 11,
         year: 12,
         monthsElapsed: 131
     };
-    (globalThis as typeof globalThis & { park?: unknown }).park = {
+    (globalThis as unknown as Record<string, unknown>).park = {
         name: "Mega Park",
         guests: 1234,
         rating: 999,
@@ -396,12 +407,12 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
         value: 55555,
         entranceFee: 25
     };
-    (globalThis as typeof globalThis & { context?: unknown }).context = {
+    (globalThis as unknown as Record<string, unknown>).context = {
         formatString: function (_format: string, day: number, monthsElapsed: number) {
             return day + " / " + monthsElapsed;
         }
     };
-    (globalThis as typeof globalThis & { ui?: unknown }).ui = {
+    (globalThis as unknown as Record<string, unknown>).ui = {
         showError: function (title: string, message: string) {
             uiCalls.push({
                 title: title,
@@ -491,7 +502,8 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
                         required: string[];
                     };
                     annotations?: {
-                        readOnlyHint: boolean;
+                        readOnlyHint?: boolean;
+                        destructiveHint?: boolean;
                     };
                 }>;
             };
@@ -559,10 +571,10 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
             result: {}
         });
     } finally {
-        (globalThis as typeof globalThis & { date?: unknown }).date = originalDate;
-        (globalThis as typeof globalThis & { park?: unknown }).park = originalPark;
-        (globalThis as typeof globalThis & { context?: unknown }).context = originalContext;
-        (globalThis as typeof globalThis & { ui?: unknown }).ui = originalUi;
+        (globalThis as unknown as Record<string, unknown>).date = originalDate;
+        (globalThis as unknown as Record<string, unknown>).park = originalPark;
+        (globalThis as unknown as Record<string, unknown>).context = originalContext;
+        (globalThis as unknown as Record<string, unknown>).ui = originalUi;
     }
 });
 

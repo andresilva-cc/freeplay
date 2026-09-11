@@ -218,7 +218,7 @@ test("a queue that will not convert is a failure that names the tiles", function
         assert.equal(outcome.ok, false, "the tile still carries ordinary path, so this is not done");
         assert.equal(outcome.tilesPlaced, 1, "there is a path on it, just not the right kind");
         assert.match(outcome.detail, /10,6 still carries path rather than queue/);
-        assert.equal(footpathAt(game, 10, 6).isQueue, false, "and that is true on the map");
+        assert.equal(footpathAt(game, 10, 6)?.isQueue, false, "and that is true on the map");
     });
 });
 
@@ -324,6 +324,27 @@ test("a queue laid across a walking route reports how much of the park it cut of
         assert.equal(outcome.connectedToPark, true, "and both its ends are still reachable");
         assert.match(outcome.detail, /WARNING: 4 path tiles are no longer reachable/,
             "tiles 10,9 through 10,12 lost their only way back to the entrance");
+    });
+});
+
+test("a severed park is counted and explained, not told what to do about it", function () {
+    // The warning used to end "Move the queue off the main path, or lay a path around it."
+    // Where a queue goes is park layout, which is the decision find_build_sites hands over
+    // with this very measurement: the tool reports the count and the cause and stops.
+    withGame(function (game) {
+        parkWithGate(game);
+        for (let y = 6; y <= 12; y++) {
+            game.addPath(10, y);
+        }
+    }, function () {
+        const outcome = lay([{ x: 8, y: 8 }, { x: 12, y: 8 }], true);
+
+        assert.match(outcome.detail, /WARNING: 4 path tiles are no longer reachable from the park entrance\./,
+            "the count stays: it is a measurement");
+        assert.match(outcome.detail, /cut an existing route in two\.$/,
+            "and so does the cause, which is the last thing said");
+        assert.doesNotMatch(outcome.detail, /Move the queue|lay a path around/,
+            "what to do about it is the model's call");
     });
 });
 
@@ -561,7 +582,7 @@ test("the route a queue severs is severed on the map, not only in the sentence",
             assert.equal(stranded.isQueue, false, "it is ordinary path with no way back to the gate");
         }
 
-        assert.equal(footpathAt(game, 10, 7).isQueue, false, "the corridor north of the wall is untouched");
+        assert.equal(footpathAt(game, 10, 7)?.isQueue, false, "the corridor north of the wall is untouched");
     });
 });
 

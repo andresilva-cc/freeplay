@@ -234,6 +234,22 @@ test("a hiring the game refuses is reported as the refusal it was", function () 
     });
 });
 
+test("a short hire names no money problem the tool never checked", function () {
+    // "check you can afford them" used to be appended to every partial hire, with the park's
+    // cash never read. `StaffHireNewAction` carries no cost - staff draw wages monthly, and
+    // hiring itself is free - so money could not have been the reason either way.
+    withSession(function (session) {
+        session.game.refuse.staffhire = true;
+
+        const body = structured(callTool(session, "hire_staff", { staffType: "mechanic", count: 2 }));
+
+        assert.equal(session.game.staff.length, 0, "the game turned both of them down");
+        assert.equal(String(body.detail), "Only 0 of 2 were hired.",
+            "the count is the whole message; what stopped them was never established");
+        assert.doesNotMatch(String(body.detail), /afford|cash|money/);
+    });
+});
+
 test("a count outside 1 to 10 is refused by name, not clamped to the nearest legal one", function () {
     withSession(function (session) {
         const tooMany = refusal(callTool(session, "hire_staff", { staffType: "handyman", count: 30 }));

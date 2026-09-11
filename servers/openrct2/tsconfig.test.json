@@ -1,0 +1,19 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "target": "ES2022",
+        "lib": [
+            "ES2022"
+        ],
+        "types": [
+            "@openrct2/types",
+            "node"
+        ],
+        "allowImportingTsExtensions": true,
+        "noEmit": true
+    },
+    "include": [
+        "./src/**/*.ts",
+        "./test/**/*.ts"
+    ]
+}

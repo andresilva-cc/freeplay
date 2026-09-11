@@ -2,6 +2,23 @@ function getUtf8ByteLength(value: string): number {
     return unescape(encodeURIComponent(value)).length;
 }
 
+function getStatusClassText(statusCode: number): string {
+    if (statusCode >= 500) {
+        return "Server Error";
+    }
+    if (statusCode >= 400) {
+        return "Client Error";
+    }
+    if (statusCode >= 300) {
+        return "Redirection";
+    }
+    if (statusCode >= 200) {
+        return "Success";
+    }
+
+    return "Informational";
+}
+
 function getStatusText(statusCode: number): string {
     switch (statusCode) {
         case 302:
@@ -10,10 +27,14 @@ function getStatusText(statusCode: number): string {
             return "OK";
         case 201:
             return "Created";
+        case 202:
+            return "Accepted";
         case 204:
             return "No Content";
         case 400:
             return "Bad Request";
+        case 403:
+            return "Forbidden";
         case 404:
             return "Not Found";
         case 405:
@@ -21,7 +42,7 @@ function getStatusText(statusCode: number): string {
         case 500:
             return "Internal Server Error";
         default:
-            return "OK";
+            return getStatusClassText(statusCode);
     }
 }
 

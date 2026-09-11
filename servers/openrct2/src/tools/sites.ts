@@ -13,8 +13,8 @@ export class SiteTools {
             "tiles where an entrance or exit building fits, the `door` tile it opens onto, and that",
             "door's distance to the nearest footpath. Pick any two for the entrance and exit; two on the",
             "same `side` put both doors on one face of the ride.",
-            "`access` is a window, not the whole list: it holds at most " + String(MAX_ACCESS_OPTIONS) + " options — the best of each",
-            "side first, then the rest by distance to a path — while `accessTotal` is how many positions the",
+            "`access` is a window, not the whole list: it holds at most " + String(MAX_ACCESS_OPTIONS) + " options — the option",
+            "nearest a path on each side first, then the rest by distance to a path — while `accessTotal` is how many positions the",
             "ride actually has. Any tile orthogonally touching the footprint works, listed or not.",
             "An access option's `queueCutsOff` counts the path tiles that stop being reachable from the",
             "park entrance once a queue reaches that `door`. A queue does not stop at the door: it is laid",
@@ -42,9 +42,11 @@ export class SiteTools {
             "For a shop, `access` holds exactly one tile: the neighbour guests are served from, which is",
             "fixed by the site's `rotation` (0 is -x, 1 is +y, 2 is +x, 3 is -y). A shop has no entrance,",
             "no exit and no `door` — put an ordinary path on that tile itself.",
-            "Sites come back nearest-to-a-path first and cut to `limit`; `totalFound` says how many exist,",
-            "so raise `limit` if you want to weigh somewhere further out. When nothing is found, `note`",
-            "says which constraint nothing got past."
+            "Sites come back nearest-to-a-path first and cut to `limit`. A site within the ride's longest",
+            "side plus two tiles of one already in the list is skipped, so the list is distinct places rather",
+            "than the same place listed over and over. `totalFound` counts every site found, before both the",
+            "skip and the cut, so raising `limit` returns more of them but never all `totalFound`.",
+            "When nothing is found, `note` says which constraint nothing got past."
         ].join(" "),
         inputSchema: {
             type: "object",
