@@ -1,0 +1,145 @@
+# The OpenRCT2 bridge
+
+`servers/openrct2/` is a fork of
+[IntelOrca/openrct2-mcp](https://github.com/IntelOrca/openrct2-mcp) by Ted John, MIT
+licensed. This page describes what the upstream plugin provides, what Freeplay adds, and
+the parts worth knowing about if you are extending it.
+
+## What OpenRCT2 gives a plugin
+
+OpenRCT2 ships a first-party JavaScript plugin API, typed in `@openrct2/types`. Plugins
+run in a sandboxed interpreter inside the game process with access to:
+
+- **`park`** — cash, rating, loan, entrance fee, guest counts, park value, monthly
+  expenditure history, awards, the message queue.
+- **`map`** — map size, the ride list, tile access, and entity queries by type (guests,
+  staff, cars, litter).
+- **`date`** and **`scenario`** — game time, and the scenario's objective and status.
+- **`context`** — most importantly `executeAction(name, args, callback)` and
+  `queryAction(...)`, over roughly eighty typed game actions covering rides, staff,
+  finance, marketing, footpaths, track, scenery, land and water. `queryAction` costs a
+  proposed action without applying it.
+- **`network`** — including `network.createListener()`, which is what makes an in-process
+  server possible at all.
+
+Everything a human player can do is a game action, including setting game speed
+(`gamesetspeed`) and pausing (`pausetoggle`). That uniformity is what makes the API
+usable as an agent interface rather than merely as a modding interface.
+
+## What upstream already solved
+
+The hard part was never the OpenRCT2 API — it was serving a protocol from inside a
+sandboxed plugin. Upstream did that work:
+
+- a TCP listener opened from plugin code;
+- a hand-rolled HTTP stack — request parsing, response building, middleware, a router
+  with path parameters;
+- controllers behind `@httpPath` / `@httpGet` decorators, with OpenAPI generated from
+  them and a Swagger UI to browse it;
+- an MCP Streamable HTTP endpoint at `POST /mcp` implementing `initialize`, `ping`,
+  `tools/list` and `tools/call`, with `MCP-Session-Id` session state;
+- a `@mcpToolController` / `@mcpTool` decorator pair, so a new tool is about fifteen
+  lines;
+- a rollup build producing a single plugin bundle.
+
+Upstream's MCP tool surface is three tools — `getDate`, `getParkInfo` and `showError` —
+none of which change the park. It also has a REST endpoint, `GET /v1/eval?q=...`, which
+evaluates a JavaScript expression inside the plugin. That endpoint reaches the entire
+plugin API, and it is not exposed over MCP.
+
+## What Freeplay adds
+
+**One MCP tool, `evaluate`.** It takes a `code` string, runs it in the plugin context and
+returns the value, annotated `readOnlyHint: false` and `destructiveHint: true`. This is
+the whole action surface; the reasoning is in [architecture.md](architecture.md).
+
+The evaluation logic lives in `src/scripting.ts` rather than reusing the REST
+controller's, for two reasons.
+
+**Parse-time form selection.** Upstream's evaluator tries expression form, and on *any*
+failure retries the code as a statement body:
+
+```js
+try { return new Function("return (" + expression + ");")(); }
+catch { return new Function(expression)(); }
+```
+
+That is fine for a read-only endpoint. For a tool that mutates the game it is not: an
+expression that parses but throws halfway through is executed a second time, so a
+partially-applied action can be applied again. `src/scripting.ts` chooses the form by
+whether it *parses*, then executes exactly once.
+
+**Result sanitisation.** Raw values from the plugin API are not safely serialisable.
+Native game objects expose their data through prototype getters, so `JSON.stringify` on
+a `Ride` yields `{}`. Some getters throw when the entity behind them is gone. Structures
+contain cycles. And `map.rides` on a mature park is far larger than a local model's
+context window. `sanitize` walks the prototype chain for accessors, catches throwing
+getters and reports them inline, cuts cycles, drops functions, caps array length, object
+key count, string length and total node count, and truncates an over-long result with a
+note telling the model to narrow the query.
+
+**Input normalisation.** Models emit markdown code fences and trailing semicolons.
+Both are stripped rather than turned into a wasted turn.
+
+Failures come back as `{ ok: false, error }` rather than as a transport error, so the
+model sees the message and can correct itself.
+
+## Endpoints
+
+The listener binds `127.0.0.1:8080`, loopback only.
+
+| Path | What it is |
+|---|---|
+| `POST /mcp` | The MCP endpoint. Streamable HTTP. |
+| `GET /v1` | Index of registered REST controllers |
+| `GET /v1/eval?q=` | Upstream's expression evaluator |
+| `GET /openapi.yaml` | Generated OpenAPI document |
+| `GET /swagger` | Swagger UI over the above |
+| `GET /dashboard` | Status page |
+
+## Adding a tool
+
+```ts
+@mcpToolController
+export class ParkTools {
+    @mcpTool({
+        name: "Get park info",
+        description: "…",
+        outputSchema: { /* … */ },
+        annotations: { readOnlyHint: true, destructiveHint: false }
+    })
+    public getParkInfo() {
+        return getParkInfo();
+    }
+}
+```
+
+Register the class in `src/tools/index.ts`. The tool name is derived from the method
+name, so `getParkInfo` becomes `get_park_info`. Tools with an `outputSchema` have their
+result validated against it, and a mismatch throws — leave it off for a tool whose
+result shape varies.
+
+## Known limitations
+
+**One TCP segment per request.** The socket handler treats the first `data` event as the
+complete HTTP request. On loopback this holds for the request sizes involved here, but a
+sufficiently large body would be truncated rather than reassembled. If a very long script
+ever fails oddly, this is the first thing to suspect.
+
+**No streaming.** The MCP endpoint answers with a single JSON response; the SSE half of
+Streamable HTTP is not implemented. Nothing here needs it.
+
+**Actions may be asynchronous.** `context.executeAction` takes a callback. In local
+single-player it generally runs inline, but that is not guaranteed, so the prompt tells
+the model to capture the callback result and to verify by reading state back rather than
+assuming.
+
+## Building
+
+```bash
+npm --prefix servers/openrct2 install
+npm --prefix servers/openrct2 run build     # → out/mcp.js and out/mcp.min.js
+npm --prefix servers/openrct2 run copy      # → the OpenRCT2 plugin directory (macOS)
+npm --prefix servers/openrct2 test
+npm --prefix servers/openrct2 run lint
+```

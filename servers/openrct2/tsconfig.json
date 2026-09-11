@@ -1,0 +1,31 @@
+{
+    "compilerOptions": {
+        "noImplicitAny": true,
+        "removeComments": true,
+        "preserveConstEnums": true,
+        "noImplicitReturns": true,
+        "noImplicitThis": true,
+        "alwaysStrict": true,
+        "strictFunctionTypes": true,
+        "strictNullChecks": true,
+        "strictPropertyInitialization": true,
+        "strictBindCallApply": true,
+        "esModuleInterop": true,
+        "experimentalDecorators": true,
+        "forceConsistentCasingInFileNames": true,
+        "module": "node16",
+        "moduleResolution": "node16",
+        "strict": true,
+        "target": "es5",
+        "lib": [
+            "ES5"
+        ],
+        "types": [
+            "@openrct2/types"
+        ]
+    },
+    "include": [
+        "./src/**/*.ts"
+    ],
+    "noEmit": true
+}

@@ -1,0 +1,36 @@
+{
+  "name": "freeplay-openrct2-bridge",
+  "version": "0.1.0",
+  "description": "OpenRCT2 plugin that serves an MCP endpoint from inside the running game.",
+  "license": "MIT",
+  "author": "Ted John",
+  "contributors": [
+    "André Silva"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "rollup --config rollup.config.js",
+    "copy": "cp out/mcp.js \"$HOME/Library/Application Support/OpenRCT2/plugin/freeplay-bridge.js\"",
+    "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
+    "test": "node --import tsx --test ./test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "watch": "nodemon --watch ./src --ext js,ts --exec \"npm run build && npm run copy\""
+  },
+  "dependencies": {
+    "@openrct2/types": "^0.5.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@rollup/plugin-terser": "^1.0.0",
+    "@rollup/plugin-typescript": "^12.3.0",
+    "eslint": "^9.39.4",
+    "globals": "^16.5.0",
+    "nodemon": "^3.1.14",
+    "rollup": "^4.60.3",
+    "tslib": "^2.8.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.59.2"
+  }
+}

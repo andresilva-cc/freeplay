@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "openrct2": {
+      "url": "http://127.0.0.1:8080/mcp",
+      "directTools": true,
+      "toolPrefix": "none",
+      "lifecycle": "eager",
+      "requestTimeoutMs": 60000,
+      "exposeResources": false
+    }
+  }
+}

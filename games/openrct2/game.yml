@@ -1,0 +1,53 @@
+# Freeplay game definition: OpenRCT2.
+#
+# Descriptive, not executable — scripts/run.sh and the docs read from here, and it is
+# the one place that records how this game is reached and driven.
+
+id: openrct2
+name: OpenRCT2
+homepage: https://openrct2.org
+
+bridge:
+  # The plugin opens this listener from inside the game process. Loopback only.
+  host: 127.0.0.1
+  port: 8080
+  mcp_endpoint: http://127.0.0.1:8080/mcp
+  transport: streamable-http
+  # Useful by hand while debugging.
+  openapi: http://127.0.0.1:8080/openapi.yaml
+  swagger: http://127.0.0.1:8080/swagger
+  dashboard: http://127.0.0.1:8080/dashboard
+  plugin:
+    source: servers/openrct2
+    bundle: servers/openrct2/out/mcp.js
+    # macOS. On Linux this is ~/.config/OpenRCT2/plugin.
+    install_path: ~/Library/Application Support/OpenRCT2/plugin/freeplay-bridge.js
+
+launch:
+  # OpenRCT2 must already be running with a scenario loaded before the harness starts;
+  # the bridge lives inside the game process, so there is nothing to start separately.
+  # Override with the OPENRCT2_APP environment variable if yours is elsewhere.
+  macos_app: /Applications/OpenRCT2.app
+  command: open -a "$OPENRCT2_APP"
+  requires:
+    # OpenRCT2 needs the original RCT2 data files, from Steam or GOG.
+    - RCT2 game assets
+  notes: >
+    Load a scenario from the title screen before starting a run. The plugin registers at
+    game start; if the listener is not answering, check the in-game console for
+    "Server listening on 127.0.0.1:8080".
+
+speed:
+  # Rendering stays on: inference dominates wall-clock, so frame time is not the
+  # bottleneck. Game speed is the throughput lever.
+  action: gamesetspeed
+  values: [1, 2, 4, 8]
+  default: 1
+  example: 'context.executeAction("gamesetspeed", { speed: 4 }, function (r) {})'
+  pause:
+    action: pausetoggle
+    example: 'context.executeAction("pausetoggle", {}, function (r) {})'
+
+agent:
+  system_prompt: games/openrct2/prompt.md
+  tool: evaluate

@@ -1,0 +1,21 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+out/
+
+# pi agent state (repo-local agent dir)
+pi/SYSTEM.md
+pi/sessions/
+pi/packages/
+pi/logs/
+pi/auth.json
+pi/trust.json
+pi/models-store.json
+
+# Editor / agent tooling
+.claude/
+.DS_Store

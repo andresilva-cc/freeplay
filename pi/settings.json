@@ -1,0 +1,5 @@
+{
+  "defaultProjectTrust": "always",
+  "enableInstallTelemetry": false,
+  "sessionDir": "sessions"
+}
