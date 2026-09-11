@@ -47,6 +47,19 @@ fi
 # prompt.md is the whole system prompt: pi replaces its default when SYSTEM.md exists.
 cp "$REPO_ROOT/games/openrct2/prompt.md" "$REPO_ROOT/pi/SYSTEM.md"
 
+# Confirm the game is running the plugin we think it is before spending a run on it.
+LIVE_BUILD=$(curl -s -m 3 \
+  -H "Accept: application/json, text/event-stream" -H "Content-Type: application/json" \
+  -X POST "${BRIDGE_URL}/mcp" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"run","version":"1"}}}' \
+  | sed -n 's/.*"version":"0\.1\.0+\([0-9A-Z]*\)".*/\1/p')
+BUILT=$(grep -oE 'BUILD_ID *= *"[0-9A-Z]+"' "$REPO_ROOT/servers/openrct2/out/mcp.js" 2>/dev/null | head -1 | grep -oE '"[0-9A-Z]+"' | tr -d '"')
+
+if [ -n "$BUILT" ] && [ "$LIVE_BUILD" != "$BUILT" ]; then
+  echo "warning: game is running plugin build ${LIVE_BUILD:-unknown}, repo has ${BUILT}." >&2
+  echo "         run ./scripts/deploy-plugin.sh first." >&2
+fi
+
 export PI_CODING_AGENT_DIR="$REPO_ROOT/pi"
 export PI_CODING_AGENT_SESSION_DIR="$REPO_ROOT/pi/sessions"
 
@@ -54,9 +67,9 @@ echo "bridge:  ${BRIDGE_URL}"
 echo "model:   ${OMLX_MODEL} via ${MODEL_BASE_URL}"
 echo
 
-# --no-builtin-tools leaves `evaluate` as the only tool the model can see, and
-# -xt mcp hides the adapter's proxy tool because directTools already registers
-# `evaluate` natively. Drop `-xt mcp` if tool registration ever misbehaves.
+# --no-builtin-tools leaves the bridge's tools as the only ones the model sees, and
+# -xt mcp hides the adapter's proxy tool because directTools already registers them
+# natively. Drop `-xt mcp` if tool registration ever misbehaves.
 exec pi \
   --provider omlx \
   --model "$OMLX_MODEL" \
