@@ -11,6 +11,76 @@ const MCP_PROTOCOL_VERSION = "2025-11-25";
 /** A deferred tool that never resolves must not hold the socket open forever. */
 const DEFERRED_TIMEOUT_MS = 30000;
 
+type DeferredFailureHandler = (error: unknown) => void;
+
+/**
+ * A deferred tool keeps working inside `context.setTimeout` callbacks it schedules for
+ * itself, so a failure after `start` returned escapes into the game's tick loop: the MCP
+ * layer never sees it and the caller waits out the whole watchdog only to be told the tool
+ * was slow rather than what broke. While deferred calls are in flight the game's timer is
+ * wrapped, so every continuation is attributed to the call that scheduled it and a throw
+ * comes back as that call's error result.
+ */
+let deferredCallsInFlight = 0;
+let gameSetTimeout: ((callback: () => void, delay: number) => number) | undefined;
+/** The deferred call whose work is running right now. Its continuations inherit it. */
+let runningDeferredCall: DeferredFailureHandler | undefined;
+
+function runAttributedToCall(owner: DeferredFailureHandler, body: () => void): void {
+    const previousOwner = runningDeferredCall;
+    runningDeferredCall = owner;
+
+    try {
+        body();
+    } catch (error) {
+        owner(error);
+    } finally {
+        runningDeferredCall = previousOwner;
+    }
+}
+
+function watchDeferredWork(): void {
+    deferredCallsInFlight++;
+
+    if (deferredCallsInFlight > 1) {
+        return;
+    }
+
+    const gameTimer = context.setTimeout;
+    const wrappedTimer = function (callback: () => void, delay: number): number {
+        const owner = runningDeferredCall;
+
+        if (typeof owner === "undefined") {
+            return gameTimer.call(context, callback, delay);
+        }
+
+        return gameTimer.call(context, function () {
+            runAttributedToCall(owner, callback);
+        }, delay);
+    };
+
+    try {
+        context.setTimeout = wrappedTimer;
+    } catch (_error) {
+        // A game build that will not let its timer be wrapped.
+    }
+
+    // If the assignment did not take, leave the game's timer alone: a later-tick failure
+    // then falls back to the watchdog rather than taking the bridge down with it.
+    gameSetTimeout = context.setTimeout === wrappedTimer ? gameTimer : undefined;
+}
+
+function unwatchDeferredWork(): void {
+    deferredCallsInFlight--;
+
+    if (deferredCallsInFlight > 0 || typeof gameSetTimeout === "undefined") {
+        return;
+    }
+
+    context.setTimeout = gameSetTimeout;
+    gameSetTimeout = undefined;
+}
+
 interface JsonRpcError {
     code: number;
     message: string;
@@ -45,6 +115,14 @@ interface McpSession {
 interface ValidationResult {
     valid: boolean;
     message?: string;
+}
+
+/** The slice of JSON Schema a property may declare, and all of it is enforced. */
+interface McpPropertySchema {
+    type?: string;
+    enum?: unknown[];
+    minimum?: number;
+    maximum?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -131,11 +209,79 @@ function validatePrimitiveType(value: unknown, expectedType: string): boolean {
     if (expectedType === "number") {
         return isNumber(value);
     }
+    if (expectedType === "array") {
+        return Array.isArray(value);
+    }
     if (expectedType === "object") {
         return isRecord(value);
     }
 
     return true;
+}
+
+/** What arrived, short enough for a one-line refusal: `string "12"`, `number 1.5`, `array`. */
+function describeValue(value: unknown): string {
+    if (value === null) {
+        return "null";
+    }
+
+    if (Array.isArray(value)) {
+        return "array";
+    }
+
+    const valueType = typeof value;
+
+    if (valueType === "string" || valueType === "number" || valueType === "boolean") {
+        return valueType + " " + JSON.stringify(value);
+    }
+
+    return valueType;
+}
+
+function listValues(values: unknown[]): string {
+    return values.map(function (value) {
+        return JSON.stringify(value);
+    }).join(", ");
+}
+
+/**
+ * The schemas declare `enum`, `minimum` and `maximum`, and this is the only place they are
+ * enforced. Left to the game, an out-of-range number comes back as "Value out of range"
+ * naming no field: a run lost turns sending `inspectionInterval: 30` meaning thirty
+ * minutes. Each message names the property, the value that arrived and the legal set, and
+ * nothing else - a category without a fix is a message the model cannot act on.
+ */
+function checkProperty(propertyName: string, value: unknown, schema: McpPropertySchema): string | undefined {
+    if (typeof schema.type === "string" && !validatePrimitiveType(value, schema.type)) {
+        return "Invalid type for property " + propertyName + ": expected " + schema.type
+            + ", got " + describeValue(value) + ".";
+    }
+
+    const allowedValues = schema.enum;
+
+    if (typeof allowedValues !== "undefined" && allowedValues.indexOf(value) < 0) {
+        return "Invalid value for property " + propertyName + ": expected one of "
+            + listValues(allowedValues) + ", got " + describeValue(value) + ".";
+    }
+
+    if (!isNumber(value)) {
+        return undefined;
+    }
+
+    const minimum = schema.minimum;
+    const maximum = schema.maximum;
+    const belowMinimum = typeof minimum === "number" && value < minimum;
+    const aboveMaximum = typeof maximum === "number" && value > maximum;
+
+    if (!belowMinimum && !aboveMaximum) {
+        return undefined;
+    }
+
+    const range = typeof minimum === "number" && typeof maximum === "number"
+        ? String(minimum) + " to " + String(maximum)
+        : (belowMinimum ? String(minimum) + " or more" : String(maximum) + " or less");
+
+    return "Invalid value for property " + propertyName + ": expected " + range + ", got " + String(value) + ".";
 }
 
 function validateAgainstSchema(value: unknown, schema: McpToolSchema): ValidationResult {
@@ -152,12 +298,16 @@ function validateAgainstSchema(value: unknown, schema: McpToolSchema): Validatio
 
     const properties = schema.properties || {};
     const requiredProperties = schema.required || [];
+    const knownProperties = Object.keys(properties);
 
     for (const propertyName of requiredProperties) {
         if (typeof value[propertyName] === "undefined") {
+            const declaredType = (properties[propertyName] as McpPropertySchema | undefined)?.type;
+
             return {
                 valid: false,
                 message: "Missing required property: " + propertyName
+                    + (typeof declaredType === "string" ? " (" + declaredType + ")." : ".")
             };
         }
     }
@@ -167,24 +317,28 @@ function validateAgainstSchema(value: unknown, schema: McpToolSchema): Validatio
             if (typeof properties[propertyName] === "undefined") {
                 return {
                     valid: false,
-                    message: "Unexpected property: " + propertyName
+                    message: "Unexpected property: " + propertyName + ". "
+                        + (knownProperties.length > 0
+                            ? "This tool takes: " + knownProperties.join(", ") + "."
+                            : "This tool takes no arguments.")
                 };
             }
         }
     }
 
-    for (const propertyName of Object.keys(properties)) {
+    for (const propertyName of knownProperties) {
         const propertyValue = value[propertyName];
-        const propertySchema = properties[propertyName] as { type?: string };
 
-        if (typeof propertyValue === "undefined" || typeof propertySchema.type === "undefined") {
+        if (typeof propertyValue === "undefined") {
             continue;
         }
 
-        if (!validatePrimitiveType(propertyValue, propertySchema.type)) {
+        const failure = checkProperty(propertyName, propertyValue, properties[propertyName] as McpPropertySchema);
+
+        if (typeof failure !== "undefined") {
             return {
                 valid: false,
-                message: "Invalid type for property " + propertyName + ": expected " + propertySchema.type
+                message: failure
             };
         }
     }
@@ -216,6 +370,24 @@ function createToolResult(rawResult: unknown): Record<string, unknown> {
             createTextContent(typeof result === "string" ? result : JSON.stringify(result))
         ]
     };
+}
+
+/**
+ * Both paths validate their output. The check used to sit on the immediate path only, so
+ * the first deferred tool to declare an outputSchema would have had it quietly ignored.
+ */
+function checkToolOutput(tool: McpToolDefinition, payload: Record<string, unknown>): string | undefined {
+    if (typeof tool.outputSchema === "undefined" || typeof payload.structuredContent === "undefined") {
+        return undefined;
+    }
+
+    const outputValidation = validateAgainstSchema(payload.structuredContent, tool.outputSchema);
+
+    if (outputValidation.valid) {
+        return undefined;
+    }
+
+    return "MCP tool output failed schema validation for " + tool.name + ": " + outputValidation.message;
 }
 
 export class McpServer {
@@ -431,7 +603,15 @@ export class McpServer {
                 version: "0.1.0+" + BUILD_ID,
                 description: "MCP bridge into a running OpenRCT2 game."
             },
-            instructions: "Use `evaluate` to run JavaScript against the OpenRCT2 plugin API to read park state and take actions."
+            instructions: [
+                "Eleven tools reach the running game.",
+                "`park_status` returns the whole park in one call and is where a turn starts;",
+                "`guest_feedback`, `list_ride_objects` and `find_build_sites` read further.",
+                "`clear_scenery`, `build_flat_ride`, `build_path`, `operate_ride`, `open_park` and `hire_staff` act,",
+                "and answer once the work has landed a few ticks later.",
+                "`evaluate` runs plugin-API JavaScript and is the escape hatch for what no typed tool covers,",
+                "such as tracked rides."
+            ].join(" ")
         });
     }
 
@@ -468,17 +648,14 @@ export class McpServer {
         const result = invokeMcpTool(tool, (params.arguments as Record<string, unknown>) || {});
 
         if (isDeferredMcpResult(result)) {
-            return this.handleDeferredToolCall(response, message, result, requestContext);
+            return this.handleDeferredToolCall(response, message, tool, result, requestContext);
         }
 
         const resultPayload = createToolResult(result);
+        const outputFailure = checkToolOutput(tool, resultPayload);
 
-        if (typeof tool.outputSchema !== "undefined" && typeof resultPayload.structuredContent !== "undefined") {
-            const outputValidation = validateAgainstSchema(resultPayload.structuredContent, tool.outputSchema);
-
-            if (!outputValidation.valid) {
-                throw new Error("MCP tool output failed schema validation for " + tool.name + ": " + outputValidation.message);
-            }
+        if (typeof outputFailure !== "undefined") {
+            throw new Error(outputFailure);
         }
 
         return this.setJsonRpcResult(response, message.id, resultPayload);
@@ -487,6 +664,7 @@ export class McpServer {
     private handleDeferredToolCall(
         response: HttpResponse,
         message: JsonRpcRequestMessage,
+        tool: McpToolDefinition,
         deferred: DeferredMcpResult,
         requestContext?: RequestContext
     ): HttpResponse {
@@ -500,11 +678,36 @@ export class McpServer {
         }
 
         let settled = false;
-        const send = function (payload: Record<string, unknown>): void {
+        let watchdog: number | undefined;
+
+        function clientWentAway(): void {
+            // There is nobody left to answer, and handing bytes to a socket the peer has
+            // dropped throws out of whatever tick we happen to be in.
+            finish();
+        }
+
+        /** Close the call down exactly once; false means somebody else already did. */
+        const finish = function (): boolean {
             if (settled) {
+                return false;
+            }
+
+            settled = true;
+            channel.offClose(clientWentAway);
+            unwatchDeferredWork();
+
+            if (typeof watchdog !== "undefined") {
+                context.clearTimeout(watchdog);
+                watchdog = undefined;
+            }
+
+            return true;
+        };
+
+        const send = function (payload: Record<string, unknown>): void {
+            if (!finish()) {
                 return;
             }
-            settled = true;
 
             const deferredResponse = new HttpResponse();
             deferredResponse.setHeader("MCP-Protocol-Version", MCP_PROTOCOL_VERSION);
@@ -513,24 +716,50 @@ export class McpServer {
                 id: message.id,
                 result: payload
             }, 200);
-            channel.close(deferredResponse.toHttpString());
+
+            try {
+                channel.close(deferredResponse.toHttpString());
+            } catch (_error) {
+                // The socket refused the write. The call is answered as far as we are
+                // concerned and there is no second way to reach the client, so this must
+                // not escape into the game's tick loop.
+            }
         };
 
-        try {
-            deferred.start(function (value) {
-                send(createToolResult(value));
-            });
-        } catch (error) {
+        const fail = function (error: unknown): void {
             send({
                 content: [createTextContent("Tool failed: " + String(error))],
                 isError: true
             });
-        }
+        };
 
-        // Registered after starting, so a tool that finishes immediately is never beaten
-        // to the answer by its own watchdog. `send` ignores whichever arrives second.
+        channel.onClose(clientWentAway);
+        watchDeferredWork();
+
+        runAttributedToCall(fail, function () {
+            deferred.start(function (value) {
+                const payload = createToolResult(value);
+                const outputFailure = checkToolOutput(tool, payload);
+
+                if (typeof outputFailure !== "undefined") {
+                    // The immediate path throws here; on this one a throw would land in a
+                    // tick and leave the caller on the watchdog, so send the reason.
+                    send({
+                        content: [createTextContent(outputFailure)],
+                        isError: true
+                    });
+                    return;
+                }
+
+                send(payload);
+            });
+        });
+
+        // Armed after starting, so a tool that finishes immediately is never beaten to the
+        // answer by its own watchdog, and cancelled by `finish` as soon as the call is
+        // settled. `send` still ignores whichever arrives second.
         if (!settled) {
-            context.setTimeout(function () {
+            watchdog = context.setTimeout(function () {
                 send({
                     content: [createTextContent("The tool did not finish in time; check the game state before retrying.")],
                     isError: true

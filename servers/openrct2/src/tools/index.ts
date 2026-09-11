@@ -2,6 +2,7 @@ import { getMcpToolDefinitions } from "./decorators.js";
 import { BuildTools } from "./build.js";
 import { ClearTools } from "./clear.js";
 import { EvalTools } from "./eval.js";
+import { OpenParkTools } from "./openPark.js";
 import { OperateTools } from "./operate.js";
 import { PathTools } from "./path.js";
 import { SiteTools } from "./sites.js";
@@ -19,6 +20,7 @@ export function getMcpToolControllers(): McpToolClass[] {
         BuildTools,
         ClearTools,
         EvalTools,
+        OpenParkTools,
         OperateTools,
         PathTools,
         SiteTools,

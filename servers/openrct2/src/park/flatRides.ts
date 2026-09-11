@@ -46,6 +46,23 @@ const FLAT_RIDE_SHAPES: Record<number, FlatRideShape | undefined> = {
 export function flatRideShape(rideType: number): FlatRideShape | undefined {
     return FLAT_RIDE_SHAPES[rideType];
 }
+
+/**
+ * The one tile a shop or stall is served from: its neighbour in the direction it is
+ * rotated to face. 0 is -x, 1 is +y, 2 is +x, 3 is -y, the game's own TileDirectionDelta.
+ *
+ * Measured, not reasoned: a rotation-1 stall was ringed with footpath on all four sides in
+ * the running game, and only the +y tile formed a footpath edge to it. The other three
+ * touch the building and serve nobody. Exported rather than inlined because park/status.ts
+ * answers the neighbouring question - whether guests can reach a stall that is already
+ * built - and the two have to be able to agree on one rule.
+ */
+export function shopServingTile(x: number, y: number, rotation: number): { x: number; y: number } {
+    const turns = ((rotation % 4) + 4) % 4;
+    const deltas = [{ dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }];
+
+    return { x: x + deltas[turns].dx, y: y + deltas[turns].dy };
+}
 export interface Offset {
     dx: number;
     dy: number;
@@ -66,8 +83,17 @@ export function footprintOffsets(shape: FlatRideShape, rotation: number): Offset
     return fromGame === null ? computeFootprintOffsets(shape, rotation) : fromGame;
 }
 
-/** The piece's own tile offsets, turned to face `rotation`. */
-function segmentOffsets(trackType: number, rotation: number): Offset[] | null {
+/**
+ * The piece's own tile offsets, turned to face `rotation`.
+ *
+ * One turn is (dx, dy) -> (dy, -dx), which is what OpenRCT2's `CoordsXY::rotate` does to
+ * every block of a piece in `TrackPlaceAction`, and the turn that carries direction 0's
+ * tile delta onto direction 1's. Turning the other way is indistinguishable on anything
+ * symmetric about its origin - a 3x3, a 1x5, a 1x1 - and off by one tile on everything
+ * else, which put entrances diagonal to 1x4 rides and evaluated a 4x4's buildability on
+ * sixteen tiles the ride was never going to occupy.
+ */
+export function segmentOffsets(trackType: number, rotation: number): Offset[] | null {
     if (typeof context === "undefined" || typeof context.getTrackSegment !== "function") {
         return null;
     }
@@ -86,7 +112,7 @@ function segmentOffsets(trackType: number, rotation: number): Offset[] | null {
         let dy = segment.elements[i].y / 32;
 
         for (let t = 0; t < turns; t++) {
-            const spun = { dx: -dy, dy: dx };
+            const spun = { dx: dy, dy: -dx };
             dx = spun.dx;
             dy = spun.dy;
         }

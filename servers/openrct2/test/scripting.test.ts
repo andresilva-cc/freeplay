@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runScript } from "../src/scripting.ts";
+import { runScript, sanitizeToolResult, sanitizeValue } from "../src/scripting.ts";
 
 interface Success {
     ok: true;
@@ -107,4 +107,253 @@ test("runScript truncates a result that would flood the context", function () {
 
 test("runScript returns null for undefined so the result is always JSON", function () {
     assert.equal(expectOk("undefined").result, null);
+});
+
+test("a tool's nested result keeps the depth the tool promised", function () {
+    // An AccessOption sits at depth 4 - the result, sites, a site, access, the option
+    // itself - which is exactly where evaluate's depth limit cuts. Every door in
+    // find_build_sites came back as "<object depth limit>", so the model saw no valid
+    // entrance position at all and invented coordinates instead.
+    const result = sanitizeToolResult({
+        ok: true,
+        sites: [
+            {
+                x: 10,
+                y: 12,
+                access: [
+                    { x: 9, y: 12, side: "-x", door: { x: 8, y: 12, isExistingPath: false } }
+                ]
+            }
+        ]
+    }) as { sites: { access: { door: { x: unknown; y: unknown } }[] }[] };
+
+    const option = result.sites[0].access[0];
+    assert.equal(typeof option, "object", "an access option must stay an object, not become: " + JSON.stringify(option));
+
+    assert.equal(typeof option.door.x, "number", "the door's x must still be a number, got: " + JSON.stringify(option.door));
+    assert.equal(typeof option.door.y, "number", "the door's y must still be a number, got: " + JSON.stringify(option.door));
+});
+
+test("a tool's own list is never trimmed a second time", function () {
+    const sites: { x: number; y: number }[] = [];
+
+    for (let i = 0; i < 60; i++) {
+        sites.push({ x: i, y: 0 });
+    }
+
+    const result = sanitizeToolResult({ ok: true, sites: sites, totalFound: 60 }) as { sites: unknown[] };
+    const serialized = JSON.stringify(result);
+
+    assert.equal(result.sites.length, 60, "the tool already chose how many rows to return, so all 60 must survive");
+    assert.equal(serialized.indexOf("more of"), -1,
+        "a tool's result must carry no omission marker, or its own count contradicts its own list: " + serialized.substring(0, 200));
+});
+
+test("evaluate still caps depth and array length", function () {
+    // The counterpart to the two above: a tool's result gets its own, looser limits.
+    // Loosening evaluate's instead would let one careless script flood the context.
+    const deep = sanitizeValue({ a: { b: { c: { d: { e: 1 } } } } }) as { a: { b: { c: { d: unknown } } } };
+    assert.equal(deep.a.b.c.d, "<object depth limit>", "evaluate must still stop descending");
+
+    const long: number[] = [];
+
+    for (let i = 0; i < 100; i++) {
+        long.push(i);
+    }
+
+    const capped = sanitizeValue(long) as unknown[];
+
+    assert.equal(capped.length, 41, "evaluate must still cut a long array down to its cap plus a marker");
+    assert.match(String(capped[40]), /more of 100 omitted/, "and say how many it dropped");
+});
+
+/**
+ * A stand-in for the `context` global, small enough to keep the sandbox's own behaviour in
+ * view. test/fakeGame.ts is not used here on purpose: these tests are about what happens
+ * before an action reaches the game at all, including one that the game has never heard of.
+ */
+interface FakeContextCalls {
+    queried: string[];
+    executed: string[];
+    registered: string[];
+}
+
+interface FakeContextOptions {
+    /** What the fake hands to a queryAction callback, synchronously. */
+    queryResult?: unknown;
+    /** Put the methods on a prototype rather than on the object itself. */
+    onPrototype?: boolean;
+}
+
+function installFakeContext(options?: FakeContextOptions): { calls: FakeContextCalls; restore(): void } {
+    const scope = globalThis as unknown as Record<string, unknown>;
+    const previous = scope.context;
+    const calls: FakeContextCalls = { queried: [], executed: [], registered: [] };
+
+    const methods = {
+        queryAction: function (name: string, _args: object, callback?: (result: unknown) => void): void {
+            calls.queried.push(name);
+
+            if (typeof callback === "function") {
+                callback(options && "queryResult" in options ? options.queryResult : { error: 0 });
+            }
+        },
+        executeAction: function (name: string, _args: object, callback?: (result: unknown) => void): void {
+            calls.executed.push(name);
+
+            if (typeof callback === "function") {
+                callback({ error: 0 });
+            }
+        },
+        registerAction: function (name: string): void {
+            calls.registered.push(name);
+        }
+    };
+
+    if (options && options.onPrototype) {
+        const FakeContext = function () { /* the game's own objects are built this way */ };
+        FakeContext.prototype = methods;
+        scope.context = new (FakeContext as unknown as { new (): object })();
+    } else {
+        scope.context = { ...methods };
+    }
+
+    return {
+        calls: calls,
+        restore: function () { scope.context = previous; }
+    };
+}
+
+test("an action name the game does not know fails instead of answering null", function () {
+    const fake = installFakeContext();
+
+    try {
+        const error = expectError('context.queryAction("set_ride_status", { ride: 0, status: 1 })');
+
+        assert.match(error, /set_ride_status/, "the error must name the action that does not exist: " + error);
+        assert.match(error, /ridesetstatus/, "and point at the real one: " + error);
+        assert.deepEqual(fake.calls.queried, [],
+            "the unknown name must never reach the game, which would answer it with a cheerful null");
+    } finally {
+        fake.restore();
+    }
+});
+
+test("executeAction refuses an unknown action name too", function () {
+    const fake = installFakeContext();
+
+    try {
+        const error = expectError('context.executeAction("ride_demolish", { ride: 1 })');
+
+        assert.match(error, /ride_demolish/);
+        assert.match(error, /ridedemolish/, "the suggestion is the point: " + error);
+        assert.deepEqual(fake.calls.executed, []);
+    } finally {
+        fake.restore();
+    }
+});
+
+test("a real action name still goes straight through", function () {
+    const fake = installFakeContext();
+
+    try {
+        expectOk('context.executeAction("ridesetstatus", { ride: 0, status: 1 }); return "done";');
+        assert.deepEqual(fake.calls.executed, ["ridesetstatus"]);
+    } finally {
+        fake.restore();
+    }
+});
+
+test("queryAction hands back the game's answer rather than nothing", function () {
+    // queryAction returns void and reports through a callback, so a script that did not
+    // pass one read every query - refusals included - as { ok: true, result: null }.
+    const fake = installFakeContext({ queryResult: { error: 1, errorMessage: "Dodgems 1 in the way" } });
+
+    try {
+        const outcome = expectOk('context.queryAction("trackplace", { ride: 0 })');
+
+        assert.deepEqual(outcome.result, { error: 1, errorMessage: "Dodgems 1 in the way" });
+    } finally {
+        fake.restore();
+    }
+});
+
+test("a script cannot put the unguarded action back", function () {
+    const fake = installFakeContext();
+
+    try {
+        const error = expectError(`
+            context.queryAction = function () { return "bypassed"; };
+            delete context.queryAction;
+            return context.queryAction("set_ride_status", {});
+        `);
+
+        assert.match(error, /no game action named/, "reassigning and deleting must both fail: " + error);
+        assert.deepEqual(fake.calls.queried, []);
+    } finally {
+        fake.restore();
+    }
+});
+
+test("the guard is installed where the method lives, so the prototype is not a way round it", function () {
+    const fake = installFakeContext({ onPrototype: true });
+
+    try {
+        const error = expectError(`
+            var raw = Object.getPrototypeOf(context).queryAction;
+            return raw.call(context, "set_ride_status", {});
+        `);
+
+        assert.match(error, /no game action named/, "the prototype must hold the guard too: " + error);
+        assert.deepEqual(fake.calls.queried, []);
+    } finally {
+        fake.restore();
+    }
+});
+
+test("an action a plugin registers at runtime counts as known", function () {
+    const fake = installFakeContext();
+
+    try {
+        expectOk('context.registerAction("freeplaycustom", function () {}, function () {}); return 1;');
+        expectOk('context.queryAction("freeplaycustom", {})');
+
+        assert.deepEqual(fake.calls.registered, ["freeplaycustom"]);
+        assert.deepEqual(fake.calls.queried, ["freeplaycustom"]);
+    } finally {
+        fake.restore();
+    }
+});
+
+test("keys() lists what a game object really has, where Object.keys sees nothing", function () {
+    const outcome = expectOk(`
+        var Map = function () {};
+        Object.defineProperty(Map.prototype, "rides", { get: function () { return []; } });
+        Map.prototype.getTile = function () { return null; };
+        var map = new Map();
+        return { own: Object.keys(map), real: keys(map) };
+    `);
+
+    const result = outcome.result as { own: string[]; real: string[] };
+
+    assert.deepEqual(result.own, [], "this is the dead end: a game object owns no enumerable keys");
+    assert.deepEqual(result.real, ["getTile", "rides"], "keys() must see the prototype getters and methods");
+});
+
+test("a property that is not there is not reported as null", function () {
+    // map.getTile(x, y) has no `type`; the data is under elements[]. Reading it back as
+    // null convinced one run the terrain did not exist, and it spent twelve turns on that.
+    const outcome = expectOk("return { type: undefined, rideIndex: null };");
+
+    assert.deepEqual(outcome.result, { type: "<undefined>", rideIndex: null });
+});
+
+test("a missing array item is marked too", function () {
+    assert.deepEqual(expectOk("return [1, undefined, null];").result, [1, "<undefined>", null]);
+});
+
+test("a tool's own result still renders an absent optional field as null", function () {
+    // A tool composes its result deliberately, so an optional field it left out means
+    // nothing and must not read as an error marker.
+    assert.deepEqual(sanitizeToolResult({ ok: true, name: undefined }), { ok: true, name: null });
 });

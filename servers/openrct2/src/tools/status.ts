@@ -9,18 +9,32 @@ export class StatusTools {
             "Everything the game would show you at a glance: the scenario objective and how far along it is,",
             "whether the park is open, the date, cash, loan, rating, guest count, entrance fee, net profit for",
             "the last four months, how many staff of each kind you have, and every ride with its status, price,",
-            "ratings, customers, profit, queue time, breakdown record, and whether a queue is actually bound to",
+            "ratings, `totalCustomers`, profit, queue time, breakdown record, and whether a queue is bound to",
             "its entrance. The one to act on is `guestsCanReach`: a queue can exist and still be an island,",
             "joined to the ride and to nothing else, in which case nobody ever boards. `exitConnected` says",
             "whether there is a way back out to the rest of the park.",
+            "`entranceDoor` and `exitDoor` are the tiles those buildings open onto, one step out from",
+            "`entrance` and `exit` themselves. A queue only serves a ride if it occupies `entranceDoor`,",
+            "and a path only connects the exit if it reaches `exitDoor`: those are the tiles to aim",
+            "build_path at, not the buildings.",
+            "A ride with `isShop` true is a stall: no entrance, no exit and no queue, so `hasQueue`,",
+            "`exitConnected`, `entranceDoor` and `exitDoor` are all null for it. A stall is served over",
+            "the counter from ONE tile — its neighbour on the side it faces, reported as `counter` — so",
+            "`guestsCanReach` means guests can walk to that tile. A path on any of its other three sides",
+            "touches a wall and serves nobody: to fix a stall with `guestsCanReach: false`, run build_path",
+            "to `counter` rather than rebuilding the stall.",
             "Money is in tenths of a currency unit: 1000 means 100.00. Ratings are fixed-point: 652 means 6.52.",
             "Each ride reports `value` next to `price`: that is roughly what a guest thinks the ride is worth.",
             "Price well above it and they walk past, which looks exactly like a ride nobody can reach —",
-            "customers stay at 0 while the queue sits empty.",
+            "`totalCustomers` stays at 0 while the queue sits empty.",
             "`messages` is the game telling you what is wrong in its own words — unreachable rides, breakdowns,",
             "warnings about the park rating. It often names a problem outright.",
-            "`paths` gives the park entrance tiles and a sample of the paths guests can reach from it:",
-            "those are the targets a new path or queue has to join up with.",
+            "`paths` gives the park entrance tiles and the paths guests can reach from it: those are the",
+            "targets a new path or queue has to join up with. `reachableSample` lists every reachable tile",
+            "while `reachableSampleComplete` is true, so a tile that is not in it is not connected. Once the",
+            "network outgrows the listing that flag turns false and `reachableSample` is a spread of it —",
+            "`reachableTiles` is the real count either way, so compare the two before concluding that a",
+            "tile is out of reach.",
             "`brokenDown` on a ride means it stays shut until a mechanic reaches it.",
             "It is cheaper than piecing the same picture together with evaluate."
         ].join(" "),
@@ -50,7 +64,12 @@ export class StatusTools {
         inputSchema: {
             type: "object",
             properties: {
-                sample: { type: "integer", description: "How many guests to read (default 100)." }
+                sample: {
+                    type: "integer",
+                    minimum: 1,
+                    maximum: 500,
+                    description: "How many guests to read (default 100, most 500)."
+                }
             },
             additionalProperties: false
         },

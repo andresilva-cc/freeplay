@@ -1,7 +1,8 @@
 # Freeplay game definition: OpenRCT2.
 #
-# Descriptive, not executable — scripts/run.sh and the docs read from here, and it is
-# the one place that records how this game is reached and driven.
+# Descriptive, not executable — nothing loads this file at runtime. It is the one
+# place that records how this game is reached and driven, for humans and the docs.
+# Values here are copies: change the real source (noted per field) as well.
 
 id: openrct2
 name: OpenRCT2
@@ -26,9 +27,9 @@ bridge:
 launch:
   # OpenRCT2 must already be running with a scenario loaded before the harness starts;
   # the bridge lives inside the game process, so there is nothing to start separately.
-  # Override with the OPENRCT2_APP environment variable if yours is elsewhere.
+  # Edit macos_app below if yours is elsewhere; nothing reads an environment variable.
   macos_app: /Applications/OpenRCT2.app
-  command: open -a "$OPENRCT2_APP"
+  command: open -a /Applications/OpenRCT2.app
   requires:
     # OpenRCT2 needs the original RCT2 data files, from Steam or GOG.
     - RCT2 game assets
@@ -60,6 +61,7 @@ agent:
     - clear_scenery
     - build_flat_ride
     - build_path
+    - operate_ride
     - hire_staff
     # Everything else.
     - evaluate

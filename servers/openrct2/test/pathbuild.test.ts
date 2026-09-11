@@ -6,6 +6,7 @@ import type { FakeElement } from "./fakeGame.ts";
 import { buildPath, DEFAULT_PATH_OBJECT, DEFAULT_QUEUE_OBJECT } from "../src/park/pathbuild.ts";
 import type { BuildPathOutcome } from "../src/park/pathbuild.ts";
 import type { Tile } from "../src/park/paths.ts";
+import { PathTools } from "../src/tools/path.ts";
 
 function withGame(build: (game: FakeGame) => void, run: (game: FakeGame) => void, options?: { inert?: boolean }): void {
     const game = new FakeGame(24, 24, options);
@@ -31,6 +32,18 @@ function lay(points: Tile[], queue = false): BuildPathOutcome {
     }, function (result) { outcome = result; });
 
     assert.ok(outcome, "buildPath never called back");
+    return outcome as unknown as BuildPathOutcome;
+}
+
+/** The same call as the model makes it: raw arguments, through the MCP tool layer. */
+function callTool(args: Record<string, unknown>): BuildPathOutcome {
+    let outcome: BuildPathOutcome | null = null;
+
+    new PathTools().buildPath(args).start(function (result) {
+        outcome = result as BuildPathOutcome;
+    });
+
+    assert.ok(outcome, "build_path never answered");
     return outcome as unknown as BuildPathOutcome;
 }
 
@@ -86,6 +99,172 @@ test("a path laid out of reach of the entrance is a success that says so", funct
         assert.equal(outcome.tilesPlaced, 5);
         assert.equal(outcome.connectedToPark, false, "but nobody can walk to it");
         assert.match(outcome.detail, /does not reach the park entrance/);
+        assert.match(outcome.detail, /neither end, 2,2 or 2,6, is connected/,
+            "the ends that are cut off have to be named, not left to be guessed at");
+        assert.match(outcome.detail, /`paths.reachableSample`/,
+            "fourteen calls in the logs retried an adjacent endpoint for want of this");
+    });
+});
+
+test("an unreachable run names the end that is cut off, not both", function () {
+    // The commonest recovery loop in the corpus: "does not reach the park entrance" with
+    // no end named, so the model moved whichever end it happened to think of first.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.refuse.footpathplace = true;
+    }, function () {
+        const outcome = lay([{ x: 10, y: 5 }, { x: 10, y: 9 }]);
+
+        assert.equal(outcome.connectedToPark, false);
+        assert.match(outcome.detail, /its far end 10,9 is cut off/, "the end at fault is not named");
+        assert.ok(!/neither end/.test(outcome.detail), "the start is connected, so do not blame it");
+    });
+});
+
+test("a run that comes up short names the tiles that got no path", function () {
+    withGame(function (game) {
+        parkWithGate(game);
+        game.refuse.footpathplace = true;
+    }, function () {
+        const outcome = lay([{ x: 10, y: 5 }, { x: 10, y: 8 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /Only 1 of 4 tiles carry a path: no path reached 10,6 10,7 10,8/,
+            "\"Only N of M\" without the tiles is a category, not a fix");
+        assert.match(outcome.detail, /`entranceDoor` and `exitDoor`/,
+            "the commonest cause of a short run is aiming at a door building");
+    });
+});
+
+test("a run aimed at a ride entrance building names the door tile instead", function () {
+    // Four calls in the logs started from the entrance building rather than the tile in
+    // front of it, and got back a tile count that named neither the cause nor the fix.
+    withGame(function (game) {
+        parkWithGate(game);
+        // An entrance at 10,10 facing south: the ride is at 10,11, the door opens onto 10,9.
+        game.addRideEntrance(10, 10, 7, 1);
+    }, function (game) {
+        const outcome = lay([{ x: 10, y: 10 }, { x: 10, y: 6 }], true);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /Point 0 of this run, 10,10, is a ride entrance BUILDING/);
+        assert.match(outcome.detail, /which is 10,9/, "the tile to use instead is not named");
+        assert.match(outcome.detail, /`entranceDoor`/, "the field park_status reports it as is not named");
+        assert.equal(game.attempted.length, 0, "and not one tile was paved while working that out");
+        assert.equal(footpathAt(game, 10, 10), undefined, "nothing was laid on the building");
+    });
+});
+
+test("a run aimed at a ride exit building names exitDoor", function () {
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addRideEntrance(10, 10, 7, 1, true);
+    }, function (game) {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 10 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /Point 1 of this run, 10,10, is a ride exit BUILDING/);
+        assert.match(outcome.detail, /which is 10,9/);
+        assert.match(outcome.detail, /`exitDoor`/);
+        assert.equal(game.attempted.length, 0);
+    });
+});
+
+test("a run aimed at the park gate says so rather than failing to route", function () {
+    withGame(parkWithGate, function (game) {
+        const outcome = lay([{ x: 10, y: 4 }, { x: 10, y: 8 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /is the park entrance BUILDING/);
+        assert.match(outcome.detail, /`paths.reachableSample`/);
+        assert.equal(game.attempted.length, 0);
+        assert.equal(footpathAt(game, 10, 4), undefined);
+    });
+});
+
+test("turning a path tile into a queue is reported as the change it is", function () {
+    // The number was right and the sentence was wrong: tilesPlaced said 1, the tile on
+    // the map really did become a queue, and the detail read "Laid 0 queue tiles".
+    withGame(function (game) {
+        parkWithGate(game);
+        for (let y = 6; y <= 8; y++) {
+            game.addPath(10, y);
+        }
+    }, function (game) {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 8 }], true);
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(outcome.tilesPlaced, 3);
+        assert.match(outcome.detail, /^Turned 3 path tiles into queue\./);
+        assert.ok(!/Laid 0/.test(outcome.detail), "a tile that changed type was not laid \"0\" times");
+
+        // The claim is about the world, so read the world.
+        for (let y = 6; y <= 8; y++) {
+            const path = footpathAt(game, 10, y);
+            assert.ok(path);
+            assert.equal(path.isQueue, true, "tile 10," + String(y) + " never became a queue");
+        }
+    });
+});
+
+test("a queue that will not convert is a failure that names the tiles", function () {
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+        game.refuse.footpathplace = true;
+    }, function (game) {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 6 }], true);
+
+        assert.equal(outcome.ok, false, "the tile still carries ordinary path, so this is not done");
+        assert.equal(outcome.tilesPlaced, 1, "there is a path on it, just not the right kind");
+        assert.match(outcome.detail, /10,6 still carries path rather than queue/);
+        assert.equal(footpathAt(game, 10, 6).isQueue, false, "and that is true on the map");
+    });
+});
+
+test("a missing end is refused by name, not routed from off the map", function () {
+    withGame(parkWithGate, function (game) {
+        const outcome = callTool({ fromX: 10, fromY: 6, toX: 10 });
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /toY is missing/, "the argument at fault is not named");
+        assert.match(outcome.detail, /fromX, fromY, toX and toY together/);
+        assert.ok(!/unobstructed route/.test(outcome.detail),
+            "a missing argument must not be reported as a routing failure");
+        assert.equal(game.attempted.length, 0, "and nothing was paved on the way to finding out");
+    });
+});
+
+test("every build_path failure answers in the same shape", function () {
+    // The audit found two: waypoint refusals answered {ok, error} while everything else
+    // answered the outcome. A model that has to work out which payload it is holding
+    // spends a turn on it.
+    withGame(function (game) {
+        parkWithGate(game);
+
+        for (let x = 0; x < 24; x++) {
+            game.own(x, 12, false);
+        }
+    }, function () {
+        const failures = [
+            callTool({}),
+            callTool({ waypoints: [{ x: 10, y: 6 }] }),
+            callTool({ waypoints: [{ x: 10 }, { x: 12, y: 6 }] }),
+            callTool({ fromX: 10, fromY: 6, toX: 10, toY: 20, queue: false })
+        ];
+
+        failures.forEach(function (outcome, index) {
+            const fields = Object.keys(outcome).sort().join(",");
+
+            assert.equal(outcome.ok, false, "failure " + String(index) + " is not a failure");
+            assert.ok(fields === "connectedToPark,detail,error,ok,route,tilesPlaced,tilesRouted"
+                || fields === "connectedToPark,detail,ok,route,tilesPlaced,tilesRouted",
+                "failure " + String(index) + " answers with " + fields);
+            assert.equal(typeof outcome.detail, "string", "failure " + String(index) + " has no detail");
+            assert.ok(outcome.detail.length > 0);
+            assert.equal(outcome.tilesPlaced, 0);
+            assert.deepEqual(outcome.route, []);
+        });
     });
 });
 
@@ -127,7 +306,7 @@ test("a route that ends on existing path counts that tile as joined, not failed"
         assert.equal(outcome.ok, true, outcome.detail);
         assert.equal(outcome.tilesRouted, 3);
         assert.equal(outcome.tilesPlaced, 3);
-        assert.match(outcome.detail, /Laid 2 path tiles, joining 1 that were already path\./);
+        assert.match(outcome.detail, /Laid 2 path tiles, joined 1 tile that was already path\./);
     });
 });
 
@@ -200,7 +379,8 @@ test("a queue tile may be the far end of a route", function () {
         assert.equal(outcome.ok, true, outcome.detail);
         assert.deepEqual(outcome.route, [{ x: 10, y: 8 }, { x: 11, y: 8 }],
             "a run must be allowed to finish on the queue it is joining");
-        assert.match(outcome.detail, /1 tiles replaced an ordinary footpath, but nothing was cut off by it/);
+        assert.match(outcome.detail, /Turned 1 path tile into queue, joined 1 tile that was already queue\./);
+        assert.match(outcome.detail, /Nothing was cut off by it/);
     });
 });
 
@@ -285,7 +465,102 @@ test("a run with no owned, level way through is refused outright", function () {
         assert.equal(outcome.tilesRouted, 0);
         assert.equal(outcome.tilesPlaced, 0);
         assert.equal(outcome.route.length, 0);
-        assert.match(outcome.detail, /No level, owned, unobstructed route/);
+        assert.match(outcome.detail, /No level, owned, unobstructed route between 10,6 and 10,10/,
+            "the leg that could not be routed has to be named");
         assert.equal(game.attempted.length, 0, "nothing should be attempted when there is no route");
+    });
+});
+
+test("every tile of a queue run is laid as a queue, not just described as one", function () {
+    withGame(parkWithGate, function (game) {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 10 }], true);
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(outcome.tilesPlaced, 5);
+        assert.match(outcome.detail, /^Laid 5 queue tiles\./);
+
+        for (let y = 6; y <= 10; y++) {
+            const path = footpathAt(game, 10, y);
+            assert.ok(path, "no footpath reached tile 10," + String(y));
+            assert.equal(path.isQueue, true, "tile 10," + String(y) + " carries ordinary path, not the queue that was asked for");
+            assert.equal(path.surfaceObject, DEFAULT_QUEUE_OBJECT, "and it is surfaced as a queue");
+        }
+    });
+});
+
+test("a queue run laid to a ride's door binds to that ride", function () {
+    withGame(function (game) {
+        parkWithGate(game);
+        // A ride entrance at 10,10 facing south, so the ride is at 10,11 and its queue
+        // belongs on 10,9 behind the building.
+        game.addRideEntrance(10, 10, 7, 1);
+    }, function (game) {
+        const outcome = lay([{ x: 10, y: 9 }, { x: 10, y: 6 }], true);
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(outcome.tilesRouted, 4);
+
+        for (let y = 6; y <= 9; y++) {
+            const path = footpathAt(game, 10, y);
+            assert.ok(path);
+            assert.equal(path.ride, 7,
+                "tile 10," + String(y) + " is a queue that serves nobody, so guests would never board");
+        }
+
+        const ordinary = footpathAt(game, 10, 5);
+        assert.ok(ordinary);
+        assert.equal(ordinary.isQueue, false, "the tile below the gate is ordinary path and stays that way");
+        assert.equal(ordinary.ride, null, "an ordinary path is bound to no ride, so the chain stops at it");
+    });
+});
+
+test("a queue beside the door but off its queue side binds to nothing", function () {
+    // Touching the entrance is not the test the game applies: the queue has to be on the
+    // tile the building opens onto. A fake that bound anything adjacent would let a
+    // misplaced queue report a ride as reachable.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addRideEntrance(10, 10, 7, 1);
+    }, function (game) {
+        const outcome = lay([{ x: 11, y: 10 }, { x: 11, y: 12 }], true);
+
+        assert.equal(outcome.ok, true, outcome.detail);
+
+        for (let y = 10; y <= 12; y++) {
+            const path = footpathAt(game, 11, y);
+            assert.ok(path);
+            assert.equal(path.isQueue, true);
+            assert.equal(path.ride, null,
+                "tile 11," + String(y) + " was bound to a ride whose entrance does not open onto it");
+        }
+    });
+});
+
+test("the route a queue severs is severed on the map, not only in the sentence", function () {
+    withGame(function (game) {
+        parkWithGate(game);
+        for (let y = 6; y <= 12; y++) {
+            game.addPath(10, y);
+        }
+    }, function (game) {
+        const outcome = lay([{ x: 8, y: 8 }, { x: 12, y: 8 }], true);
+
+        assert.match(outcome.detail, /WARNING: 4 path tiles are no longer reachable/);
+
+        // The wall is real: five queue tiles straight across the only corridor.
+        for (let x = 8; x <= 12; x++) {
+            const wall = footpathAt(game, x, 8);
+            assert.ok(wall, "the queue is missing from " + String(x) + ",8");
+            assert.equal(wall.isQueue, true, "tile " + String(x) + ",8 is not a queue, so it blocks nobody");
+        }
+
+        // And what it cut off is still there: the loss is reachability, not tiles.
+        for (let y = 9; y <= 12; y++) {
+            const stranded = footpathAt(game, 10, y);
+            assert.ok(stranded, "tile 10," + String(y) + " lost its path as well as its route");
+            assert.equal(stranded.isQueue, false, "it is ordinary path with no way back to the gate");
+        }
+
+        assert.equal(footpathAt(game, 10, 7).isQueue, false, "the corridor north of the wall is untouched");
     });
 });

@@ -1,5 +1,5 @@
-import { readMapGrid, toWorld } from "./map.js";
-import { countNewPathTiles, countPathTiles, tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
+import { DIRECTION_VECTORS, readMapGrid, toWorld } from "./map.js";
+import { countPathTiles, tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
 import type { Tile } from "./paths.js";
 
 const STEP_DELAY_MS = 200;
@@ -26,6 +26,118 @@ export interface BuildPathOutcome {
     /** Whether both ends can be walked to from the park entrance. */
     connectedToPark: boolean;
     detail: string;
+    /**
+     * Set only when the arguments were refused before anything was routed. Every failure
+     * carries the whole outcome shape as well, so `detail` always holds the message.
+     */
+    error?: string;
+}
+
+/** An outcome for a run that never started, in the shape every other outcome uses. */
+export function pathRefusal(detail: string): BuildPathOutcome {
+    return {
+        ok: false,
+        tilesPlaced: 0,
+        tilesRouted: 0,
+        route: [],
+        connectedToPark: false,
+        detail: detail,
+        error: detail
+    };
+}
+
+function tileName(tile: Tile): string {
+    return String(tile.x) + "," + String(tile.y);
+}
+
+function plural(count: number, singular: string): string {
+    return String(count) + " " + singular + (count === 1 ? "" : "s");
+}
+
+/** Whether this tile carries a path, and whether that path is a queue. */
+function pathState(x: number, y: number): { path: boolean; queue: boolean } {
+    if (x < 0 || y < 0 || x >= map.size.x || y >= map.size.y) {
+        return { path: false, queue: false };
+    }
+
+    const tile = map.getTile(x, y);
+    let path = false;
+    let queue = false;
+
+    for (let i = 0; i < tile.numElements; i++) {
+        const element = tile.getElement(i);
+
+        if (element.type !== "footpath") {
+            continue;
+        }
+
+        path = true;
+
+        if ((element as FootpathElement).isQueue) {
+            queue = true;
+        }
+    }
+
+    return { path: path, queue: queue };
+}
+
+/**
+ * The ride door standing on a tile, if one is, and the tile it opens onto.
+ *
+ * The single commonest build_path mistake in the logs: aiming at the entrance *building*
+ * rather than the tile in front of it. The building is not ground and takes no path, so
+ * the run either refuses or comes up short, and neither message named the real tile.
+ */
+function rideDoorOn(tile: Tile): { isExit: boolean; opensOnto: Tile } | null {
+    if (tile.x < 0 || tile.y < 0 || tile.x >= map.size.x || tile.y >= map.size.y) {
+        return null;
+    }
+
+    const mapTile = map.getTile(tile.x, tile.y);
+
+    for (let i = 0; i < mapTile.numElements; i++) {
+        const element = mapTile.getElement(i);
+
+        if (element.type !== "entrance") {
+            continue;
+        }
+
+        const entrance = element as EntranceElement;
+
+        if (typeof entrance.ride !== "number") {
+            // The park's own gate, which spans several tiles and belongs to no ride.
+            return null;
+        }
+
+        // `direction` points at the ride, so the door opens the other way.
+        const towardsRide = DIRECTION_VECTORS[(entrance.direction || 0) % 4];
+
+        return {
+            isExit: entrance.object === 1,
+            opensOnto: { x: tile.x - towardsRide.dx, y: tile.y - towardsRide.dy }
+        };
+    }
+
+    return null;
+}
+
+/** True when the park's gate structure stands on this tile. */
+function isParkGate(tile: Tile): boolean {
+    if (tile.x < 0 || tile.y < 0 || tile.x >= map.size.x || tile.y >= map.size.y) {
+        return false;
+    }
+
+    const mapTile = map.getTile(tile.x, tile.y);
+
+    for (let i = 0; i < mapTile.numElements; i++) {
+        const element = mapTile.getElement(i);
+
+        if (element.type === "entrance" && typeof (element as EntranceElement).ride !== "number") {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -135,17 +247,59 @@ function route(from: Tile, to: Tile): Tile[] | null {
     return tiles;
 }
 
+/**
+ * A point that is a building rather than ground, named with the tile to use instead.
+ *
+ * Checked before routing, because after routing the same mistake surfaces as a routing
+ * failure or a short run, and the model then changes the wrong end of the call.
+ */
+function buildingOnPoint(points: Tile[]): string | null {
+    for (let i = 0; i < points.length; i++) {
+        const door = rideDoorOn(points[i]);
+
+        if (door) {
+            const which = door.isExit ? "exit" : "entrance";
+            const field = door.isExit ? "exitDoor" : "entranceDoor";
+
+            return "Point " + String(i) + " of this run, " + tileName(points[i]) + ", is a ride " + which
+                + " BUILDING. A path cannot be laid on it; guests stand on the tile the door opens onto, which is "
+                + tileName(door.opensOnto) + ". Re-run this call with " + tileName(door.opensOnto)
+                + " in place of " + tileName(points[i]) + ". park_status reports that tile for every ride as `"
+                + field + "`, so read it from there rather than working it out. Nothing was built.";
+        }
+
+        if (isParkGate(points[i])) {
+            return "Point " + String(i) + " of this run, " + tileName(points[i]) + ", is the park entrance"
+                + " BUILDING. A path cannot be laid on it. Start from a path tile beside the gate instead:"
+                + " park_status gives the gate's own tiles as `paths.entrance` and the tiles guests can walk to"
+                + " as `paths.reachableSample`. Nothing was built.";
+        }
+    }
+
+    return null;
+}
+
 export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOutcome) => void): void {
+    const kind = request.queue ? "queue" : "path";
+    const otherKind = request.queue ? "path" : "queue";
+    const blocked = buildingOnPoint(request.points);
+
+    if (blocked !== null) {
+        return done(pathRefusal(blocked));
+    }
+
     // Route each leg separately: with waypoints the caller has chosen the shape and the
     // tool only fills in tiles. With two points the tool picks the line, which is a
     // design decision it is making on the caller's behalf.
     let tiles: Tile[] | null = [];
     const placedAlready: Record<string, boolean> = {};
+    let failedLeg = -1;
 
     for (let i = 0; i + 1 < request.points.length && tiles !== null; i++) {
         const leg = route(request.points[i], request.points[i + 1]);
 
         if (leg === null) {
+            failedLeg = i;
             tiles = null;
             break;
         }
@@ -163,21 +317,26 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
     }
 
     if (tiles === null || tiles.length === 0) {
+        const between = failedLeg >= 0
+            ? " between " + tileName(request.points[failedLeg]) + " and " + tileName(request.points[failedLeg + 1])
+            : "";
+
         return done({
             ok: false,
             tilesPlaced: 0,
             tilesRouted: 0,
             route: [],
             connectedToPark: false,
-            detail: "No level, owned, unobstructed route between those points. Clear the way, or give"
-                + " waypoints that go round it. Existing queues also block a route: guests cannot walk"
-                + " through a queue, so paths are never laid across one."
+            detail: "No level, owned, unobstructed route" + between + ". Every tile of a run has to be owned,"
+                + " flat and at the same height as the tile the run starts on. Clear the way, or give waypoints"
+                + " that go round it. Existing queues also block a route: guests cannot walk through a queue, so"
+                + " paths are never laid across one. Nothing was built."
         });
     }
 
     const grid = readMapGrid();
     const reachableBefore = walkableFromParkEntrance();
-    const bareBefore: Record<string, boolean> = {};
+    const before: Record<string, { path: boolean; queue: boolean }> = {};
     let replacedExistingPath = 0;
     let replacedQueue = 0;
 
@@ -188,7 +347,7 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
             continue;
         }
 
-        bareBefore[String(tiles[i].x) + "," + String(tiles[i].y)] = !cell.path;
+        before[tileName(tiles[i])] = { path: cell.path, queue: cell.queue };
 
         if (request.queue && cell.path && !cell.queue) {
             replacedExistingPath++;
@@ -212,20 +371,55 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
     }
 
     context.setTimeout(function () {
-        const placed = countPathTiles(tiles);
-        // Of the tiles that were bare, how many became the kind asked for. A tile that was
-        // already path is not a failure: routes legitimately end on the existing network.
-        let bareCount = 0;
-        for (const tile in bareBefore) {
-            if (bareBefore[tile]) {
-                bareCount++;
+        const laidTiles = tiles as Tile[];
+        const placed = countPathTiles(laidTiles);
+        const walkable = walkableFromParkEntrance();
+
+        // Four outcomes per tile, and the old count collapsed two of them: a tile that was
+        // already a footpath and really did become a queue was counted as "already path",
+        // so converting one printed "Laid 0 queue tiles, joining 1 that were already path"
+        // while tilesPlaced said 1 and the tile on the map had changed type.
+        let bare = 0;
+        let laid = 0;
+        let toConvert = 0;
+        let converted = 0;
+        let joined = 0;
+        const wrongKind: Tile[] = [];
+        const noPath: Tile[] = [];
+
+        for (let i = 0; i < laidTiles.length; i++) {
+            const was = before[tileName(laidTiles[i])] || { path: false, queue: false };
+            const now = pathState(laidTiles[i].x, laidTiles[i].y);
+            const rightKind = now.path && now.queue === request.queue;
+
+            if (!was.path) {
+                bare++;
+
+                if (rightKind) {
+                    laid++;
+                }
+            } else if (was.queue !== request.queue) {
+                toConvert++;
+
+                if (rightKind) {
+                    converted++;
+                }
+            } else {
+                joined++;
+            }
+
+            if (!now.path) {
+                noPath.push(laidTiles[i]);
+            } else if (!rightKind) {
+                wrongKind.push(laidTiles[i]);
             }
         }
-        const newlyLaid = countNewPathTiles(tiles, bareBefore, request.queue);
-        const walkable = walkableFromParkEntrance();
+
         const first = request.points[0];
         const last = request.points[request.points.length - 1];
-        const connected = tileIsWalkable(walkable, first) && tileIsWalkable(walkable, last);
+        const startConnected = tileIsWalkable(walkable, first);
+        const endConnected = tileIsWalkable(walkable, last);
+        const connected = startConnected && endConnected;
         // Severance is tiles that used to be walkable and no longer are. Comparing raw
         // totals instead double-counted: laying an unconnected stub left the totals equal
         // and reported the whole run as "cut off", telling the model to move a queue that
@@ -238,24 +432,65 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
             }
         }
 
+        const everyTileIsRight = placed === laidTiles.length && laid === bare && converted === toConvert;
+        let summary: string;
+
+        if (everyTileIsRight) {
+            const clauses: string[] = [];
+
+            if (laid > 0 || (converted === 0 && joined === 0)) {
+                clauses.push("laid " + plural(laid, kind + " tile"));
+            }
+
+            if (converted > 0) {
+                clauses.push("turned " + plural(converted, otherKind + " tile") + " into " + kind);
+            }
+
+            if (joined > 0) {
+                clauses.push("joined " + plural(joined, "tile") + " that "
+                    + (joined === 1 ? "was" : "were") + " already " + kind);
+            }
+
+            const sentence = clauses.join(", ");
+            summary = sentence.charAt(0).toUpperCase() + sentence.substring(1) + ".";
+        } else {
+            const shortfall: string[] = [];
+
+            if (noPath.length > 0) {
+                shortfall.push("no path reached " + noPath.map(tileName).join(" "));
+            }
+
+            if (wrongKind.length > 0) {
+                shortfall.push(wrongKind.map(tileName).join(" ") + " still carr"
+                    + (wrongKind.length === 1 ? "ies" : "y") + " " + otherKind + " rather than " + kind);
+            }
+
+            summary = "Only " + String(placed) + " of " + String(laidTiles.length) + " tiles carry a path: "
+                + shortfall.join("; ") + ". A tile a ride entrance, exit or park gate stands on cannot take a"
+                + " path at all - park_status gives the tile each door opens onto as `entranceDoor` and `exitDoor`,"
+                + " and those are the tiles a queue and an exit path run to.";
+        }
+
         done({
             // `ok` is whether the path got laid. Whether it reaches the park is
             // `connectedToPark`: a queue built before its connecting path is not a failure.
-            ok: placed === tiles.length && newlyLaid === bareCount,
+            ok: everyTileIsRight,
             tilesPlaced: placed,
-            tilesRouted: tiles.length,
-            route: tiles,
+            tilesRouted: laidTiles.length,
+            route: laidTiles,
             connectedToPark: connected,
-            detail: (placed === tiles.length && newlyLaid === bareCount
-                ? "Laid " + String(newlyLaid) + (request.queue ? " queue" : " path") + " tiles"
-                    + (tiles.length > newlyLaid
-                        ? ", joining " + String(tiles.length - newlyLaid) + " that were already path."
-                        : ".")
-                : "Only " + String(placed) + " of " + String(tiles.length) + " tiles carry a path; something blocked the rest.")
+            detail: summary
                 + (connected
                     ? ""
-                    : " This path does not reach the park entrance, so guests cannot walk it."
-                        + " One of its ends is a dead end - route it to a tile that is already reachable.")
+                    : " This run does not reach the park entrance, so guests cannot walk it: "
+                        + (startConnected
+                            ? "its far end " + tileName(last) + " is cut off"
+                            : (endConnected
+                                ? "its start " + tileName(first) + " is cut off"
+                                : "neither end, " + tileName(first) + " or " + tileName(last) + ", is connected"))
+                        + ". Having a path on a tile is not the same as that tile being reachable. Aim one end at a"
+                        + " tile park_status lists under `paths.reachableSample` - those are the tiles guests can"
+                        + " actually walk to - rather than at a neighbouring tile that happens to be paved.")
                 + (replacedQueue > 0
                     ? " WARNING: " + String(replacedQueue) + " tiles replaced an existing queue line with ordinary path,"
                         + " which unbinds it from its ride. Rebuild that queue."
@@ -265,8 +500,7 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
                         + " Guests cannot walk through a queue, so this run cut an existing route in two."
                         + " Move the queue off the main path, or lay a path around it."
                     : (replacedExistingPath > 0
-                        ? " " + String(replacedExistingPath) + " tiles replaced an ordinary footpath, but nothing was"
-                            + " cut off by it."
+                        ? " Nothing was cut off by it."
                         : ""))
         });
     }, STEP_DELAY_MS);

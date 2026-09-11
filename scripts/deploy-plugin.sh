@@ -7,24 +7,29 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER="$REPO_ROOT/servers/openrct2"
-PORT="${FREEPLAY_BRIDGE_PORT:-8080}"
+# The port is fixed in servers/openrct2/src/index.ts (BRIDGE_PORT); change it there.
 
 npm --prefix "$SERVER" run build >/dev/null
 npm --prefix "$SERVER" run copy >/dev/null
 
-EXPECTED=$(grep -oE 'BUILD_ID *= *"[0-9A-Z]+"' "$SERVER/out/mcp.js" | head -1 | grep -oE '"[0-9A-Z]+"' | tr -d '"')
+EXPECTED=$(grep -oE 'BUILD_ID *= *"[0-9A-Z]+"' "$SERVER/out/mcp.js" | head -1 | grep -oE '"[0-9A-Z]+"' | tr -d '"') || EXPECTED=""
+if [ -z "$EXPECTED" ]; then
+  echo "error: no BUILD_ID in $SERVER/out/mcp.js after the build." >&2
+  echo "       Without it there is no way to tell whether the game reloaded the plugin." >&2
+  exit 1
+fi
 echo "built $EXPECTED"
 
 live_build() {
   curl -s -m 3 \
     -H "Accept: application/json, text/event-stream" \
     -H "Content-Type: application/json" \
-    -X POST "http://127.0.0.1:${PORT}/mcp" \
+    -X POST "http://127.0.0.1:8080/mcp" \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"deploy","version":"1"}}}' \
     2>/dev/null | sed -n 's/.*"version":"0\.1\.0+\([0-9A-Z]*\)".*/\1/p'
 }
 
-if ! curl -fsS -m 3 "http://127.0.0.1:${PORT}/v1" >/dev/null 2>&1; then
+if ! curl -fsS -m 3 "http://127.0.0.1:8080/v1" >/dev/null 2>&1; then
   echo "bridge not answering; start OpenRCT2 and load a scenario, then rerun."
   exit 1
 fi

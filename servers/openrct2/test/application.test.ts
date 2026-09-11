@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { FakeGame } from "./fakeGame.ts";
 import { createApplication } from "../src/app.ts";
 import { httpGet, httpPath } from "../src/controllers/decorators.ts";
 import { registerControllers } from "../src/controllers/index.ts";
@@ -505,7 +506,7 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
 
         assert.deepEqual(
             Object.keys(toolsByName).sort(),
-            ["build_flat_ride", "build_path", "clear_scenery", "evaluate", "find_build_sites", "guest_feedback", "hire_staff", "list_ride_objects", "operate_ride", "park_status"]
+            ["build_flat_ride", "build_path", "clear_scenery", "evaluate", "find_build_sites", "guest_feedback", "hire_staff", "list_ride_objects", "open_park", "operate_ride", "park_status"]
         );
 
         assert.equal(toolsByName.evaluate.annotations?.readOnlyHint, false);
@@ -694,4 +695,88 @@ test("createApplication reports a failing evaluate script without a transport er
     assert.equal(callResponse.statusCode, 200);
     assert.equal(callBody.result.structuredContent.ok, false);
     assert.match(callBody.result.structuredContent.error, /noSuchGlobal/);
+});
+
+test("find_build_sites hands back a door the model can build on", function () {
+    // The end-to-end twin of scripting.test.ts: every access option sits deep enough in
+    // the result to be cut by a tight depth limit, and a cut one reads as the string
+    // "<object depth limit>" where a door tile should be.
+    const game = new FakeGame(32, 32);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(10, 2);
+
+    for (let y = 3; y <= 20; y++) {
+        game.addPath(10, y);
+    }
+
+    const restore = game.install();
+
+    try {
+        const app = createApplication();
+
+        const initializeResponse = app.handleRawRequest(createRawRequest(
+            "POST",
+            "/mcp",
+            createMcpHeaders(),
+            JSON.stringify({
+                jsonrpc: "2.0",
+                id: 1,
+                method: "initialize",
+                params: {
+                    protocolVersion: "2025-11-25",
+                    capabilities: {},
+                    clientInfo: { name: "test-client", version: "1.0.0" }
+                }
+            })
+        ));
+
+        const sessionHeaders = createMcpHeaders({
+            "MCP-Session-Id": String(initializeResponse.getHeader("mcp-session-id")),
+            "MCP-Protocol-Version": "2025-11-25"
+        });
+
+        app.handleRawRequest(createRawRequest(
+            "POST",
+            "/mcp",
+            sessionHeaders,
+            JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })
+        ));
+
+        const callResponse = app.handleRawRequest(createRawRequest(
+            "POST",
+            "/mcp",
+            sessionHeaders,
+            JSON.stringify({
+                jsonrpc: "2.0",
+                id: 2,
+                method: "tools/call",
+                params: {
+                    name: "find_build_sites",
+                    arguments: { rideObject: 0, limit: 1 }
+                }
+            })
+        ));
+
+        const callBody = parseJsonBody(callResponse) as {
+            result: {
+                structuredContent: {
+                    ok: boolean;
+                    sites: { access: { door: { x: unknown; y: unknown } }[] }[];
+                };
+            };
+        };
+
+        assert.equal(callBody.result.structuredContent.ok, true);
+
+        const sites = callBody.result.structuredContent.sites;
+        assert.ok(sites.length > 0, "this park has room for a carousel");
+
+        const option = sites[0].access[0];
+        assert.equal(typeof option, "object", "an access option must arrive as an object, not as: " + JSON.stringify(option));
+
+        assert.equal(typeof option.door.x, "number", "the door needs a real x to build on, got: " + JSON.stringify(option.door));
+        assert.equal(typeof option.door.y, "number", "the door needs a real y to build on, got: " + JSON.stringify(option.door));
+    } finally {
+        restore();
+    }
 });

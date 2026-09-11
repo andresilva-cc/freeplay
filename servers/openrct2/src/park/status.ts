@@ -1,4 +1,4 @@
-import { flatRideShape } from "./flatRides.js";
+import { flatRideShape, shopServingTile } from "./flatRides.js";
 import { DIRECTION_VECTORS } from "./map.js";
 import { findParkEntranceTiles, tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
 
@@ -6,6 +6,27 @@ import { findParkEntranceTiles, tileIsWalkable, walkableFromParkEntrance } from 
 const RIDE_FLAG_BROKEN_DOWN = 1 << 7;
 const RIDE_FLAG_QUEUE_FULL = 1 << 9;
 const RIDE_FLAG_CRASHED = 1 << 10;
+
+/**
+ * Every stream in the game's own ExpenditureType. All of them, because the sum is
+ * reported as net profit: leaving construction and land out of it showed a month in
+ * profit that the game's own finance graph showed in the red.
+ */
+const EXPENDITURE_STREAMS: ExpenditureType[] = [
+    "ride_construction", "ride_runningcosts", "land_purchase", "landscaping",
+    "park_entrance_tickets", "park_ride_tickets", "shop_sales", "shop_stock",
+    "food_drink_sales", "food_drink_stock", "wages", "marketing", "research", "interest"
+];
+
+/**
+ * How many reachable path tiles `paths.reachableSample` will list in full.
+ *
+ * A park that still needs connecting up has tens of path tiles, so this reports the
+ * whole network and the model can see where it actually ends. Past this it is a spread,
+ * and `reachableSampleComplete` says so: a mature park's network would otherwise cost
+ * a few thousand tokens of every single turn.
+ */
+const MAX_REPORTED_PATH_TILES = 250;
 
 export interface RideSummary {
     id: number;
@@ -20,14 +41,31 @@ export interface RideSummary {
     totalCustomers: number;
     totalProfit: number;
     queueTime: number;
-    /** A queue is bound to the entrance. Necessary, but on its own it proves nothing. */
-    hasQueue: boolean;
-    /** The queue can be walked to from the park entrance. This is the one that matters. */
+    /** Shops and stalls: no entrance, no exit, no queue. Guests buy from the path beside them. */
+    isShop: boolean;
+    /** A queue is bound to the entrance. Necessary, but on its own it proves nothing. Null for a shop. */
+    hasQueue: boolean | null;
+    /**
+     * Guests can get to this ride from the park entrance: for a ride, a queue bound to it
+     * reaches its door; for a shop, a path they can walk to reaches `counter`. The one
+     * that matters.
+     */
     guestsCanReach: boolean;
-    /** A path leads away from the exit, back to the rest of the park. */
-    exitConnected: boolean;
+    /**
+     * Shops and stalls: the single tile guests buy over the counter from, the neighbour on
+     * the side the stall faces. A path on any other side touches its wall and serves
+     * nobody, so this is the tile to aim build_path at. Null for anything with a door.
+     */
+    counter: { x: number; y: number } | null;
+    /** A path leads away from the exit, back to the rest of the park. Null for a shop. */
+    exitConnected: boolean | null;
+    /** The entrance building. Guests do not stand here: `entranceDoor` is the tile they use. */
     entrance: { x: number; y: number } | null;
     exit: { x: number; y: number } | null;
+    /** The tile the entrance door opens onto — the one tile a queue must occupy. Null for a shop. */
+    entranceDoor: { x: number; y: number } | null;
+    /** The tile the exit door opens onto, which a path back into the park must reach. Null for a shop. */
+    exitDoor: { x: number; y: number } | null;
     downtime: number;
     reliability: number;
     /** Broken down right now. It earns nothing until a mechanic reaches it. */
@@ -41,8 +79,14 @@ export interface PathNetwork {
     entrance: { x: number; y: number }[];
     /** How many path tiles guests can actually walk to from the entrance. */
     reachableTiles: number;
-    /** A spread of those tiles, as targets for build_path. */
+    /** Those tiles, as targets for build_path. Every one of them unless the network is huge. */
     reachableSample: { x: number; y: number }[];
+    /**
+     * True when `reachableSample` is every reachable tile, so a tile missing from it is
+     * genuinely not connected. False means it is a spread of a larger network and
+     * `reachableTiles` is the real count.
+     */
+    reachableSampleComplete: boolean;
 }
 
 export interface ParkStatus {
@@ -71,6 +115,54 @@ export interface ParkStatus {
 function doorTile(access: CoordsXYZD): { x: number; y: number } {
     const towardsRide = DIRECTION_VECTORS[access.direction % 4];
     return { x: access.x / 32 - towardsRide.dx, y: access.y / 32 - towardsRide.dy };
+}
+
+/**
+ * Which way a built stall faces, read off its own track element.
+ *
+ * Nothing else on a `Ride` records it: the rotation a stall was placed at survives only as
+ * the `direction` the game stored on the track. No track on the tile means no stall on the
+ * ground, and null rather than a guessed facing.
+ */
+function shopRotation(x: number, y: number, rideId: number): number | null {
+    const tile = map.getTile(x, y);
+
+    for (let i = 0; i < tile.numElements; i++) {
+        const element = tile.getElement(i);
+
+        if (element.type !== "track") {
+            continue;
+        }
+
+        const track = element as TrackElement;
+
+        if (track.ride === rideId) {
+            return track.direction;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * The one tile a stall is served from: its neighbour in the direction it faces, which is
+ * what `shopServingTile` answers for find_build_sites and build_flat_ride as well.
+ *
+ * Measured in the running game, not reasoned: a rotation-1 stall at 56,33 was ringed with
+ * footpath on all four sides and only the tile on its facing side formed a footpath edge
+ * to it. A path on one of the other three touches its wall and serves nobody, so counting
+ * any of the four neighbours reported a stall as working when no guest could buy from it.
+ */
+function shopCounterTile(start: CoordsXYZ | null, rideId: number): { x: number; y: number } | null {
+    if (!start) {
+        return null;
+    }
+
+    const x = start.x / 32;
+    const y = start.y / 32;
+    const rotation = shopRotation(x, y, rideId);
+
+    return rotation === null ? null : shopServingTile(x, y, rotation);
 }
 
 function queueServes(entrance: CoordsXYZD | null, rideId: number): boolean {
@@ -132,6 +224,15 @@ export function readParkStatus(): ParkStatus {
         const station = ride.stations.length > 0 ? ride.stations[0] : undefined;
         const entrance = station && station.entrance ? station.entrance : null;
         const exit = station && station.exit ? station.exit : null;
+        const entranceDoor = entrance ? doorTile(entrance) : null;
+        const exitDoor = exit ? doorTile(exit) : null;
+        const shape = flatRideShape(ride.type);
+        const isShop = typeof shape !== "undefined" && shape.isShop;
+        // A shop with no entrance is served off the path; anything with a door is judged by it.
+        const overTheCounter = isShop && entrance === null;
+        const counter = overTheCounter
+            ? shopCounterTile(station ? station.start : null, ride.id)
+            : null;
 
         return {
             id: ride.id,
@@ -144,13 +245,21 @@ export function readParkStatus(): ParkStatus {
             totalCustomers: ride.totalCustomers,
             totalProfit: ride.totalProfit,
             queueTime: station ? station.queueTime : 0,
-            hasQueue: queueServes(entrance, ride.id),
-            guestsCanReach: entrance !== null
-                && queueServes(entrance, ride.id)
-                && tileIsWalkable(walkableNow, doorTile(entrance)),
-            exitConnected: exit !== null && tileIsWalkable(walkableNow, doorTile(exit)),
+            isShop: isShop,
+            hasQueue: overTheCounter ? null : queueServes(entrance, ride.id),
+            guestsCanReach: overTheCounter
+                ? counter !== null && tileIsWalkable(walkableNow, counter)
+                : entranceDoor !== null
+                    && queueServes(entrance, ride.id)
+                    && tileIsWalkable(walkableNow, entranceDoor),
+            counter: counter,
+            exitConnected: overTheCounter
+                ? null
+                : exitDoor !== null && tileIsWalkable(walkableNow, exitDoor),
             entrance: entrance ? { x: entrance.x / 32, y: entrance.y / 32 } : null,
             exit: exit ? { x: exit.x / 32, y: exit.y / 32 } : null,
+            entranceDoor: entranceDoor,
+            exitDoor: exitDoor,
             downtime: ride.downtime,
             reliability: ride.reliability,
             brokenDown: (ride.flags & RIDE_FLAG_BROKEN_DOWN) !== 0,
@@ -160,15 +269,10 @@ export function readParkStatus(): ParkStatus {
     });
 
     // Expenditure comes back signed, so summing the streams gives net profit per month.
-    const streams: ExpenditureType[] = [
-        "park_entrance_tickets", "park_ride_tickets", "shop_sales", "shop_stock",
-        "food_drink_sales", "food_drink_stock", "ride_runningcosts", "wages",
-        "marketing", "research", "interest"
-    ];
     const profit: number[] = [0, 0, 0, 0];
 
-    for (let s = 0; s < streams.length; s++) {
-        const months = park.getMonthlyExpenditure(streams[s]);
+    for (let s = 0; s < EXPENDITURE_STREAMS.length; s++) {
+        const months = park.getMonthlyExpenditure(EXPENDITURE_STREAMS[s]);
 
         for (let i = 0; i < profit.length && i < months.length; i++) {
             profit[i] += months[i] || 0;
@@ -177,7 +281,8 @@ export function readParkStatus(): ParkStatus {
 
     const reachableKeys = Object.keys(walkableNow);
     const sample: { x: number; y: number }[] = [];
-    const stride = Math.max(1, Math.floor(reachableKeys.length / 12));
+    const complete = reachableKeys.length <= MAX_REPORTED_PATH_TILES;
+    const stride = complete ? 1 : Math.ceil(reachableKeys.length / MAX_REPORTED_PATH_TILES);
 
     for (let i = 0; i < reachableKeys.length; i += stride) {
         const parts = reachableKeys[i].split(",");
@@ -189,7 +294,8 @@ export function readParkStatus(): ParkStatus {
         paths: {
             entrance: findParkEntranceTiles(),
             reachableTiles: reachableKeys.length,
-            reachableSample: sample
+            reachableSample: sample,
+            reachableSampleComplete: complete
         },
         parkOpen: park.getFlag("open"),
         date: { year: date.year, month: date.month, day: date.day },
