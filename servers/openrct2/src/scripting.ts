@@ -82,6 +82,10 @@ function collectKeys(value: object): string[] {
     return keys;
 }
 
+export function sanitizeValue(value: unknown): unknown {
+    return sanitize(value, 0, [], { nodes: MAX_NODES });
+}
+
 function sanitize(value: unknown, depth: number, stack: object[], budget: Budget): unknown {
     if (budget.nodes <= 0) {
         return "<truncated: too many values>";

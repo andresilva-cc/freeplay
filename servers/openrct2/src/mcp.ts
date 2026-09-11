@@ -1,6 +1,7 @@
 import type { HttpRequest, RequestContext } from "./http/types.js";
 import { HttpResponse } from "./http/response.js";
 import { BUILD_ID } from "./buildInfo.js";
+import { sanitizeValue } from "./scripting.js";
 import { getMcpTools, invokeMcpTool, isDeferredMcpResult } from "./tools/index.js";
 import type { DeferredMcpResult, McpToolDefinition, McpToolSchema } from "./tools/index.js";
 
@@ -193,7 +194,14 @@ function validateAgainstSchema(value: unknown, schema: McpToolSchema): Validatio
     };
 }
 
-function createToolResult(result: unknown): Record<string, unknown> {
+/**
+ * Every tool's result goes through the same sanitiser, not just evaluate's: native
+ * OpenRCT2 objects expose their data through prototype getters and would otherwise
+ * serialise as {}, silently emptying a field the model was told to rely on.
+ */
+function createToolResult(rawResult: unknown): Record<string, unknown> {
+    const result = sanitizeValue(rawResult);
+
     if (isRecord(result)) {
         return {
             content: [
