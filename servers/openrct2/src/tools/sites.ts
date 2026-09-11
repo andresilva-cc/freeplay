@@ -13,6 +13,7 @@ export class SiteTools {
             "door's distance to the nearest footpath. Pick any two for the entrance and exit — putting both",
             "on the same side usually makes a shorter, straighter queue than opposite sides.",
             "`sceneryToClear` counts tiles holding trees: the site works, but run `clear_scenery` first.",
+            "For a shop, `access` does not apply — it has no entrance or exit, and just needs a path beside it.",
             "Sites come back nearest-to-a-path first and cut to `limit`; `totalFound` says how many exist,",
             "so raise `limit` if you want to weigh somewhere further out."
         ].join(" "),

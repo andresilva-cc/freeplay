@@ -36,7 +36,7 @@ export interface BuildSite {
     access: AccessOption[];
     /** How many positions exist in total, before this list was trimmed. */
     accessTotal: number;
-    /** The shortest door-to-footpath distance among those options. */
+    /** Distance to the nearest footpath: from the best door, or from the shop itself. */
     pathDistance: number;
     /** Tiles to the nearest existing ride. Small numbers mean no room for queues between them. */
     nearestRideDistance: number;
@@ -44,7 +44,7 @@ export interface BuildSite {
 
 export interface SiteSearchResult {
     ok: boolean;
-    ride?: { name: string; rideType: number; width: number; depth: number };
+    ride?: { name: string; rideType: number; width: number; depth: number; isShop: boolean };
     sites?: BuildSite[];
     /** How many sites matched before the list was cut to `limit`. */
     totalFound?: number;
@@ -210,7 +210,8 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     });
                 }
 
-                if (options.length < 2) {
+                // A shop has no entrance or exit; it just needs a path beside it.
+                if (!shape.isShop && options.length < 2) {
                     continue;
                 }
 
@@ -221,10 +222,13 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                 });
 
                 const shown = options.slice(0, MAX_ACCESS_OPTIONS);
+                const distanceToPath = shape.isShop
+                    ? nearestPathDistance(paths, cx, cy)
+                    : (shown.length > 0 ? shown[0].pathDistance : Infinity);
 
-                const shortest = shown[0].pathDistance;
 
-                if (shortest === Infinity) {
+
+                if (distanceToPath === Infinity) {
                     continue;
                 }
 
@@ -245,7 +249,7 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     access: shown,
                     accessTotal: options.length,
                     nearestRideDistance: nearestRide === Infinity ? -1 : nearestRide,
-                    pathDistance: shortest
+                    pathDistance: distanceToPath
                 });
             }
         }
@@ -280,7 +284,7 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
 
     return {
         ok: true,
-        ride: { name: rideObject.name, rideType: rideType, width: shape.width, depth: shape.depth },
+        ride: { name: rideObject.name, rideType: rideType, width: shape.width, depth: shape.depth, isShop: shape.isShop },
         sites: chosen,
         totalFound: found.length
     };

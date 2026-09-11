@@ -10,7 +10,8 @@ export class BuildTools {
             "Create a flat ride, place it on the ground, attach an entrance and an exit, set the price and open it.",
             "Take `x`, `y` and `rotation` straight from a `find_build_sites` result; the footprint is worked out",
             "from the ride itself, so there is no size to get wrong.",
-            "You choose where the doors go with `entranceX`/`entranceY` and `exitX`/`exitY`, from the site's",
+            "Shops and stalls have no entrance or exit: leave those out, and put a path beside them instead.",
+            "For everything else you choose where the doors go with `entranceX`/`entranceY` and `exitX`/`exitY`, from the site's",
             "`access` options. That placement decides the queue's shape: both on the same side usually gives a",
             "shorter, straighter queue than opposite sides.",
             "It builds no paths: use `build_path` for the queue and for the walk away from the exit.",
@@ -35,7 +36,7 @@ export class BuildTools {
                 entranceObject: { type: "integer", description: "Style of the entrance and exit buildings. Default 0." },
                 inspectionInterval: { type: "integer", description: "How often mechanics inspect: 0 is most frequent, 6 is never. Default 2." }
             },
-            required: ["rideObject", "x", "y", "rotation", "entranceX", "entranceY", "exitX", "exitY"],
+            required: ["rideObject", "x", "y", "rotation"],
             additionalProperties: false
         },
         annotations: {
@@ -64,8 +65,12 @@ export class BuildTools {
             colour2: number(args.colour2, 0),
             entranceObject: number(args.entranceObject, 0),
             inspectionInterval: number(args.inspectionInterval, 2),
-            entrance: { x: number(args.entranceX, -1), y: number(args.entranceY, -1) },
-            exit: { x: number(args.exitX, -1), y: number(args.exitY, -1) }
+            entrance: typeof args.entranceX === "number" && typeof args.entranceY === "number"
+                ? { x: number(args.entranceX, -1), y: number(args.entranceY, -1) }
+                : undefined,
+            exit: typeof args.exitX === "number" && typeof args.exitY === "number"
+                ? { x: number(args.exitX, -1), y: number(args.exitY, -1) }
+                : undefined
         };
 
         return {

@@ -44,6 +44,9 @@ you will end up with rides that cannot be reached. Leave a few tiles between the
 **`build_flat_ride`** — creates the ride, places it, attaches the entrance and exit you
 chose, sets the price, opens it. It builds no paths.
 
+Shops and stalls are different: they have no entrance or exit at all. Leave those
+arguments out, place the shop on a tile next to a path, and guests buy from the path.
+
 **`build_path`** — a path or a queue between two tiles, routing around obstacles.
 
 **`hire_staff`** — handymen, mechanics, security, entertainers. Each draws wages monthly.

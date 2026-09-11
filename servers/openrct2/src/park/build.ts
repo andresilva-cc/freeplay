@@ -27,10 +27,10 @@ export interface BuildFlatRideRequest {
     entranceObject: number;
     inspectionInterval: number;
     rotation: number;
-    /** Where the entrance and exit buildings go. Required: their placement decides the
-     *  queue's shape, which is park design and therefore the caller's call. */
-    entrance: { x: number; y: number };
-    exit: { x: number; y: number };
+    /** Where the entrance and exit buildings go. Their placement decides the queue's
+     *  shape, which is park design and therefore the caller's call. Shops have neither. */
+    entrance?: { x: number; y: number };
+    exit?: { x: number; y: number };
 }
 
 export interface BuildStep {
@@ -136,20 +136,29 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
         return finish(false, null, null, false);
     }
 
-    const entranceAccess = accessAt(grid, request.x, request.y, offsets, centre.baseZ, request.entrance);
-    const exitAccess = accessAt(grid, request.x, request.y, offsets, centre.baseZ, request.exit);
+    let access: { entrance: { x: number; y: number; direction: number }; exit: { x: number; y: number; direction: number } } | null = null;
 
-    if (!entranceAccess || !exitAccess) {
-        steps.push({
-            step: "site",
-            ok: false,
-            detail: "The entrance or exit tile is not a clear, level, owned tile touching the footprint."
-                + " Use an option from this site's `access` list."
-        });
-        return finish(false, null, null, false);
+    if (!shape.isShop) {
+        if (!request.entrance || !request.exit) {
+            steps.push({ step: "site", ok: false, detail: "This ride needs an entrance and an exit tile from the site's `access` list." });
+            return finish(false, null, null, false);
+        }
+
+        const entranceAccess = accessAt(grid, request.x, request.y, offsets, centre.baseZ, request.entrance);
+        const exitAccess = accessAt(grid, request.x, request.y, offsets, centre.baseZ, request.exit);
+
+        if (!entranceAccess || !exitAccess) {
+            steps.push({
+                step: "site",
+                ok: false,
+                detail: "The entrance or exit tile is not a clear, level, owned tile touching the footprint."
+                    + " Use an option from this site's `access` list."
+            });
+            return finish(false, null, null, false);
+        }
+
+        access = { entrance: entranceAccess, exit: exitAccess };
     }
-
-    const access = { entrance: entranceAccess, exit: exitAccess };
 
     const idsBefore: Record<number, boolean> = {};
     map.rides.forEach(function (ride) {
@@ -210,49 +219,80 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
 
             steps.push({ step: "trackplace", ok: true, detail: "track type " + String(trackType) });
 
-            context.executeAction("rideentranceexitplace", {
-                x: toWorld(access.entrance.x), y: toWorld(access.entrance.y),
-                direction: access.entrance.direction, ride: created, station: 0, isExit: false
-            }, function () { /* verified by re-read */ });
+            if (access) {
+                context.executeAction("rideentranceexitplace", {
+                    x: toWorld(access.entrance.x), y: toWorld(access.entrance.y),
+                    direction: access.entrance.direction, ride: created, station: 0, isExit: false
+                }, function () { /* verified by re-read */ });
 
-            context.executeAction("rideentranceexitplace", {
-                x: toWorld(access.exit.x), y: toWorld(access.exit.y),
-                direction: access.exit.direction, ride: created, station: 0, isExit: true
-            }, function () { /* verified by re-read */ });
+                context.executeAction("rideentranceexitplace", {
+                    x: toWorld(access.exit.x), y: toWorld(access.exit.y),
+                    direction: access.exit.direction, ride: created, station: 0, isExit: true
+                }, function () { /* verified by re-read */ });
+            }
 
             context.setTimeout(function () {
-                const station = map.getRide(created).stations[0];
+                if (access) {
+                    const station = map.getRide(created).stations[0];
 
-                if (!station || !station.entrance || !station.exit) {
-                    steps.push({ step: "entrance/exit", ok: false, detail: "Entrance or exit did not attach to the station." });
-                    return finish(false, created, map.getRide(created).name, false);
+                    if (!station || !station.entrance || !station.exit) {
+                        steps.push({ step: "entrance/exit", ok: false, detail: "Entrance or exit did not attach to the station." });
+                        return finish(false, created, map.getRide(created).name, false);
+                    }
+
+                    steps.push({
+                        step: "entrance/exit",
+                        ok: true,
+                        detail: "entrance " + String(access.entrance.x) + "," + String(access.entrance.y)
+                            + " exit " + String(access.exit.x) + "," + String(access.exit.y)
+                    });
+                } else {
+                    steps.push({ step: "entrance/exit", ok: true, detail: "shops have none; guests buy from the path beside it" });
                 }
-
-                steps.push({
-                    step: "entrance/exit",
-                    ok: true,
-                    detail: "entrance " + String(access.entrance.x) + "," + String(access.entrance.y)
-                        + " exit " + String(access.exit.x) + "," + String(access.exit.y)
-                });
 
                 context.setTimeout(function () {
                     // Report, do not fix: where paths go is the player's decision.
-                    const entranceDoor = apronTile(access.entrance);
-                    const exitDoor = apronTile(access.exit);
                     const nowWalkable = walkableFromParkEntrance();
-                    const queued = queuePathServes(entranceDoor, created);
-                    const exitOk = tileIsWalkable(nowWalkable, exitDoor);
-                    const reachable = queued && tileIsWalkable(nowWalkable, entranceDoor);
+                    let reachable: boolean;
 
-                    steps.push({
-                        step: "access",
-                        ok: reachable && exitOk,
-                        detail: "entrance door is at " + String(entranceDoor.x) + "," + String(entranceDoor.y)
-                            + " and exit door at " + String(exitDoor.x) + "," + String(exitDoor.y) + ". "
-                            + (queued ? "A queue serves the entrance" : "NO QUEUE at the entrance - guests cannot board")
-                            + "; " + (exitOk ? "the exit reaches the park's paths" : "the exit is not connected")
-                            + (reachable && exitOk ? "." : ". Use build_path to connect them.")
-                    });
+                    if (access) {
+                        const entranceDoor = apronTile(access.entrance);
+                        const exitDoor = apronTile(access.exit);
+                        const queued = queuePathServes(entranceDoor, created);
+                        const exitOk = tileIsWalkable(nowWalkable, exitDoor);
+                        reachable = queued && tileIsWalkable(nowWalkable, entranceDoor);
+
+                        steps.push({
+                            step: "access",
+                            ok: reachable && exitOk,
+                            detail: "entrance door is at " + String(entranceDoor.x) + "," + String(entranceDoor.y)
+                                + " and exit door at " + String(exitDoor.x) + "," + String(exitDoor.y) + ". "
+                                + (queued ? "A queue serves the entrance" : "NO QUEUE at the entrance - guests cannot board")
+                                + "; " + (exitOk ? "the exit reaches the park's paths" : "the exit is not connected")
+                                + (reachable && exitOk ? "." : ". Use build_path to connect them.")
+                        });
+                    } else {
+                        // A shop is served by whichever path touches it.
+                        const steps4 = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
+                        let touching = false;
+
+                        for (let i = 0; i < steps4.length; i++) {
+                            if (tileIsWalkable(nowWalkable, { x: request.x + steps4[i].dx, y: request.y + steps4[i].dy })) {
+                                touching = true;
+                                break;
+                            }
+                        }
+
+                        reachable = touching;
+                        steps.push({
+                            step: "access",
+                            ok: touching,
+                            detail: touching
+                                ? "A path reaches this shop."
+                                : "NO PATH touches this shop, so nobody can buy from it. Run build_path to one of its"
+                                    + " four neighbouring tiles."
+                        });
+                    }
 
                     context.executeAction("ridesetprice", { ride: created, price: request.price, isPrimaryPrice: true }, function () { /* verified by re-read */ });
 
