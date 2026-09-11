@@ -21,8 +21,7 @@ export class EvalTools {
                     description: "JavaScript to evaluate in the plugin context."
                 }
             },
-            required: ["code"],
-            additionalProperties: false
+            required: ["code"]
         },
         annotations: {
             readOnlyHint: false,

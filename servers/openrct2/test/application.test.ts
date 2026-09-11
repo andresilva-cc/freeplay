@@ -497,19 +497,28 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
         };
 
         assert.equal(listResponse.statusCode, 200);
-        assert.equal(listBody.result.tools.length, 4);
-        assert.equal(listBody.result.tools[0].name, "get_date");
-        assert.equal(listBody.result.tools[0].title, "Get the current date");
-        assert.equal(listBody.result.tools[0].inputSchema.type, "object");
-        assert.equal(listBody.result.tools[0].inputSchema.additionalProperties, false);
-        assert.equal(typeof listBody.result.tools[0].outputSchema, "undefined");
-        assert.equal(listBody.result.tools[0].annotations?.readOnlyHint, true);
-        assert.equal(listBody.result.tools[1].name, "evaluate");
-        assert.equal(listBody.result.tools[1].annotations?.readOnlyHint, false);
-        assert.equal(listBody.result.tools[2].name, "get_park_info");
-        assert.equal(listBody.result.tools[2].outputSchema?.type, "object");
-        assert.equal(listBody.result.tools[3].name, "show_error");
-        assert.deepEqual(listBody.result.tools[3].inputSchema, {
+
+        const toolsByName: Record<string, (typeof listBody.result.tools)[number]> = {};
+        listBody.result.tools.forEach(function (tool) {
+            toolsByName[tool.name] = tool;
+        });
+
+        assert.deepEqual(
+            Object.keys(toolsByName).sort(),
+            ["build_flat_ride", "build_path", "evaluate", "find_build_sites", "get_date", "get_park_info", "show_error"]
+        );
+
+        assert.equal(toolsByName.get_date.title, "Get the current date");
+        assert.equal(toolsByName.get_date.inputSchema.type, "object");
+        assert.equal(toolsByName.get_date.inputSchema.additionalProperties, false);
+        assert.equal(typeof toolsByName.get_date.outputSchema, "undefined");
+        assert.equal(toolsByName.get_date.annotations?.readOnlyHint, true);
+        assert.equal(toolsByName.evaluate.annotations?.readOnlyHint, false);
+        assert.equal(toolsByName.find_build_sites.annotations?.readOnlyHint, true);
+        assert.equal(toolsByName.build_flat_ride.annotations?.readOnlyHint, false);
+        assert.equal(toolsByName.build_path.annotations?.readOnlyHint, false);
+        assert.equal(toolsByName.get_park_info.outputSchema?.type, "object");
+        assert.deepEqual(toolsByName.show_error.inputSchema, {
             type: "object",
             properties: {
                 title: { type: "string" },

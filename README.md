@@ -83,9 +83,11 @@ against what the game says. Those are all interesting and all deferred, because 
 design choice past this point currently rests on a guess about how a model behaves when
 you hand it a theme park. One run replaces the guesses.
 
-[docs/why-this-is-hard.md](docs/why-this-is-hard.md) covers the problems that show up
-once runs get long, and [docs/game-selection.md](docs/game-selection.md) covers what
-makes a game reachable this way at all.
+[docs/tool-design.md](docs/tool-design.md) covers where the line sits between helping
+the model and playing for it. [docs/why-this-is-hard.md](docs/why-this-is-hard.md) covers
+the problems that show up once runs get long, and
+[docs/game-selection.md](docs/game-selection.md) covers what makes a game reachable this
+way at all.
 
 ## Layout
 

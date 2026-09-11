@@ -5,6 +5,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 const embeddedStaticSourcePath = path.resolve("src", "embeddedStaticAssets.js");
+const buildInfoSourcePath = path.resolve("src", "buildInfo.ts");
+const buildId = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
 
 function getContentType(fileName) {
     if (fileName.endsWith(".html")) {
@@ -50,6 +52,10 @@ function embeddedStaticAssets() {
             });
         },
         load(id) {
+            if (path.resolve(id) === buildInfoSourcePath) {
+                return `export const BUILD_ID = ${JSON.stringify(buildId)};`;
+            }
+
             if (path.resolve(id) !== embeddedStaticSourcePath) {
                 return null;
             }

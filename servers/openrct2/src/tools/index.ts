@@ -1,15 +1,21 @@
 import { getMcpToolDefinitions } from "./decorators.js";
+import { BuildTools } from "./build.js";
 import { DateTools } from "./date.js";
 import { EvalTools } from "./eval.js";
 import { ParkTools } from "./park.js";
+import { PathTools } from "./path.js";
+import { SiteTools } from "./sites.js";
 import { UiTools } from "./ui.js";
 import type { McpToolAction, McpToolClass, McpToolDefinition } from "./types.js";
 
 export function getMcpToolControllers(): McpToolClass[] {
     return [
+        BuildTools,
         DateTools,
         EvalTools,
         ParkTools,
+        PathTools,
+        SiteTools,
         UiTools
     ];
 }
@@ -32,4 +38,5 @@ export function invokeMcpTool(tool: McpToolDefinition, argumentsObject: Record<s
 }
 
 export { mcpTool, mcpToolController } from "./decorators.js";
-export type { McpToolAnnotations, McpToolDefinition, McpToolOptions, McpToolSchema } from "./types.js";
+export { isDeferredMcpResult } from "./types.js";
+export type { DeferredMcpResult, McpToolAnnotations, McpToolDefinition, McpToolOptions, McpToolSchema } from "./types.js";

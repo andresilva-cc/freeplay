@@ -1,10 +1,14 @@
-import type { HttpRequest } from "./http/types.js";
-import type { HttpResponse } from "./http/response.js";
-import { getMcpTools, invokeMcpTool } from "./tools/index.js";
-import type { McpToolDefinition, McpToolSchema } from "./tools/index.js";
+import type { HttpRequest, RequestContext } from "./http/types.js";
+import { HttpResponse } from "./http/response.js";
+import { BUILD_ID } from "./buildInfo.js";
+import { getMcpTools, invokeMcpTool, isDeferredMcpResult } from "./tools/index.js";
+import type { DeferredMcpResult, McpToolDefinition, McpToolSchema } from "./tools/index.js";
 
 const JSON_RPC_VERSION = "2.0";
 const MCP_PROTOCOL_VERSION = "2025-11-25";
+
+/** A deferred tool that never resolves must not hold the socket open forever. */
+const DEFERRED_TIMEOUT_MS = 30000;
 
 interface JsonRpcError {
     code: number;
@@ -220,7 +224,7 @@ export class McpServer {
         }, {} as Record<string, McpToolDefinition | undefined>);
     }
 
-    public handlePost(request: HttpRequest, response: HttpResponse): HttpResponse {
+    public handlePost(request: HttpRequest, response: HttpResponse, requestContext?: RequestContext): HttpResponse {
         if (!isAllowedOrigin(request.getHeader("origin"))) {
             return response.setJson({
                 jsonrpc: JSON_RPC_VERSION,
@@ -254,7 +258,7 @@ export class McpServer {
             return response.setStatus(202);
         }
 
-        return this.handleRequestMessage(request, response, message);
+        return this.handleRequestMessage(request, response, message, requestContext);
     }
 
     private parseMessage(body: string, response: HttpResponse): JsonRpcRequestMessage | JsonRpcNotificationMessage | JsonRpcResponseMessage | undefined {
@@ -343,7 +347,8 @@ export class McpServer {
     private handleRequestMessage(
         request: HttpRequest,
         response: HttpResponse,
-        message: JsonRpcRequestMessage
+        message: JsonRpcRequestMessage,
+        requestContext?: RequestContext
     ): HttpResponse {
         if (message.method === "initialize") {
             return this.handleInitialize(response, message);
@@ -373,7 +378,7 @@ export class McpServer {
         }
 
         if (message.method === "tools/call") {
-            return this.handleToolCall(response, message);
+            return this.handleToolCall(response, message, requestContext);
         }
 
         return this.setJsonRpcError(response, message.id, {
@@ -415,14 +420,14 @@ export class McpServer {
             serverInfo: {
                 name: "freeplay-openrct2",
                 title: "Freeplay OpenRCT2 bridge",
-                version: "0.1.0",
+                version: "0.1.0+" + BUILD_ID,
                 description: "MCP bridge into a running OpenRCT2 game."
             },
             instructions: "Use `evaluate` to run JavaScript against the OpenRCT2 plugin API to read park state and take actions."
         });
     }
 
-    private handleToolCall(response: HttpResponse, message: JsonRpcRequestMessage): HttpResponse {
+    private handleToolCall(response: HttpResponse, message: JsonRpcRequestMessage, requestContext?: RequestContext): HttpResponse {
         const params = message.params;
 
         if (!isRecord(params) || !isString(params.name)) {
@@ -453,6 +458,11 @@ export class McpServer {
         }
 
         const result = invokeMcpTool(tool, (params.arguments as Record<string, unknown>) || {});
+
+        if (isDeferredMcpResult(result)) {
+            return this.handleDeferredToolCall(response, message, result, requestContext);
+        }
+
         const resultPayload = createToolResult(result);
 
         if (typeof tool.outputSchema !== "undefined" && typeof resultPayload.structuredContent !== "undefined") {
@@ -464,6 +474,59 @@ export class McpServer {
         }
 
         return this.setJsonRpcResult(response, message.id, resultPayload);
+    }
+
+    private handleDeferredToolCall(
+        response: HttpResponse,
+        message: JsonRpcRequestMessage,
+        deferred: DeferredMcpResult,
+        requestContext?: RequestContext
+    ): HttpResponse {
+        const channel = requestContext ? requestContext.connection.takeOver() : undefined;
+
+        if (typeof channel === "undefined") {
+            return this.setJsonRpcError(response, message.id, {
+                code: -32603,
+                message: "This tool needs a live connection and cannot run on this transport."
+            });
+        }
+
+        let settled = false;
+        const send = function (payload: Record<string, unknown>): void {
+            if (settled) {
+                return;
+            }
+            settled = true;
+
+            const deferredResponse = new HttpResponse();
+            deferredResponse.setHeader("MCP-Protocol-Version", MCP_PROTOCOL_VERSION);
+            deferredResponse.setJson({
+                jsonrpc: JSON_RPC_VERSION,
+                id: message.id,
+                result: payload
+            }, 200);
+            channel.close(deferredResponse.toHttpString());
+        };
+
+        context.setTimeout(function () {
+            send({
+                content: [createTextContent("The tool did not finish in time; check the game state before retrying.")],
+                isError: true
+            });
+        }, DEFERRED_TIMEOUT_MS);
+
+        try {
+            deferred.start(function (value) {
+                send(createToolResult(value));
+            });
+        } catch (error) {
+            send({
+                content: [createTextContent("Tool failed: " + String(error))],
+                isError: true
+            });
+        }
+
+        return response;
     }
 
     private requireSession(request: HttpRequest, response: HttpResponse): McpSession | undefined {

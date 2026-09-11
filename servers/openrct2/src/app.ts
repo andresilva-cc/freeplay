@@ -191,8 +191,8 @@ export function createApplication(): Application {
         description: "Handles MCP Streamable HTTP POST requests for initialization, tool discovery, and tool invocation.",
         responseDescription: "MCP response",
         hideFromOpenApi: false,
-        handler: function (request, response) {
-            return mcpServer.handlePost(request, response);
+        handler: function (request, response, context) {
+            return mcpServer.handlePost(request, response, context);
         }
     });
 

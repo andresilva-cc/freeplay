@@ -42,3 +42,19 @@ export interface McpToolDefinition {
 }
 
 export type McpToolAction = (argumentsObject: Record<string, unknown>) => unknown;
+
+/**
+ * A tool whose work spans game ticks. The MCP layer hijacks the connection and
+ * answers once `start` resolves, so the caller still sees one request and one result.
+ */
+export interface DeferredMcpResult {
+    deferred: true;
+    start(resolve: (value: unknown) => void): void;
+}
+
+export function isDeferredMcpResult(value: unknown): value is DeferredMcpResult {
+    return typeof value === "object"
+        && value !== null
+        && (value as DeferredMcpResult).deferred === true
+        && typeof (value as DeferredMcpResult).start === "function";
+}
