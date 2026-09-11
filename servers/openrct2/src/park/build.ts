@@ -217,7 +217,13 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
         context.setTimeout(function () {
             if (!tileHasTrackFor(request.x, request.y, created)) {
                 steps.push({ step: "trackplace", ok: false, detail: actionError(trackResult) || "Nothing was built on the ground." });
-                return finish(false, created, map.getRide(created) ? map.getRide(created).name : null, false);
+
+                // ridecreate succeeded, so without this the park keeps a ride with no
+                // track on it forever, occupying an id and showing up in park_status.
+                context.executeAction("ridedemolish", { ride: created, modifyType: 0 }, function () { /* best effort */ });
+                steps.push({ step: "cleanup", ok: true, detail: "removed the ride that had nothing built on it" });
+
+                return finish(false, null, null, false);
             }
 
             steps.push({ step: "trackplace", ok: true, detail: "track type " + String(trackType) });

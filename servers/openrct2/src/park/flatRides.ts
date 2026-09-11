@@ -54,12 +54,51 @@ export interface Offset {
 /**
  * Tiles a flat ride covers, relative to the origin passed to `trackplace`.
  *
- * Verified in game: a 1x1 stall covers only its origin, and a 1x4 Ferris Wheel placed
- * at rotation 0 covers -2..+1 along x. So a run of N tiles spans -floor(N/2) to
- * N-1-floor(N/2), which also matches the 3x3 case where the origin is the centre.
- * Odd rotations swap the two axes.
+ * Read from the game, because there is no formula. A 3x3 is centred on its origin
+ * (-1..+1) and so is a 1x4 (-2..+1), but a 4x4 runs 0..3 from its origin and a 2x4 is
+ * centred on neither axis. Assuming a rule put a dodgems' entrance three tiles clear of
+ * the ride, with every check agreeing it was adjacent.
+ *
+ * `computeFootprintOffsets` remains as a fallback for when the game is not there.
  */
 export function footprintOffsets(shape: FlatRideShape, rotation: number): Offset[] {
+    const fromGame = segmentOffsets(shape.trackType, rotation);
+    return fromGame === null ? computeFootprintOffsets(shape, rotation) : fromGame;
+}
+
+/** The piece's own tile offsets, turned to face `rotation`. */
+function segmentOffsets(trackType: number, rotation: number): Offset[] | null {
+    if (typeof context === "undefined" || typeof context.getTrackSegment !== "function") {
+        return null;
+    }
+
+    const segment = context.getTrackSegment(trackType);
+
+    if (!segment || !segment.elements || segment.elements.length === 0) {
+        return null;
+    }
+
+    const turns = ((rotation % 4) + 4) % 4;
+    const offsets: Offset[] = [];
+
+    for (let i = 0; i < segment.elements.length; i++) {
+        let dx = segment.elements[i].x / 32;
+        let dy = segment.elements[i].y / 32;
+
+        for (let t = 0; t < turns; t++) {
+            const spun = { dx: -dy, dy: dx };
+            dx = spun.dx;
+            dy = spun.dy;
+        }
+
+        offsets.push({ dx: dx || 0, dy: dy || 0 });
+    }
+
+    return offsets;
+}
+
+/** The shape a footprint would have if pieces followed a rule. They do not. */
+export function computeFootprintOffsets(shape: FlatRideShape, rotation: number): Offset[] {
     const alongX = (rotation % 2) === 0 ? shape.depth : shape.width;
     const alongY = (rotation % 2) === 0 ? shape.width : shape.depth;
 
