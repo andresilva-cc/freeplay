@@ -493,7 +493,7 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
                         + " actually walk to - rather than at a neighbouring tile that happens to be paved.")
                 + (replacedQueue > 0
                     ? " WARNING: " + String(replacedQueue) + " tiles replaced an existing queue line with ordinary path,"
-                        + " which unbinds it from its ride. Rebuild that queue."
+                        + " which unbinds it from its ride."
                     : "")
                 + (lost > 0
                     ? " WARNING: " + String(lost) + " path tiles are no longer reachable from the park entrance."

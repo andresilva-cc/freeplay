@@ -462,6 +462,14 @@ test("a shop is served from the neighbour its rotation points at", function () {
             });
 
             assert.match(String(result.note), /no entrance or exit/);
+            assert.match(String(result.note), /0 is -x, 1 is \+y, 2 is \+x, 3 is -y/,
+                "which neighbour each rotation serves from is the game's geometry and has to stay");
+            assert.match(String(result.note), /an ordinary path, not a queue/,
+                "that a stall takes a path rather than a queue is a rule, not a preference");
+            assert.match(String(result.note), /there is no `door` beyond it/,
+                "and why it is that tile itself, not one further out, stays with it");
+            assert.doesNotMatch(String(result.note), /Run build_path/,
+                "whether to pave that tile at all is the decision find_build_sites exists to hand over");
         } finally {
             restore();
         }

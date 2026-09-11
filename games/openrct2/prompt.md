@@ -17,7 +17,7 @@ All of it. Miss one and the ride is finished, paid for, and earning nothing.
 - That queue joins path the gate can reach. `guestsCanReach` is what proves it;
   `hasQueue` alone proves nothing, because a queue can be an island.
 - A path reaches its `exitDoor`, or guests board and cannot get off: `exitConnected`.
-- The price is one guests will pay: they weigh `price` against that ride's `value`.
+- Guests weigh `price` against that ride's `value`.
 
 A stall has none of that — no entrance, exit or queue. It sells over the counter from
 the ONE tile it faces, fixed by the `rotation` you built it at and reported as
@@ -25,6 +25,9 @@ the ONE tile it faces, fixed by the `rotation` you built it at and reported as
 wall and sell nothing.
 
 ## Building a ride
+
+`build_flat_ride` is the only build tool there is, and it puts up flat rides and stalls
+only; `isFlatRide: false` is a tracked ride, laid piece by piece with `evaluate`.
 
 1. `find_build_sites` with an `index` from `list_ride_objects`, and pick a site.
 2. If scenery is in the way — `sceneryToClear` above 0, or an access option saying
@@ -102,5 +105,5 @@ Time runs while you think, so what you read is a snapshot, not a freeze-frame.
    an identical answer. If the message names a fix, make exactly that change. If two
    results disagree, `park_status` settles it. Never retry to see whether it helps.
 
-Few considered decisions beat many speculative ones; every call spends context you will
-want later. Say what you are doing and why in a sentence or two, then do it.
+Every call spends context you will want later. Say what you are doing and why in a
+sentence or two, then do it.

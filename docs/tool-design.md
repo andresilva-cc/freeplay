@@ -21,6 +21,20 @@ what to charge, when to open the park, and what to do about a falling rating. Th
 the game. A tool that makes those choices is not helping the model play; it is playing
 instead of it, and the run stops being evidence of anything.
 
+### The same rule binds the prompt
+
+`games/openrct2/prompt.md` is governed by this document too, and it is the larger
+influence of the two: a tool description is read when its tool is in play, the prompt is
+read on every turn of every run. The line is the same one, drawn precisely. **A fact about
+how the simulation works stays** — the model cannot read OpenRCT2's source, so a game rule
+is knowledge it has no other way to get, and cutting it hides the rules rather than
+protecting the model's judgment. **An instruction, preference or steer goes** — it teaches
+nothing and only leans. The test for any sentence is whether it tells the model something
+about the *world* or tells the model what to *do*. This binds tool results as tightly as it
+binds descriptions and the prompt, because a small model follows text more reliably than it
+reasons: a steer sitting in a result does not make a run merely impure, it makes a good run
+unmeasurable, since there is no longer any way to tell the model's decision from the text's.
+
 ## Why perception counts as mechanics
 
 The model has no eyes. A person looking at the map sees a flat green clearing near the
@@ -167,9 +181,27 @@ they ship.
   `operate_ride`'s `price` said "compare against the ride's `value`". A description is the
   one piece of text the model reads every single turn, so a recommendation sitting in one
   is not a hint, it is the tool playing — and the queue advice was the tool choosing the
-  door, which is the decision `find_build_sites` exists to hand over. All three are gone.
-  The measurements they were wrapped around stayed: the sites still report `side`, the
-  rides still report `value`, and an open ride guests cannot reach still costs rating.
+  door, which is the decision `find_build_sites` exists to hand over. Those three went
+  first. The measurements they were wrapped around stayed: the sites still report `side`,
+  the rides still report `value`, and an open ride guests cannot reach still costs rating.
+- Advice comes back, so that is a running total and not a closed list. Eight more sentences
+  have gone since. Three were descriptions again: `clear_scenery` called felling scenery "a
+  trade, not free ground", `park_status` said to reach a stall's counter with `build_path`
+  "rather than rebuilding the stall", and `find_build_sites`' `limit` said to "ask for more
+  only when you need the choice" — an argument against seeing the alternatives the tool
+  exists to offer. The other five were where the first audit had not looked, and were worse
+  for it. Four were in results, each ending by naming the next call: `build_flat_ride`'s
+  access step closed with "Use build_path to connect them", which fired on nearly every ride
+  the model built, because `reachable` is false by design until the queue goes down; its
+  stall step, the shop note on `find_build_sites`, and `build_path`'s queue-unbinding
+  warning did the same. The fifth was the prompt's closing line, "Few considered decisions
+  beat many speculative ones" — a verdict on one play style in the last thing the model
+  reads. Each time the fact the instruction was wrapped around stayed and only the
+  imperative went: the access step still says there is no queue and the exit is not
+  connected, the stall steps still say which one tile is the counter and that a path on the
+  other three sides serves nobody, and the warning still says an ordinary path laid over a
+  queue unbinds it from its ride. Stating the world is the tool doing its job; naming the
+  model's next move is the tool taking the turn.
 - `hire_staff` clamped a `count` outside 1 to 10 into range and then reported the clamped
   number as `requested`. Asking for 30 and being told 10 were requested is a small lie of
   exactly the kind the next section is about. The schema now refuses it by name.

@@ -474,7 +474,12 @@ test("a stall with a path against its back wall is not reachable, and is told wh
         assert.equal(outcome.reachable, false, "but the only path touches its back wall");
         assert.match(detail, /NO PATH guests can reach at 12,10/, "the serving tile is not named");
         assert.match(detail, /only from the neighbour on the side it faces/, "the rule itself is not stated");
-        assert.match(detail, /build_path to 12,10/, "the call that fixes it is not named");
+        assert.match(detail, /other three sides touches a wall and serves nobody/,
+            "the other half of the rule - why the three remaining neighbours are useless - is not stated");
+        assert.match(detail, /The tiles guests can walk to are park_status `paths\.reachableSample`/,
+            "where the reachable tiles are listed is a fact and has to stay");
+        assert.doesNotMatch(detail, /Run build_path to 12,10/,
+            "which tile to pave, and whether to pave one at all, is the model's call");
 
         // The world agrees: there is path beside the stall, and it is the wrong tile.
         assert.ok(game.tile(10, 10).elements.some(function (e) { return e.type === "footpath"; }));
@@ -527,7 +532,13 @@ test("a ride with no queue is built but reported unreachable", function () {
         assert.equal(outcome.reachable, false, "but nobody can get to it");
 
         const access = outcome.steps.filter(function (s) { return s.step === "access"; })[0];
-        assert.match(String(access.detail), /NO QUEUE/);
+        assert.match(String(access.detail), /NO QUEUE at the entrance - guests cannot board/,
+            "the fact stays: a queue bound to the ride is what lets a guest board");
+        assert.match(String(access.detail), /the exit is not connected/,
+            "and so does the other half, which is a separate way to strand guests");
+        assert.doesNotMatch(String(access.detail), /Use build_path to connect them/,
+            "`reachable` is false by design until the queue goes down, so this steer fired on nearly"
+            + " every ride the model ever built; the facts above are what it needs, not the order");
     } finally {
         restore();
     }

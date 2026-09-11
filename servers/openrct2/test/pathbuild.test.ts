@@ -359,6 +359,10 @@ test("ordinary path laid over a queue warns that the queue was unbound", functio
 
         assert.equal(outcome.ok, true, outcome.detail);
         assert.match(outcome.detail, /WARNING: 2 tiles replaced an existing queue line/);
+        assert.match(outcome.detail, /which unbinds it from its ride/,
+            "the unbinding is the fact the warning exists for: nothing else reveals it");
+        assert.doesNotMatch(outcome.detail, /Rebuild that queue/,
+            "the model may not even be able to, and what to do about it is its call either way");
         assert.ok(!/no longer reachable/.test(outcome.detail), "nothing was cut off, so do not say so");
 
         const path = footpathAt(game, 10, 7);

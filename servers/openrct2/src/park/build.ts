@@ -620,7 +620,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                                 + " and exit door at " + String(exitDoor.x) + "," + String(exitDoor.y) + ". "
                                 + (queued ? "A queue serves the entrance" : "NO QUEUE at the entrance - guests cannot board")
                                 + "; " + (exitOk ? "the exit reaches the park's paths" : "the exit is not connected")
-                                + (reachable && exitOk ? "." : ". Use build_path to connect them.")
+                                + "."
                         });
                     } else {
                         // One tile, not four: the game serves a stall from the neighbour on
@@ -641,8 +641,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                                     + " only from the neighbour on the side it faces, which at rotation "
                                     + String(request.rotation) + " is " + String(counter.x) + "," + String(counter.y)
                                     + ". A path on any of its other three sides touches a wall and serves nobody."
-                                    + " Run build_path to " + String(counter.x) + "," + String(counter.y)
-                                    + " from a tile park_status lists under `paths.reachableSample`."
+                                    + " The tiles guests can walk to are park_status `paths.reachableSample`."
                         });
                     }
 

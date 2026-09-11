@@ -658,8 +658,8 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
         : (shape.isShop
             ? "A shop has no entrance or exit. Its one `access` tile is the tile guests are served"
                 + " from, and which neighbour that is comes from the site's `rotation`: 0 is -x, 1 is"
-                + " +y, 2 is +x, 3 is -y. Run build_path onto that tile itself, as an ordinary path,"
-                + " not a queue - there is no `door` beyond it."
+                + " +y, 2 is +x, 3 is -y. That tile takes an ordinary path, not a queue - there is"
+                + " no `door` beyond it."
             : undefined);
 
     return {
