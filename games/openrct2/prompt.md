@@ -67,8 +67,9 @@ and earn nothing.
 1. `find_build_sites` for the ride you want. Pick a site.
 2. `clear_scenery` if `sceneryToClear` is above 0.
 3. `build_flat_ride` with that site's `x`, `y`, `rotation`, and two `access` options for
-   the entrance and exit. **Putting both on the same side gives a shorter, straighter
-   queue.** `ok` means the ride was built; `reachable` will be false until you lay the
+   the entrance and exit. **Pick two options with the same `side` value** — that puts the
+   doors on the same face of the ride and gives a short, straight queue. Opposite sides
+   force a long path around, and on a long ride like a pirate ship they end up far apart. `ok` means the ride was built; `reachable` will be false until you lay the
    paths in step 4. Never rebuild a ride just because `reachable` is false.
 4. `build_path` from the entrance's door tile with `queue: true`, and again from the
    exit's door tile with `queue: false`. Both must reach the park's existing paths —

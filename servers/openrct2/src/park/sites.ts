@@ -19,6 +19,9 @@ export interface AccessOption {
     y: number;
     /** Direction the building faces, pointing at the ride. */
     direction: number;
+    /** Which side of the ride this sits on, as an axis: "+x", "-x", "+y" or "-y".
+     *  Two options sharing a side make a short, straight queue. */
+    side: string;
     door: DoorTile;
     /** Tiles from the door to the nearest existing footpath. 0 means it is already on one. */
     pathDistance: number;
@@ -126,6 +129,14 @@ function nearestPathDistance(paths: { x: number; y: number }[], x: number, y: nu
     return best;
 }
 
+/**
+ * The side of the footprint a tile sits on, indexed by the direction it faces. A door
+ * facing direction 0 has the ride to its -x, so the door itself is on the +x side.
+ * Named by axis rather than compass: the model reasons in tile coordinates, and the
+ * screen's orientation is beside the point.
+ */
+const SIDE_NAMES = ["+x", "-y", "-x", "+y"];
+
 /** Which way a perimeter tile faces: towards whichever footprint tile it touches. */
 function facingDirection(offsets: Offset[], perimeter: Offset): number | null {
     for (let i = 0; i < offsets.length; i++) {
@@ -205,6 +216,7 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                         x: tile.x,
                         y: tile.y,
                         direction: direction,
+                        side: SIDE_NAMES[direction % 4],
                         door: { x: door.x, y: door.y, isExistingPath: doorCell.path },
                         pathDistance: nearestPathDistance(paths, door.x, door.y)
                     });
