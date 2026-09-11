@@ -1,5 +1,5 @@
 import { readMapGrid, toWorld } from "./map.js";
-import { countPathTiles, tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
+import { countNewPathTiles, countPathTiles, tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
 import type { Tile } from "./paths.js";
 
 const STEP_DELAY_MS = 200;
@@ -174,6 +174,7 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
 
     const grid = readMapGrid();
     const reachableBefore = walkableFromParkEntrance();
+    const bareBefore: Record<string, boolean> = {};
     let replacedExistingPath = 0;
     let replacedQueue = 0;
 
@@ -183,6 +184,8 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
         if (!cell) {
             continue;
         }
+
+        bareBefore[String(tiles[i].x) + "," + String(tiles[i].y)] = !cell.path;
 
         if (request.queue && cell.path && !cell.queue) {
             replacedExistingPath++;
@@ -206,7 +209,16 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
     }
 
     context.setTimeout(function () {
-        const placed = countPathTiles(tiles, request.queue);
+        const placed = countPathTiles(tiles);
+        // Of the tiles that were bare, how many became the kind asked for. A tile that was
+        // already path is not a failure: routes legitimately end on the existing network.
+        let bareCount = 0;
+        for (const tile in bareBefore) {
+            if (bareBefore[tile]) {
+                bareCount++;
+            }
+        }
+        const newlyLaid = countNewPathTiles(tiles, bareBefore, request.queue);
         const walkable = walkableFromParkEntrance();
         const first = request.points[0];
         const last = request.points[request.points.length - 1];
@@ -226,14 +238,17 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
         done({
             // `ok` is whether the path got laid. Whether it reaches the park is
             // `connectedToPark`: a queue built before its connecting path is not a failure.
-            ok: placed === tiles.length,
+            ok: placed === tiles.length && newlyLaid === bareCount,
             tilesPlaced: placed,
             tilesRouted: tiles.length,
             route: tiles,
             connectedToPark: connected,
-            detail: (placed === tiles.length
-                ? "Laid " + String(placed) + (request.queue ? " queue" : " path") + " tiles."
-                : "Only " + String(placed) + " of " + String(tiles.length) + " tiles were laid; something blocked the rest.")
+            detail: (placed === tiles.length && newlyLaid === bareCount
+                ? "Laid " + String(newlyLaid) + (request.queue ? " queue" : " path") + " tiles"
+                    + (tiles.length > newlyLaid
+                        ? ", joining " + String(tiles.length - newlyLaid) + " that were already path."
+                        : ".")
+                : "Only " + String(placed) + " of " + String(tiles.length) + " tiles carry a path; something blocked the rest.")
                 + (connected
                     ? ""
                     : " This path does not reach the park entrance, so guests cannot walk it."

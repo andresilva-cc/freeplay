@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { FakeGame } from "./fakeGame.ts";
 import {
+    countNewPathTiles,
     countPathTiles,
     findParkEntranceTiles,
     routeToParkNetwork,
@@ -72,21 +73,31 @@ test("an isolated queue is not reachable at all", function () {
     });
 });
 
-test("counting laid tiles distinguishes a queue from a path", function () {
+test("counting laid tiles credits any path, so a route may end on the network", function () {
     withGame(function (game) {
         game.addPath(5, 5, false);
         game.addPath(5, 6, true);
     }, function () {
-        const tiles = [{ x: 5, y: 5 }, { x: 5, y: 6 }];
+        assert.equal(countPathTiles([{ x: 5, y: 5 }, { x: 5, y: 6 }]), 2);
+    });
+});
 
-        assert.equal(countPathTiles(tiles, false), 1, "one ordinary path");
-        assert.equal(countPathTiles(tiles, true), 1, "one queue");
+test("counting new tiles judges only those that were bare, by kind", function () {
+    withGame(function (game) {
+        game.addPath(5, 5, false);   // was already path: not ours to claim
+        game.addPath(5, 6, true);    // we laid this queue
+    }, function () {
+        const tiles = [{ x: 5, y: 5 }, { x: 5, y: 6 }];
+        const wasBare = { "5,5": false, "5,6": true };
+
+        assert.equal(countNewPathTiles(tiles, wasBare, true), 1);
+        assert.equal(countNewPathTiles(tiles, wasBare, false), 0, "it is a queue, not a path");
     });
 });
 
 test("counting does not credit a tile that was never laid", function () {
     withGame(function () { /* bare ground */ }, function () {
-        assert.equal(countPathTiles([{ x: 5, y: 5 }, { x: 5, y: 6 }], false), 0);
+        assert.equal(countPathTiles([{ x: 5, y: 5 }, { x: 5, y: 6 }]), 0);
     });
 });
 

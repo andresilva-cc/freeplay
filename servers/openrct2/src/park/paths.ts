@@ -144,14 +144,35 @@ export function tileIsWalkable(walkable: Record<string, boolean>, tile: Tile): b
 }
 
 /**
- * How many of these tiles now carry a path of the kind we meant to lay. Checking only
- * "is there a footpath here" would count tiles that were already paved, so a run where
- * every placement silently failed still reported success.
+ * How many of these tiles now carry a path at all.
+ *
+ * Deliberately not "a path of the kind we asked for": a route legitimately ends on
+ * existing path, and OpenRCT2 will not always convert an ordinary tile into a queue.
+ * Demanding the exact kind reported "only 1 of 2 tiles were laid" on the commonest call
+ * there is - joining a new queue to the path network - and the model gave up after two
+ * retries. `laidBareTiles` answers the stricter question where it is the right one.
  */
-export function countPathTiles(tiles: Tile[], wantQueue: boolean): number {
+export function countPathTiles(tiles: Tile[]): number {
     let placed = 0;
 
     for (let i = 0; i < tiles.length; i++) {
+        if (isPath(tiles[i].x, tiles[i].y)) {
+            placed++;
+        }
+    }
+
+    return placed;
+}
+
+/** Of the tiles that were bare before, how many now carry the kind of path asked for. */
+export function countNewPathTiles(tiles: Tile[], wasBare: Record<string, boolean>, wantQueue: boolean): number {
+    let placed = 0;
+
+    for (let i = 0; i < tiles.length; i++) {
+        if (!wasBare[key(tiles[i].x, tiles[i].y)]) {
+            continue;
+        }
+
         if (isPath(tiles[i].x, tiles[i].y) && isQueue(tiles[i].x, tiles[i].y) === wantQueue) {
             placed++;
         }

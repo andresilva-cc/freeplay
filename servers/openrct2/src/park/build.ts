@@ -168,7 +168,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
         idsBefore[ride.id] = true;
     });
 
-    let createResult: GameActionResult | undefined;
+    let createResult: RideCreateActionResult | undefined;
     context.executeAction("ridecreate", {
         rideType: rideObject.rideType[0],
         rideObject: rideObject.index,
@@ -177,16 +177,24 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
         colour2: request.colour2,
         inspectionInterval: request.inspectionInterval
     }, function (result) {
-        createResult = result;
+        createResult = result as RideCreateActionResult;
     });
 
     context.setTimeout(function () {
+        // The action tells us which ride it made. Diffing the ride list instead breaks
+        // the moment two builds are in flight at once - which happens whenever the model
+        // issues parallel tool calls, and made two different rides report the same id.
         let rideId: number | null = null;
-        map.rides.forEach(function (ride) {
-            if (!idsBefore[ride.id]) {
-                rideId = ride.id;
-            }
-        });
+
+        if (createResult && typeof createResult.ride === "number") {
+            rideId = createResult.ride;
+        } else {
+            map.rides.forEach(function (ride) {
+                if (!idsBefore[ride.id]) {
+                    rideId = ride.id;
+                }
+            });
+        }
 
         if (rideId === null) {
             steps.push({ step: "ridecreate", ok: false, detail: actionError(createResult) || "Ride was not created." });
