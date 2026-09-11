@@ -90,6 +90,10 @@ export class FakeGame {
     public inert: boolean;
     /** Action names to refuse, to test a step failing mid-sequence. */
     public refuse: Record<string, boolean> = {};
+    /** Long waits, held rather than fired. Call `fireWatchdogs()` to test a timeout. */
+    public readonly watchdogs: (() => void)[] = [];
+    /** Waits longer than this are treated as watchdogs rather than ticks. */
+    public static readonly WATCHDOG_THRESHOLD_MS = 5000;
 
     private readonly tiles: { elements: FakeElement[] }[];
     private nextRideId = 0;
@@ -130,6 +134,13 @@ export class FakeGame {
     public addParkEntrance(x: number, y: number): void {
         for (let i = 0; i < 3; i++) {
             this.tile(x + i, y).elements.push({ type: "entrance", baseZ: 96, object: 2, sequence: i });
+        }
+    }
+
+    /** Fire every held watchdog, as if the work had never finished. */
+    public fireWatchdogs(): void {
+        while (this.watchdogs.length > 0) {
+            (this.watchdogs.shift() as () => void)();
         }
     }
 
@@ -351,8 +362,17 @@ function installGlobals(game: FakeGame): () => void {
                 elements: offsets.map(function (o) { return { x: o.x * 32, y: o.y * 32, z: 0 }; })
             };
         },
-        // The real game applies queued actions between ticks; do the same before the wait ends.
-        setTimeout: function (callback: () => void) {
+        /**
+         * The real game applies queued actions between ticks, so do that before the wait
+         * ends. Long waits are watchdogs — a tool's 30 second timeout — and must not fire
+         * just because work was queued; they are held so a test can trigger them itself.
+         */
+        setTimeout: function (callback: () => void, delay?: number) {
+            if (typeof delay === "number" && delay > FakeGame.WATCHDOG_THRESHOLD_MS) {
+                game.watchdogs.push(callback);
+                return game.watchdogs.length;
+            }
+
             game.applyQueuedActions();
             callback();
             return 0;

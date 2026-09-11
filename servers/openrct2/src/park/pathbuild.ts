@@ -50,7 +50,10 @@ function route(from: Tile, to: Tile): Tile[] | null {
     const grid = readMapGrid();
     const startCell = grid.at(from.x, from.y);
 
-    if (!startCell || !startCell.owned) {
+    // Hold the start tile to the same standard as every other tile on the run. Checking
+    // only ownership accepted a start on a slope or on blocked ground, fired an action
+    // there, and reported "something blocked the rest" rather than naming the real cause.
+    if (!startCell || !startCell.owned || !startCell.flat || (!startCell.clear && !startCell.path)) {
         return null;
     }
 

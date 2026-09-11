@@ -516,13 +516,6 @@ export class McpServer {
             channel.close(deferredResponse.toHttpString());
         };
 
-        context.setTimeout(function () {
-            send({
-                content: [createTextContent("The tool did not finish in time; check the game state before retrying.")],
-                isError: true
-            });
-        }, DEFERRED_TIMEOUT_MS);
-
         try {
             deferred.start(function (value) {
                 send(createToolResult(value));
@@ -532,6 +525,17 @@ export class McpServer {
                 content: [createTextContent("Tool failed: " + String(error))],
                 isError: true
             });
+        }
+
+        // Registered after starting, so a tool that finishes immediately is never beaten
+        // to the answer by its own watchdog. `send` ignores whichever arrives second.
+        if (!settled) {
+            context.setTimeout(function () {
+                send({
+                    content: [createTextContent("The tool did not finish in time; check the game state before retrying.")],
+                    isError: true
+                });
+            }, DEFERRED_TIMEOUT_MS);
         }
 
         return response;

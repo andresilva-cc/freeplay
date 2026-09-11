@@ -146,6 +146,36 @@ MCP, and `scripts/deploy-plugin.sh` refuses to continue until the running game r
 the id that was just built. An hour went into debugging a stale bundle before that
 existed.
 
+## Reading a run: the tools are on trial too
+
+When a run goes badly there are two possible causes, and they demand opposite responses.
+
+- **A tooling failure.** The model was told something false, was not told something it
+  needed, or had no way to carry out the thing it correctly decided to do. Fix the tool.
+- **A play failure.** It had accurate, sufficient information, could act on it, and chose
+  badly anyway. That is a finding about the model.
+
+They look identical from outside: a park full of unreachable rides earning nothing. The
+test that separates them is to replay the transcript and ask of each action, *given
+exactly what it had been told at that moment, was this reasonable?* A model that prices
+every ride at 5.00 is playing badly if it can see each ride is worth 3.60, and is playing
+sensibly on bad information if it cannot.
+
+This matters more here than in most projects, because the model is deliberately small.
+A small model amplifies tooling defects: it will not notice that a tool contradicted
+itself two calls ago, it takes a description literally, and it does not recover from a
+misleading result the way a larger one might. So a weak tool produces something that
+looks exactly like a weak model, and the temptation is to conclude the obvious thing.
+
+Being strict about this is not generosity toward the model. Attributing a tooling bug to
+the model hides the bug, and the run after it fails the same way.
+
+The honest accounting so far is uncomfortable: nearly every failure across the first five
+runs traced to a tool. Entrances could not be discovered; door options were invisible;
+`hasQueue` was true for queues nobody could reach; a ride's footprint was computed by a
+rule that does not hold; builds that succeeded were reported as failures; there was no
+way to open a ride once built. The model's actual play has barely been measured yet.
+
 ## The clock is the harness's problem, not the model's
 
 A local model takes seconds to tens of seconds per decision. If the game is running
