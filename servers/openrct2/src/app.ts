@@ -7,6 +7,8 @@ import { HttpRouter } from "./http/router.js";
 import type { Middleware, RequestHandlingResult, SocketLike } from "./http/types.js";
 import { McpServer } from "./mcp.js";
 import { embeddedStaticFiles } from "./embeddedStaticAssets.js";
+import { BUILD_ID } from "./buildInfo.js";
+import { installStateGuards, stateGuardSummary } from "./scripting.js";
 
 function getControllerMethods(controller: ControllerDefinition): string[] {
     const seen: Record<string, boolean> = {};
@@ -34,13 +36,17 @@ function createVersionIndex(controllers: ControllerDefinition[]): Record<string,
     });
 
     return {
+        buildId: BUILD_ID,
         controllers: sortedControllers.map(function (controller) {
             return {
                 name: controller.name,
                 path: controller.basePath,
                 methods: getControllerMethods(controller)
             };
-        })
+        }),
+        // Read fresh on every request rather than captured at startup: a scenario load
+        // re-guards new `park` and `scenario` objects, so the answer can change.
+        stateGuards: stateGuardSummary()
     };
 }
 
@@ -109,6 +115,11 @@ export interface Application {
 }
 
 export function createApplication(): Application {
+    // Before the listener exists, so no request can be the thing that installs them and
+    // the guard report is answerable from the first `GET /v1`. Re-entrant: `runScript`
+    // calls it again on every evaluate to re-guard what a scenario load replaced.
+    installStateGuards();
+
     const router = new HttpRouter();
     const controllers = registerControllers(router, getControllers());
     const mcpServer = new McpServer();

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { FakeGame } from "./fakeGame.ts";
 import { createApplication } from "../src/app.ts";
+import { BUILD_ID } from "../src/buildInfo.ts";
 import { httpGet, httpPath } from "../src/controllers/decorators.ts";
 import { registerControllers } from "../src/controllers/index.ts";
 import { HttpController, type ControllerContext } from "../src/controllers/types.ts";
@@ -259,30 +260,35 @@ test("createApplication provides the automatic /v1 index and date controller res
         const dateResponse = app.handleRawRequest("GET /v1/date HTTP/1.1\r\n\r\n");
         const parkResponse = app.handleRawRequest("GET /v1/park HTTP/1.1\r\n\r\n");
 
-        assert.deepEqual(parseJsonBody(indexResponse), {
-            controllers: [
-                {
-                    name: "date",
-                    path: "/v1/date",
-                    methods: ["GET"]
-                },
-                {
-                    name: "eval",
-                    path: "/v1/eval",
-                    methods: ["GET"]
-                },
-                {
-                    name: "park",
-                    path: "/v1/park",
-                    methods: ["GET"]
-                },
-                {
-                    name: "rides",
-                    path: "/v1/rides",
-                    methods: ["GET"]
-                }
-            ]
-        });
+        const index = parseJsonBody(indexResponse) as Record<string, unknown>;
+
+        // Pinned as a whole: /v1 is what a pre-run check reads, so a field appearing or
+        // disappearing is a change to that contract and should have to be said out loud.
+        assert.deepEqual(Object.keys(index).sort(), ["buildId", "controllers", "stateGuards"]);
+        assert.equal(index.buildId, BUILD_ID);
+        assert.deepEqual(index.controllers, [
+            {
+                name: "date",
+                path: "/v1/date",
+                methods: ["GET"]
+            },
+            {
+                name: "eval",
+                path: "/v1/eval",
+                methods: ["GET"]
+            },
+            {
+                name: "park",
+                path: "/v1/park",
+                methods: ["GET"]
+            },
+            {
+                name: "rides",
+                path: "/v1/rides",
+                methods: ["GET"]
+            }
+        ]);
+        assert.deepEqual(Object.keys(index.stateGuards as object).sort(), ["frozen", "ok", "unfrozen"]);
         assert.deepEqual(parseJsonBody(dateResponse), {
             ticksElapsed: 123,
             monthsElapsed: 4,

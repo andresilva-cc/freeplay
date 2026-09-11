@@ -683,6 +683,22 @@ export function stateGuardReport(): { frozen: string[]; unfrozen: string[] } {
 }
 
 /**
+ * The same report, small enough to serve on an endpoint that is polled: the list of
+ * refusals is normally empty and the frozen levers are a count rather than forty paths.
+ *
+ * `ok` is false when nothing froze at all as well as when something refused to. A build
+ * whose guards never installed reports an empty `unfrozen` too, and that must not read
+ * as clean to whatever is gating a run on this.
+ */
+export function stateGuardSummary(): { ok: boolean; frozen: number; unfrozen: string[] } {
+    return {
+        ok: frozenLevers.length > 0 && unfrozenLevers.length === 0,
+        frozen: frozenLevers.length,
+        unfrozen: unfrozenLevers.slice(0)
+    };
+}
+
+/**
  * Said once, to the game console and the OpenRCT2 log. A lever this build would not let
  * us freeze is something to know before a run rather than after one, and nobody reads a
  * value that is only returned from a function nothing calls.
@@ -1322,6 +1338,10 @@ export function runScript(code: string): ScriptOutcome {
     }
 
     installActionGuards();
+    // Already installed at startup by createApplication. Repeated here because both
+    // installs are re-entrant on purpose: a scenario load swaps `park` and `scenario` for
+    // new objects, and src/mcp.ts assigns over `context.setTimeout` and back while its
+    // deferred calls are in flight. Neither would be re-guarded by a one-shot at startup.
     installStateGuards();
 
     const world = captureWorld();

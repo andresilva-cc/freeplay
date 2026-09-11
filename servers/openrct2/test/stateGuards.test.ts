@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runScript } from "../src/scripting.ts";
+import { createApplication } from "../src/app.ts";
+import { BUILD_ID } from "../src/buildInfo.ts";
+import { runScript, stateGuardSummary } from "../src/scripting.ts";
 
 /**
  * A stand-in for the live plugin API, shaped the way the real one is rather than the way
@@ -754,4 +756,86 @@ test("a timer the game handed back to us is guarded again on the next script", f
     } finally {
         world.restore();
     }
+});
+
+/* ------------------------------------------------------------------ *
+ * Part 4 - when the guards go in, and who can find out
+ * ------------------------------------------------------------------ */
+
+interface V1Index {
+    buildId: string;
+    controllers: { name: string; path: string; methods: string[] }[];
+    stateGuards: { ok: boolean; frozen: number; unfrozen: string[] };
+}
+
+function getV1(app: ReturnType<typeof createApplication>): V1Index {
+    return JSON.parse(app.handleRawRequest("GET /v1 HTTP/1.1\r\n\r\n").getBody()) as V1Index;
+}
+
+test("the guards are in place before any script has run", function () {
+    const world = installWorld();
+
+    try {
+        // Deliberately not through runScript: the question is whether an evaluate is
+        // needed to close the levers, so nothing may be evaluated before the assertion.
+        createApplication();
+
+        const scope = globalThis as unknown as { park: Record<string, unknown> };
+
+        assert.throws(function () { scope.park.cash = 800000; }, /cannot be assigned/,
+            "starting the plugin must be enough; the first evaluate is too late");
+        assert.equal(world.park.cash, 100000, "and the figure behind it must not have moved");
+        assert.ok(stateGuardSummary().frozen > 0, "the report must be answerable at startup too");
+    } finally {
+        world.restore();
+    }
+});
+
+test("GET /v1 carries the build id and a machine-readable guard state", function () {
+    const world = installWorld();
+
+    try {
+        const index = getV1(createApplication());
+
+        assert.equal(index.buildId, BUILD_ID, "the build id must survive the new field");
+        assert.ok(index.controllers.length > 0, "and so must the controller list");
+
+        assert.equal(index.stateGuards.ok, true, "every lever froze in this world");
+        assert.ok(index.stateGuards.frozen > 0, "and the count says the guards really ran");
+        assert.deepEqual(index.stateGuards.unfrozen, [], "with nothing left open");
+    } finally {
+        world.restore();
+    }
+});
+
+test("GET /v1 names the lever that would not freeze rather than reporting ok", function () {
+    // `cash` is non-configurable here, so the guard cannot be installed over it - the
+    // stand-in for a plugin API that has moved under this build.
+    const world = installWorld({ stubborn: ["cash"] });
+
+    try {
+        const index = getV1(createApplication());
+
+        assert.equal(index.stateGuards.ok, false, "one refusal is enough to fail the check");
+        assert.ok(index.stateGuards.unfrozen.indexOf("park.cash") >= 0,
+            "and it must be named, not just counted: " + JSON.stringify(index.stateGuards.unfrozen));
+
+        // The whole point of the field: an assignment really does land on this one, so a
+        // pre-run check reading `ok` learns something a log line would have buried.
+        const scope = globalThis as unknown as { park: Record<string, unknown> };
+
+        scope.park.cash = 800000;
+        assert.equal(world.park.cash, 800000, "the stand-in must be a real hole, or this proves nothing");
+    } finally {
+        world.restore();
+    }
+});
+
+test("an empty report is not a clean one", function () {
+    // Nothing installed, nothing refused: the shape a build whose guards never ran would
+    // serve. `ok` has to be false there or the preflight passes on no evidence at all.
+    const summary = stateGuardSummary();
+
+    assert.equal(summary.ok, summary.frozen > 0 && summary.unfrozen.length === 0,
+        "ok must mean installed and complete, never merely 'nothing complained'");
 });

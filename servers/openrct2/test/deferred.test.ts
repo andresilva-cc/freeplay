@@ -41,6 +41,17 @@ interface DeferredClock {
     readonly cancelled: number;
     /** False while something has the game's timer wrapped, as the deferred path does. */
     readonly timerIsTheGames: boolean;
+    /**
+     * Record whatever is in the `context.setTimeout` slot right now as the idle state.
+     *
+     * Called once, after the plugin has started. Plugin startup installs the state
+     * guards, which replace that slot with a wrapper of their own that delegates to this
+     * clock; `unwatchDeferredWork` restores whatever it captured, which is that wrapper
+     * and not the bare clock function. So the identity that proves nothing is in flight
+     * has to be read after startup. It is still an identity check: mcp.ts failing to
+     * restore leaves its own wrapper in the slot and this goes false.
+     */
+    settle(): void;
     /** Errors that escaped a tick callback, as the game's own tick loop would see them. */
     readonly tickErrors: string[];
     /** Advance until no tool has work left, applying queued actions as the game does. */
@@ -81,7 +92,7 @@ function installClock(game: FakeGame): DeferredClock {
         return timer.handle;
     };
 
-    const installedTimer = scope.context.setTimeout;
+    let idleTimer = scope.context.setTimeout;
 
     scope.context.clearTimeout = function (handle: number): void {
         [steps, watchdogs].forEach(function (queue) {
@@ -119,7 +130,8 @@ function installClock(game: FakeGame): DeferredClock {
         get steps() { return steps.length; },
         get watchdogs() { return watchdogs.length; },
         get cancelled() { return cancelled; },
-        get timerIsTheGames() { return scope.context.setTimeout === installedTimer; },
+        get timerIsTheGames() { return scope.context.setTimeout === idleTimer; },
+        settle: function () { idleTimer = scope.context.setTimeout; },
         tickErrors: tickErrors,
         runSteps: function () { run(steps); },
         fireWatchdogs: function () { run(watchdogs); }
@@ -208,7 +220,11 @@ function withPark(run: (
     const clock = installClock(game);
 
     try {
-        run(createApplication(), game, clock);
+        const app = createApplication();
+
+        // Startup guards the timer slot, so the idle baseline is read after it, not before.
+        clock.settle();
+        run(app, game, clock);
     } finally {
         restore();
     }
