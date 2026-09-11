@@ -15,7 +15,9 @@ export class BuildTools {
             "`access` options. That placement decides the queue's shape: both on the same side usually gives a",
             "shorter, straighter queue than opposite sides.",
             "It builds no paths: use `build_path` for the queue and for the walk away from the exit.",
-            "Returns every step with whether it succeeded, and whether guests can actually reach the ride.",
+            "`ok` says whether the ride was built. `reachable` says whether guests can get to it, which is",
+            "normally false straight after building — you still have to lay the queue and the exit path.",
+            "Do not rebuild a ride because `reachable` is false; connect it instead.",
             "This does not build roller coasters; those need track laid piece by piece with `evaluate`."
         ].join(" "),
         inputSchema: {

@@ -57,6 +57,8 @@ export interface ParkStatus {
     /** Net profit for the last four months, index 0 is this month. */
     monthlyProfit: number[];
     staff: Record<string, number>;
+    /** The game's own notifications, newest last. It names problems before you find them. */
+    messages: string[];
     rides: RideSummary[];
 }
 
@@ -88,6 +90,19 @@ function queueServes(entrance: CoordsXYZD | null, rideId: number): boolean {
     }
 
     return false;
+}
+
+/** The last few park notifications, most recent last. */
+function recentMessages(count: number): string[] {
+    const all = park.messages;
+    const start = Math.max(0, all.length - count);
+    const out: string[] = [];
+
+    for (let i = start; i < all.length; i++) {
+        out.push(all[i].text);
+    }
+
+    return out;
 }
 
 export function readParkStatus(): ParkStatus {
@@ -171,6 +186,7 @@ export function readParkStatus(): ParkStatus {
         companyValue: park.companyValue,
         monthlyProfit: profit,
         staff: staff,
+        messages: recentMessages(12),
         rides: rides
     };
 }

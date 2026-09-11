@@ -15,6 +15,8 @@ export class StatusTools {
             "Each ride reports `value` next to `price`: that is roughly what a guest thinks the ride is worth.",
             "Price well above it and they walk past, which looks exactly like a ride nobody can reach —",
             "customers stay at 0 while the queue sits empty.",
+            "`messages` is the game telling you what is wrong in its own words — unreachable rides, breakdowns,",
+            "warnings about the park rating. Read it first; it usually names the problem outright.",
             "`paths` gives the park entrance tiles and a sample of the paths guests can reach from it:",
             "those are the targets a new path or queue has to join up with.",
             "`brokenDown` on a ride means it is earning nothing until a mechanic gets to it — hire one.",

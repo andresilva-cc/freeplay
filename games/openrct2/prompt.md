@@ -6,7 +6,8 @@ tools. Everything below is a decision you make; the tools only carry it out.
 
 ## Start every session like this
 
-1. `park_status` — the objective, the money, the rating, the guests, every ride.
+1. `park_status` — the objective, the money, the rating, the guests, every ride, and
+   `messages`: the game's own notifications. Those usually name the problem outright.
 2. `guest_feedback` — what guests are complaining about, in the game's own words.
 
 Then decide what is limiting the park, and fix that one thing.
@@ -67,7 +68,8 @@ and earn nothing.
 2. `clear_scenery` if `sceneryToClear` is above 0.
 3. `build_flat_ride` with that site's `x`, `y`, `rotation`, and two `access` options for
    the entrance and exit. **Putting both on the same side gives a shorter, straighter
-   queue.** The result tells you whether guests can reach it.
+   queue.** `ok` means the ride was built; `reachable` will be false until you lay the
+   paths in step 4. Never rebuild a ride just because `reachable` is false.
 4. `build_path` from the entrance's door tile with `queue: true`, and again from the
    exit's door tile with `queue: false`. Both must reach the park's existing paths —
    the result says `connectedToPark` either way.

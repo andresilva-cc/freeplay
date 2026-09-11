@@ -310,7 +310,10 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                         }
 
                         steps.push({ step: "open", ok: true, detail: ride.status });
-                        finish(reachable, created, ride.name, reachable);
+                        // `ok` is whether the ride got built. Whether guests can use it is
+                        // `reachable`, and is a separate job - this tool lays no paths, so
+                        // reporting a correct build as a failure makes the model build it twice.
+                        finish(true, created, ride.name, reachable);
                     }, STEP_DELAY_MS);
                 }, STEP_DELAY_MS);
             }, STEP_DELAY_MS);
