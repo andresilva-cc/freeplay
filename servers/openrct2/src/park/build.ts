@@ -228,10 +228,21 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
 
                 // ridecreate succeeded, so without this the park keeps a ride with no
                 // track on it forever, occupying an id and showing up in park_status.
-                context.executeAction("ridedemolish", { ride: created, modifyType: 0 }, function () { /* best effort */ });
-                steps.push({ step: "cleanup", ok: true, detail: "removed the ride that had nothing built on it" });
+                context.executeAction("ridedemolish", { ride: created, modifyType: 0 }, function () { /* verified by re-read */ });
 
-                return finish(false, null, null, false);
+                return context.setTimeout(function () {
+                    const stillThere = !!map.getRide(created);
+
+                    steps.push({
+                        step: "cleanup",
+                        ok: !stillThere,
+                        detail: stillThere
+                            ? "could not remove the ride that had nothing built on it; it is still ride " + String(created)
+                            : "removed the ride that had nothing built on it"
+                    });
+
+                    finish(false, stillThere ? created : null, null, false);
+                }, STEP_DELAY_MS) as unknown as void;
             }
 
             steps.push({ step: "trackplace", ok: true, detail: "track type " + String(trackType) });
