@@ -4,6 +4,7 @@ import test from "node:test";
 import { createApplication } from "../src/app.ts";
 import { BUILD_ID } from "../src/buildInfo.ts";
 import { runScript, stateGuardSummary } from "../src/scripting.ts";
+import { UiTools } from "../src/tools/ui.ts";
 
 /**
  * A stand-in for the live plugin API, shaped the way the real one is rather than the way
@@ -81,11 +82,21 @@ interface World {
     /** What reached the game's timers, so a refusal that leaked would show up here. */
     scheduled: string[];
     subscribed: string[];
+    /** What reached the game's window system, and every callback it was handed. */
+    uiCalls: string[];
+    uiCallbacks: unknown[];
+    /** The namespace itself, for the assertions about reading it from outside a script. */
+    ui: Record<string, unknown>;
     timers: {
         setTimeout(callback: () => void, delay?: number): number;
         clearTimeout(handle: number): void;
     };
     addRide(): RideInstance;
+    /**
+     * Run `during` with action callbacks held rather than called, the way the game holds one
+     * until the tick it applies the action on. `release` is that tick.
+     */
+    deferCallbacks(during: (release: () => void) => void): void;
     restore(): void;
 }
 
@@ -175,6 +186,10 @@ function installWorld(options?: WorldOptions): World {
         }
     };
 
+    /** Callbacks the game is holding until the tick it applies the action on. */
+    const held: (() => void)[] = [];
+    let deferring = false;
+
     /** Actions cost the park money, the way the game charges for them. */
     const fakeContext = {
         executeAction: function (name: string, args: Record<string, unknown>, callback?: (r: unknown) => void) {
@@ -191,7 +206,13 @@ function installWorld(options?: WorldOptions): World {
             }
 
             if (typeof callback === "function") {
-                callback({ error: 0 });
+                const answer = callback;
+
+                if (deferring) {
+                    held.push(function () { answer({ error: 0 }); });
+                } else {
+                    answer({ error: 0 });
+                }
             }
         },
         queryAction: function (name: string, _args: object, callback?: (r: unknown) => void) {
@@ -224,9 +245,73 @@ function installWorld(options?: WorldOptions): World {
         }
     };
 
+    const uiCalls: string[] = [];
+    const uiCallbacks: unknown[] = [];
+
+    /** Records the call and every callback it was handed, so a leak shows up as either. */
+    function reachedUi(name: string, handlers: unknown[]): void {
+        uiCalls.push(name);
+
+        for (let i = 0; i < handlers.length; i++) {
+            if (typeof handlers[i] === "function") {
+                uiCallbacks.push(handlers[i]);
+            }
+        }
+    }
+
+    /**
+     * Shaped from the `Ui` interface in @openrct2/types rather than from what the plugin
+     * happens to call: the members that hand the game a callback to run on a later tick are
+     * the whole point, and the plugin itself uses exactly one member, showError.
+     */
+    const fakeUi: Record<string, unknown> = {
+        get width() { return 1280; },
+        get height() { return 720; },
+        get windows() { return 3; },
+        get tool() { return null; },
+        get tileSelection() { return { range: null, tiles: [] }; },
+        get mainViewport() { return { rotation: 0, zoom: 1 }; },
+        showError: function (title: string, message: string) {
+            reachedUi("showError:" + title + ":" + message, []);
+        },
+        openWindow: function (desc: Record<string, unknown>) {
+            const widgets = (desc.widgets as Record<string, unknown>[]) || [];
+            const handlers: unknown[] = [desc.onUpdate, desc.onClose, desc.onTabChange];
+
+            for (let i = 0; i < widgets.length; i++) {
+                handlers.push(widgets[i].onClick, widgets[i].onChange, widgets[i].onIncrement, widgets[i].onDraw);
+            }
+
+            reachedUi("openWindow", handlers);
+
+            return { widgets: widgets, close: function () { /* not used here */ } };
+        },
+        getWindow: function () {
+            reachedUi("getWindow", []);
+            return { widgets: [], close: function () { /* not used here */ } };
+        },
+        closeWindows: function () { reachedUi("closeWindows", []); },
+        closeAllWindows: function () { reachedUi("closeAllWindows", []); },
+        activateTool: function (desc: Record<string, unknown>) {
+            reachedUi("activateTool", [desc.onStart, desc.onDown, desc.onMove, desc.onUp, desc.onFinish]);
+        },
+        registerMenuItem: function (_text: string, callback: unknown) {
+            reachedUi("registerMenuItem", [callback]);
+        },
+        registerToolboxMenuItem: function (_text: string, callback: unknown) {
+            reachedUi("registerToolboxMenuItem", [callback]);
+        },
+        registerShortcut: function (desc: Record<string, unknown>) { reachedUi("registerShortcut", [desc.callback]); },
+        showTextInput: function (desc: Record<string, unknown>) { reachedUi("showTextInput", [desc.callback]); },
+        showFileBrowse: function (desc: Record<string, unknown>) { reachedUi("showFileBrowse", [desc.callback]); },
+        showScenarioSelect: function (desc: Record<string, unknown>) { reachedUi("showScenarioSelect", [desc.callback]); },
+        showGridlines: function () { reachedUi("showGridlines", []); },
+        hideGridlines: function () { reachedUi("hideGridlines", []); }
+    };
+
     const previous = {
         park: scope.park, scenario: scope.scenario, cheats: scope.cheats,
-        map: scope.map, context: scope.context
+        map: scope.map, context: scope.context, ui: scope.ui
     };
 
     scope.park = Object.create(parkPrototype);
@@ -234,6 +319,7 @@ function installWorld(options?: WorldOptions): World {
     scope.cheats = Object.create(cheatPrototype);
     scope.map = fakeMap;
     scope.context = fakeContext;
+    scope.ui = fakeUi;
 
     return {
         park: parkStore,
@@ -247,11 +333,30 @@ function installWorld(options?: WorldOptions): World {
         created: created,
         scheduled: scheduled,
         subscribed: subscribed,
+        uiCalls: uiCalls,
+        uiCallbacks: uiCallbacks,
+        ui: fakeUi,
         timers: scope.context as unknown as World["timers"],
         addRide: function () {
             const ride = makeRide(rides.length);
             rides.push(ride);
             return ride;
+        },
+        deferCallbacks: function (during: (release: () => void) => void) {
+            deferring = true;
+
+            try {
+                during(function () {
+                    const pending = held.splice(0, held.length);
+
+                    for (let i = 0; i < pending.length; i++) {
+                        pending[i]();
+                    }
+                });
+            } finally {
+                deferring = false;
+                held.length = 0;
+            }
         },
         restore: function () {
             scope.park = previous.park;
@@ -259,6 +364,7 @@ function installWorld(options?: WorldOptions): World {
             scope.cheats = previous.cheats;
             scope.map = previous.map;
             scope.context = previous.context;
+            scope.ui = previous.ui;
         }
     };
 }
@@ -280,6 +386,101 @@ function expectRefusal(code: string): string {
 
     assert.equal(outcome.ok, false, "expected a refusal, got: " + JSON.stringify(outcome));
     return String(outcome.error);
+}
+
+/* ------------------------------------------------------------------ *
+ * The entry point the model actually uses
+ *
+ * Calling the exported `runScript` is a different question from calling the evaluate tool:
+ * it proves this module refuses, not that the function the game ends up calling belongs to
+ * this load of the module. Three guards passed the first question for months while doing
+ * nothing at all in the running game, so anything about a guard biting is asked through a
+ * real MCP session on a real application, the way the model asks it.
+ * ------------------------------------------------------------------ */
+
+const MCP_PROTOCOL = "2025-11-25";
+
+function rawMcpPost(headers: Record<string, string>, body: string): string {
+    const lines = ["POST /mcp HTTP/1.1"].concat(Object.keys(headers).map(function (name) {
+        return name + ": " + headers[name];
+    }));
+
+    return lines.join("\r\n") + "\r\n\r\n" + body;
+}
+
+/** An initialised MCP session, returning a function that calls any tool on it. */
+function mcpSession(): (name: string, args: Record<string, unknown>) => Record<string, unknown> {
+    const app = createApplication();
+    const headers: Record<string, string> = {
+        Accept: "application/json, text/event-stream",
+        "Content-Type": "application/json"
+    };
+
+    const opened = app.handleRawRequest(rawMcpPost(headers, JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+            protocolVersion: MCP_PROTOCOL,
+            capabilities: {},
+            clientInfo: { name: "state-guard-test", version: "1.0.0" }
+        }
+    })));
+
+    headers["MCP-Session-Id"] = String(opened.getHeader("mcp-session-id"));
+    headers["MCP-Protocol-Version"] = MCP_PROTOCOL;
+
+    app.handleRawRequest(rawMcpPost(headers, JSON.stringify({
+        jsonrpc: "2.0",
+        method: "notifications/initialized"
+    })));
+
+    return function (name: string, args: Record<string, unknown>): Record<string, unknown> {
+        const response = app.handleRawRequest(rawMcpPost(headers, JSON.stringify({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "tools/call",
+            params: { name: name, arguments: args }
+        })));
+
+        const body = JSON.parse(response.getBody()) as { result?: { structuredContent?: Record<string, unknown> } };
+
+        assert.ok(body.result, "the " + name + " tool answered with no result: " + response.getBody());
+        assert.ok(body.result.structuredContent,
+            "the " + name + " tool answered with no structured result: " + response.getBody());
+
+        return body.result.structuredContent;
+    };
+}
+
+/** The same session, asking the one question most of this file asks. */
+function mcpEvaluate(): (code: string) => Outcome {
+    const call = mcpSession();
+
+    return function (code: string): Outcome {
+        return call("evaluate", { code: code }) as unknown as Outcome;
+    };
+}
+
+function expectMcpRefusal(evaluate: (code: string) => Outcome, code: string): string {
+    const outcome = evaluate(code);
+
+    assert.equal(outcome.ok, false, code + " was let through: " + JSON.stringify(outcome));
+    return String(outcome.error);
+}
+
+/**
+ * A second, independent load of the same module against the same globals.
+ *
+ * This is what a hot reload is: OpenRCT2 keeps one `context` object for the whole process
+ * and re-runs the plugin file, and `npm run watch` re-runs it on every save. The wrappers
+ * the earlier load installed are marked and still in their slots, and the `insideEvaluate`,
+ * refusal list and action log they close over are that load's, not the one now running.
+ */
+async function loadPluginAgain(): Promise<typeof import("../src/scripting.ts")> {
+    const again = await import(new URL("../src/scripting.ts?previous-load", import.meta.url).href);
+
+    return again as typeof import("../src/scripting.ts");
 }
 
 /* ------------------------------------------------------------------ *
@@ -434,28 +635,113 @@ test("setFlag still opens the park, and still refuses the four rule flags", func
     }
 });
 
+const REFUSED_ACTION_CALLS = [
+    { code: 'context.executeAction("cheatset", { type: 16, param1: 1000000, param2: 0 })', names: /cheatset/ },
+    { code: 'context.executeAction("scenariosetsetting", { setting: 1, value: 1 })', names: /scenariosetsetting/ },
+    { code: 'context.executeAction("parksetdate", { year: 1, month: 1, day: 1 })', names: /parksetdate/ },
+    { code: 'context.executeAction("ridefreezerating", { ride: 0 })', names: /ridefreezerating/ },
+    // A query changes nothing, but probing for a cheat is not play either.
+    { code: 'context.queryAction("cheatset", { type: 16, param1: 1, param2: 0 })', names: /cheatset/ }
+];
+
 test("the cheat and scenario-editor actions are refused by name and never reach the game", function () {
     const world = installWorld();
 
     try {
-        const cheat = expectRefusal('context.executeAction("cheatset", { type: 16, param1: 1000000, param2: 0 })');
+        const evaluate = mcpEvaluate();
+
+        const cheat = expectMcpRefusal(evaluate, REFUSED_ACTION_CALLS[0].code);
         assert.match(cheat, /cheatset is not available in this run/, cheat);
         assert.match(cheat, /come out of running the park/, "a refused action must name the alternative too: " + cheat);
 
-        assert.match(expectRefusal('context.executeAction("scenariosetsetting", { setting: 1, value: 1 })'), /scenariosetsetting/);
-        assert.match(expectRefusal('context.executeAction("parksetdate", { year: 1, month: 1, day: 1 })'), /parksetdate/);
-        assert.match(expectRefusal('context.executeAction("ridefreezerating", { ride: 0 })'), /ridefreezerating/);
-
-        // A query changes nothing, but probing for a cheat is not play either.
-        assert.match(expectRefusal('context.queryAction("cheatset", { type: 16, param1: 1, param2: 0 })'), /cheatset/);
+        REFUSED_ACTION_CALLS.forEach(function (attempt) {
+            assert.match(expectMcpRefusal(evaluate, attempt.code), attempt.names, attempt.code);
+        });
 
         assert.deepEqual(world.executed, [], "no refused action may reach the game");
         assert.deepEqual(world.queried, []);
 
-        const legitimate = run('context.executeAction("ridesetstatus", { ride: 0, status: 1 }); return "ok";');
+        const legitimate = evaluate('context.executeAction("ridesetstatus", { ride: 0, status: 1 }); return "ok";');
 
         assert.equal(legitimate.ok, true, "an ordinary action still goes through: " + JSON.stringify(legitimate));
         assert.deepEqual(world.executed, ["ridesetstatus"]);
+    } finally {
+        world.restore();
+    }
+});
+
+/** What an older build left in the slot: the unknown-name check, marked, and no refusal list. */
+function installPreviousLoadActionGuard(key: string, lock: boolean): void {
+    const scope = globalThis as unknown as { context: Record<string, unknown> };
+    const original = scope.context[key] as (this: unknown, name: string, args: object, callback?: (r: unknown) => void) => unknown;
+
+    const wrapper = function (this: unknown, name: string, args: object, callback?: (r: unknown) => void): unknown {
+        if (typeof name !== "string" || name.indexOf("_") >= 0) {
+            throw new Error("there is no game action named \"" + String(name) + "\"");
+        }
+
+        return original.call(this, name, args, callback);
+    };
+
+    (wrapper as unknown as Record<string, unknown>).__freeplayActionGuard = true;
+
+    Object.defineProperty(scope.context, key, {
+        value: wrapper, writable: !lock, configurable: false, enumerable: false
+    });
+}
+
+test("a cheat is refused even when an older build's action guard is already in the slot", function () {
+    const world = installWorld();
+
+    try {
+        // The live failure, reproduced: `cheatset` reached the game while an invented name
+        // still threw, because the wrapper doing the checking was an older build's - marked
+        // as guarded, and written before the refusal list existed.
+        installPreviousLoadActionGuard("executeAction", false);
+        installPreviousLoadActionGuard("queryAction", false);
+
+        const evaluate = mcpEvaluate();
+
+        REFUSED_ACTION_CALLS.forEach(function (attempt) {
+            assert.match(expectMcpRefusal(evaluate, attempt.code), attempt.names,
+                "a mark from another load is not this load's refusal list: " + attempt.code);
+        });
+
+        assert.deepEqual(world.executed, [], "no refused action may reach the game");
+        assert.deepEqual(world.queried, []);
+
+        // The older wrapper is still in the chain, so ordinary play must still pass through it.
+        const legitimate = evaluate('context.executeAction("ridesetstatus", { ride: 0, status: 1 }); return "ok";');
+
+        assert.equal(legitimate.ok, true, "an ordinary action still goes through: " + JSON.stringify(legitimate));
+        assert.deepEqual(world.executed, ["ridesetstatus"]);
+    } finally {
+        world.restore();
+    }
+});
+
+test("a slot this load cannot take back is reported as open, not counted as frozen", function () {
+    const world = installWorld();
+
+    try {
+        // Builds before this one locked the action slots shut, so a plugin hot-reloaded onto
+        // one of those cannot get its refusal list in front of the game at all. That case is
+        // unfixable from here and must not read as clean: it has to reach the endpoint a run
+        // is gated on. One clean load of the game is what clears it.
+        installPreviousLoadActionGuard("executeAction", true);
+
+        const index = getV1(createApplication());
+
+        assert.equal(index.stateGuards.ok, false, "a guard that could not be installed is not ok");
+        assert.ok(index.stateGuards.unfrozen.indexOf("context.executeAction") >= 0,
+            "and it must be named: " + JSON.stringify(index.stateGuards.unfrozen));
+
+        // And the hole is real, which is what makes reporting it worth anything.
+        const evaluate = mcpEvaluate();
+        const outcome = evaluate('context.executeAction("cheatset", { type: 16, param1: 1, param2: 0 }); return "through";');
+
+        assert.equal(outcome.ok, true, "the stand-in must be a real hole, or this proves nothing");
+        assert.deepEqual(world.executed, ["cheatset"]);
     } finally {
         world.restore();
     }
@@ -632,18 +918,22 @@ test("the objective's own numbers are watched as well as frozen", function () {
  * Deferred work - the one route that escapes both halves at once
  * ------------------------------------------------------------------ */
 
-test("a script cannot schedule or subscribe to anything, and nothing reaches the game", function () {
+const DEFERRED_WORK = [
+    'context.setTimeout(function () { park.cash = 9e6; }, 10)',
+    'context.setInterval(function () { park.cash = 9e6; }, 10)',
+    "context.clearTimeout(1)",
+    "context.clearInterval(1)",
+    'context.subscribe("ride.ratings.calculate", function (e) { e.excitement = 999; })'
+];
+
+test("the evaluate tool refuses to schedule or subscribe, and nothing reaches the game", function () {
     const world = installWorld();
 
     try {
-        [
-            'context.setTimeout(function () { park.cash = 9e6; }, 10)',
-            'context.setInterval(function () { park.cash = 9e6; }, 10)',
-            "context.clearTimeout(1)",
-            "context.clearInterval(1)",
-            'context.subscribe("ride.ratings.calculate", function (e) { e.excitement = 999; })'
-        ].forEach(function (code) {
-            const error = expectRefusal(code);
+        const evaluate = mcpEvaluate();
+
+        DEFERRED_WORK.forEach(function (code) {
+            const error = expectMcpRefusal(evaluate, code);
 
             assert.match(error, /cannot be called from an evaluated script/, code + " -> " + error);
             assert.match(error, /come out of running the park/, "and it closes the way the others do: " + error);
@@ -656,20 +946,80 @@ test("a script cannot schedule or subscribe to anything, and nothing reaches the
     }
 });
 
+test("a timer guard left by a previous load of the plugin does not count as guarded", async function () {
+    const world = installWorld();
+
+    try {
+        // The live failure, reproduced: the previous load guards `context` first, so every
+        // slot is already marked and already holds a working-looking wrapper by the time
+        // this load installs. Its wrapper reads its own `insideEvaluate`, which no evaluate
+        // running here will ever set, so treating the mark as proof leaves the route open.
+        const previousLoad = await loadPluginAgain();
+
+        previousLoad.runScript("1 + 1");
+
+        const evaluate = mcpEvaluate();
+
+        DEFERRED_WORK.forEach(function (code) {
+            assert.match(expectMcpRefusal(evaluate, code), /cannot be called from an evaluated script/,
+                "a wrapper this load did not install is not this load's guard: " + code);
+        });
+
+        assert.deepEqual(world.scheduled, [], "an interval registered here would keep running between tool calls");
+        assert.deepEqual(world.subscribed, [],
+            "and a ride.ratings.calculate subscriber would rewrite ratings after the freeze, every recalculation");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the other endpoint that runs script is inside the guards too", function () {
+    const world = installWorld();
+
+    try {
+        // GET /v1/eval took a bare `new Function`, so `insideEvaluate` was never set on it
+        // and every guard that only bites inside a script did nothing there. It is the same
+        // code from the same author reaching the same game, so it runs the same way.
+        const app = createApplication();
+        const refused = JSON.parse(app.handleRawRequest(
+            "GET /v1/eval?q=" + encodeURIComponent("context.setInterval(function () {}, 10)") + " HTTP/1.1\r\n\r\n"
+        ).getBody()) as { error?: string; result?: unknown };
+
+        assert.match(String(refused.error), /cannot be called from an evaluated script/, JSON.stringify(refused));
+        assert.deepEqual(world.scheduled, [], "nothing may reach the game's timers through this door either");
+
+        const cheat = JSON.parse(app.handleRawRequest(
+            "GET /v1/eval?q=" + encodeURIComponent('context.executeAction("cheatset", { type: 16 })') + " HTTP/1.1\r\n\r\n"
+        ).getBody()) as { error?: string };
+
+        assert.match(String(cheat.error), /cheatset is not available in this run/, JSON.stringify(cheat));
+        assert.deepEqual(world.executed, []);
+
+        // Reading the park through it still works, which is what the dashboard uses it for.
+        const read = JSON.parse(app.handleRawRequest("GET /v1/eval?q=park.cash HTTP/1.1\r\n\r\n").getBody()) as { result?: unknown };
+
+        assert.equal(read.result, 100000, "an ordinary read must still answer: " + JSON.stringify(read));
+    } finally {
+        world.restore();
+    }
+});
+
 test("the refusals say why a script has no use for either", function () {
     const world = installWorld();
 
     try {
-        const timer = expectRefusal("context.setTimeout(function () {}, 10)");
+        const evaluate = mcpEvaluate();
+
+        const timer = expectMcpRefusal(evaluate, "context.setTimeout(function () {}, 10)");
         assert.match(timer, /answers the moment it/, "the reason is that the model is already gone: " + timer);
         assert.match(timer, /typed tool/, "and the alternative is the tools that do span ticks: " + timer);
 
-        const hook = expectRefusal('context.subscribe("interval.tick", function () {})');
+        const hook = expectMcpRefusal(evaluate, 'context.subscribe("interval.tick", function () {})');
         assert.match(hook, /fires on a later tick/, hook);
         // The point of naming this one: it would undo the ride ratings guard outright.
         assert.match(hook, /ride\.ratings\.calculate/, "the message must name what a hook can overwrite: " + hook);
 
-        const cancel = expectRefusal("context.clearTimeout(1)");
+        const cancel = expectMcpRefusal(evaluate, "context.clearTimeout(1)");
         assert.match(cancel, /belong to the typed tools/, cancel);
     } finally {
         world.restore();
@@ -754,6 +1104,258 @@ test("a timer the game handed back to us is guarded again on the next script", f
             /cannot be called from an evaluated script/, "the guard must reinstall itself");
         assert.deepEqual(world.scheduled, [], "and the raw timer must not have been reached");
     } finally {
+        world.restore();
+    }
+});
+
+/* ------------------------------------------------------------------ *
+ * The window system - the same hole as a hook, one namespace along
+ * ------------------------------------------------------------------ */
+
+const UI_ROUTES = [
+    // The one this is all for: a callback the game runs every tick, registered and left
+    // behind, on a tick where nothing is watching and after evaluate has answered.
+    'ui.openWindow({ classification: "freeplay", width: 200, height: 100, title: "x",'
+        + " onUpdate: function () { park.cash = 9e6; } })",
+    // And the same thing one level down, where a window's widgets carry their own.
+    'ui.openWindow({ classification: "freeplay", width: 200, height: 100, title: "x",'
+        + ' widgets: [{ type: "button", x: 0, y: 0, width: 10, height: 10, onClick: function () {} }] })',
+    'ui.activateTool({ id: "freeplay", onMove: function () {} })',
+    'ui.registerMenuItem("cheat", function () {})',
+    'ui.registerToolboxMenuItem("cheat", function () {})',
+    'ui.registerShortcut({ id: "freeplay.x", text: "x", callback: function () {} })',
+    'ui.showTextInput({ title: "x", description: "x", callback: function () {} })',
+    'ui.showFileBrowse({ type: "load", fileType: "game", callback: function () {} })',
+    'ui.showScenarioSelect({ callback: function () {} })',
+    // These take no callback. They are refused all the same, because the namespace is
+    // refused rather than a list of members, which is the point of doing it this way.
+    'ui.showError("a", "b")',
+    "ui.closeAllWindows()",
+    "ui.getWindow(0)",
+    "ui.width",
+    "ui.tool",
+    // However it is spelled, it is the same read of the same slot.
+    "globalThis.ui.openWindow",
+    "var handle = ui; return typeof handle;"
+];
+
+test("the evaluate tool refuses the whole ui namespace, and nothing reaches the window system", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        UI_ROUTES.forEach(function (code) {
+            const error = expectMcpRefusal(evaluate, code);
+
+            assert.match(error, /ui cannot be reached from an evaluated script/, code + " -> " + error);
+            assert.match(error, /come out of running the park/, "and it closes the way the others do: " + error);
+        });
+
+        assert.deepEqual(world.uiCalls, [], "no window call may reach the game");
+        assert.deepEqual(world.uiCallbacks, [],
+            "and a window's onUpdate would go on running every tick, long after evaluate had answered");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the ui refusal says why a script has no use for a window", function () {
+    const world = installWorld();
+
+    try {
+        const error = expectMcpRefusal(mcpEvaluate(), UI_ROUTES[0]);
+
+        assert.match(error, /answers the moment it/, "the reason is that the model is already gone: " + error);
+        assert.match(error, /nobody is at the screen/i, "and that there is nobody to read a window: " + error);
+        assert.match(error, /openWindow/, "the message must name what it is refusing: " + error);
+        assert.match(error, /typed tool/, "and the alternative is the tools that do span ticks: " + error);
+    } finally {
+        world.restore();
+    }
+});
+
+test("a ui guard left by a previous load of the plugin does not count as guarded", async function () {
+    const world = installWorld();
+
+    try {
+        // The previous load has to reach the slot first, which is what a hot reload is:
+        // nothing of this load's may be sitting in it, or the previous load stands aside
+        // and there is no stale accessor left to be fooled by.
+        const scope = globalThis as unknown as Record<string, unknown>;
+
+        delete scope.ui;
+        scope.ui = world.ui;
+
+        // The same failure the timer guards had, reproduced on the namespace: the previous
+        // load's accessor is in the slot, marked, and reads its own `insideEvaluate`, which
+        // no evaluate running here will ever set. Treating the mark as proof leaves it open.
+        const previousLoad = await loadPluginAgain();
+
+        previousLoad.runScript("1 + 1");
+
+        const evaluate = mcpEvaluate();
+
+        UI_ROUTES.forEach(function (code) {
+            assert.match(expectMcpRefusal(evaluate, code), /ui cannot be reached from an evaluated script/,
+                "an accessor this load did not install is not this load's guard: " + code);
+        });
+
+        assert.deepEqual(world.uiCalls, [], "no window call may reach the game");
+        assert.deepEqual(world.uiCallbacks, []);
+    } finally {
+        world.restore();
+    }
+});
+
+test("the plugin's own window calls are untouched, before and after a script", function () {
+    const world = installWorld();
+
+    try {
+        // The guards go in when the plugin starts, not when the first script runs.
+        createApplication();
+
+        // The plugin's own use of the namespace is a typed tool, which is outside any
+        // script - so this must reach the game exactly as it did before the guard went in.
+        const shown = new UiTools().showError({ title: "Ride broken", message: "The Corkscrew has stalled" });
+
+        assert.equal(shown.shown, true, "the plugin's own dialog must still go up: " + JSON.stringify(shown));
+        assert.deepEqual(world.uiCalls, ["showError:Ride broken:The Corkscrew has stalled"]);
+
+        // And a script that threw must not leave the namespace refused for everyone else.
+        expectRefusal("throw new Error('the script blew up mid-way');");
+
+        const scope = globalThis as unknown as { ui: Record<string, unknown> };
+
+        assert.equal(scope.ui.width, 1280, "reading the namespace outside a script is the game's own business");
+        assert.equal(typeof scope.ui.openWindow, "function");
+    } finally {
+        world.restore();
+    }
+});
+
+test("a script cannot take the window system away from the plugin", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        // Two lines, and the plugin's own error dialog would be calling a function of the
+        // script's on some later tick: the deferred hole again, from the far end. The slot
+        // has to stay replaceable so the next load of the plugin can take it back, so what
+        // closes this is putting the guard back rather than refusing the delete.
+        const outcome = evaluate("delete globalThis.ui;"
+            + " globalThis.ui = { showError: function () { park.cash = 9e6; } };"
+            + " return typeof globalThis.ui;");
+
+        const scope = globalThis as unknown as { ui: Record<string, unknown> };
+
+        assert.equal(scope.ui.width, 1280,
+            "the game's own ui must be back in the slot the moment the script returns: " + JSON.stringify(outcome));
+        assert.equal(scope.ui, world.ui, "and it must be the game's object, not the script's stand-in");
+        assert.match(expectMcpRefusal(evaluate, "ui.width"), /cannot be reached from an evaluated script/,
+            "with the guard still over it");
+    } finally {
+        world.restore();
+    }
+});
+
+test("a ui slot this load cannot take is reported as open, not counted as frozen", function () {
+    const world = installWorld();
+    const scope = globalThis as unknown as Record<string, unknown>;
+    const realDefineProperty = Object.defineProperty;
+
+    try {
+        // The accessor an earlier test left has to come out first, or there is nothing for
+        // this load to install and the slot never gets the chance to refuse.
+        delete scope.ui;
+        scope.ui = world.ui;
+
+        // The stand-in for a plugin API that will not take the accessor - a global the game
+        // declared non-configurable, say. Unfixable from here, and it must reach the
+        // endpoint a run is gated on rather than quietly report a guard that is not there.
+        Object.defineProperty = function (target: object, key: PropertyKey, attributes: PropertyDescriptor & ThisType<unknown>) {
+            if (target === globalThis && key === "ui") {
+                throw new TypeError("Cannot redefine property: ui");
+            }
+
+            return realDefineProperty(target, key, attributes);
+        } as typeof Object.defineProperty;
+
+        const index = getV1(createApplication());
+
+        assert.equal(index.stateGuards.ok, false, "a guard that could not be installed is not ok");
+        assert.ok(index.stateGuards.unfrozen.indexOf("ui") >= 0,
+            "and it must be named: " + JSON.stringify(index.stateGuards.unfrozen));
+
+        // And the hole is real, which is what makes reporting it worth anything.
+        const outcome = mcpEvaluate()('ui.registerMenuItem("cheat", function () {}); return "through";');
+
+        assert.equal(outcome.ok, true, "the stand-in must be a real hole, or this proves nothing");
+        assert.deepEqual(world.uiCalls, ["registerMenuItem"]);
+    } finally {
+        Object.defineProperty = realDefineProperty;
+        world.restore();
+    }
+});
+
+/* ------------------------------------------------------------------ *
+ * The two ways a script could still have handed the game a function
+ * ------------------------------------------------------------------ */
+
+test("a script cannot register a game action of its own", function () {
+    const world = installWorld();
+
+    try {
+        const error = expectMcpRefusal(mcpEvaluate(),
+            'context.registerAction("freeplaycheat", function () { return {}; }, function () { park.cash = 9e6; return {}; })');
+
+        assert.match(error, /cannot be called from an evaluated script/, error);
+        assert.match(error, /on a later tick/, "the execute function is run by the game, not by the script: " + error);
+        assert.match(error, /catches an invented one/,
+            "and registering a name is also how the unknown-name check would be got round: " + error);
+        assert.deepEqual(world.executed, []);
+    } finally {
+        world.restore();
+    }
+});
+
+test("a callback a script hands to an action runs under the same guards the script did", function () {
+    const world = installWorld();
+
+    try {
+        // The game applies an action on a later tick and calls back then, by which point
+        // evaluate has answered - so without this the script's own code would get a tick
+        // with subscribe, the timers and ui all open to it.
+        const evaluate = mcpEvaluate();
+        let refusal = "";
+
+        world.deferCallbacks(function (deferred) {
+            const outcome = evaluate(`
+                context.executeAction("ridesetstatus", { ride: 0, status: 1 }, function () {
+                    try {
+                        context.subscribe("ride.ratings.calculate", function (e) { e.excitement = 999; });
+                    } catch (error) {
+                        globalThis.__freeplayCallbackRefusal = String(error.message);
+                    }
+                });
+                return "queued";
+            `);
+
+            assert.equal(outcome.ok, true, JSON.stringify(outcome));
+            assert.deepEqual(world.subscribed, [], "nothing has run yet: the game has not applied the action");
+
+            // The tick the game applies it on, which is after evaluate has already answered.
+            deferred();
+            refusal = String((globalThis as unknown as Record<string, unknown>).__freeplayCallbackRefusal);
+        });
+
+        assert.match(refusal, /cannot be called from an evaluated script/,
+            "the callback is the script's own code, so it keeps the script's rules: " + refusal);
+        assert.deepEqual(world.subscribed, [],
+            "a subscriber left here would rewrite ride ratings on every recalculation");
+    } finally {
+        delete (globalThis as unknown as Record<string, unknown>).__freeplayCallbackRefusal;
         world.restore();
     }
 });

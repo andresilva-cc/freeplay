@@ -9,6 +9,37 @@ const STEP_DELAY_MS = 200;
  */
 const SETTING_INSPECTION_INTERVAL = 5;
 
+/**
+ * OpenRCT2 refuses any game action that does not carry `Flags::AllowWhilePaused` while the
+ * game is paused - `GameActionRunner.cpp`, `CheckActionInPausedMode` - answering
+ * STR_CONSTRUCTION_NOT_POSSIBLE_WHILE_GAME_IS_PAUSED.
+ *
+ * Of what this file fires, only `ridedemolish` lacks the flag; `ridesetstatus`,
+ * `ridesetprice` and `ridesetsetting` all carry it and go through while the clock is
+ * stopped. The demolition is still fired rather than refused up front: a refused
+ * `ridedemolish` removes nothing and charges nothing, so the game's own answer is the whole
+ * story and reading it beats restating a rule this file would have to transcribe.
+ */
+function gamePaused(): boolean {
+    return context.paused === true;
+}
+
+/**
+ * `gamesetspeed` and `pausetoggle` both carry `Flags::AllowWhilePaused`, so this is the one
+ * call named in a paused refusal that is not itself refused by the pause.
+ */
+const UNPAUSE_CALL = "set_game_speed is not one of the calls a paused game refuses, so"
+    + " set_game_speed {paused: false} goes through and starts the clock.";
+
+/** The game's own words for a refusal. Same shape `src/park/build.ts` quotes them in. */
+function actionError(result: GameActionResult | undefined): string | undefined {
+    if (!result || !result.error) {
+        return undefined;
+    }
+
+    return (result.errorTitle || "") + (result.errorMessage ? ": " + result.errorMessage : "");
+}
+
 /** What each inspection interval index means. The game stores the index, not the minutes. */
 const INSPECTION_INTERVAL_NAMES = [
     "every 10 minutes", "every 20 minutes", "every 30 minutes", "every 45 minutes",
@@ -59,15 +90,36 @@ export function operateRide(request: OperateRideRequest, done: (outcome: Operate
     const name = ride.name;
 
     if (request.demolish === true) {
-        context.executeAction("ridedemolish", { ride: request.ride, modifyType: 0 }, function () { /* verified by re-read */ });
+        // The result used to be thrown away, and "Could not demolish X." was the whole
+        // message: a category with no fact in it. This is the call build_flat_ride's own
+        // failures send the model to, so a dead end here costs it the remedy as well.
+        let demolishResult: GameActionResult | undefined;
+        context.executeAction("ridedemolish", { ride: request.ride, modifyType: 0 }, function (result) {
+            demolishResult = result;
+        });
 
         return context.setTimeout(function () {
             const gone = !map.getRide(request.ride);
+            // Read back now rather than inferred from the refusal text: a pause can arrive
+            // after the action was fired, and the state at the moment the message is written
+            // is the one the model has to act on.
+            const pausedNow = gamePaused();
+
             done({
                 ok: gone,
                 ride: request.ride,
                 name: name,
-                detail: gone ? "Demolished " + name + "." : "Could not demolish " + name + "."
+                detail: gone
+                    ? "Demolished " + name + "."
+                    : "Could not demolish " + name + ": "
+                        + (actionError(demolishResult) || "the game reported no refusal and the ride is still there")
+                        + "."
+                        + (pausedNow
+                            ? " The game is paused, and ridedemolish - the action this fires - is one of the"
+                                + " actions a paused game refuses, so no ride can be demolished while the clock"
+                                + " is stopped. Ride " + String(request.ride) + " is still in the park, exactly"
+                                + " as it was. " + UNPAUSE_CALL
+                            : "")
             });
         }, STEP_DELAY_MS) as unknown as void;
     }

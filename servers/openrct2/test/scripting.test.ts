@@ -278,17 +278,28 @@ test("queryAction hands back the game's answer rather than nothing", function ()
     }
 });
 
-test("a script cannot put the unguarded action back", function () {
+test("a script cannot put the unguarded action back, and cannot leave its own in the slot", function () {
     const fake = installFakeContext();
 
     try {
-        const error = expectError(`
+        // The slot is writable on purpose: a non-writable one cannot be taken back off the
+        // wrapper a previous load of the plugin left in it, which is how the refusal list
+        // came to be installed and never consulted. So the script's assignment does land -
+        // on a function of its own, which reaches nothing. The guard is what stands between
+        // the script and the game, and the raw invoker exists only inside its closure.
+        const outcome = expectOk(`
             context.queryAction = function () { return "bypassed"; };
             delete context.queryAction;
             return context.queryAction("set_ride_status", {});
         `);
 
-        assert.match(error, /no game action named/, "reassigning and deleting must both fail: " + error);
+        assert.equal(outcome.result, "bypassed", "the script talked to itself, which is all it can do");
+        assert.deepEqual(fake.calls.queried, [], "and nothing reached the game");
+
+        // The stub must not outlive the script: every typed tool calls this slot.
+        const error = expectError('context.queryAction("set_ride_status", {})');
+
+        assert.match(error, /no game action named/, "the next evaluate must put the guard back: " + error);
         assert.deepEqual(fake.calls.queried, []);
     } finally {
         fake.restore();
@@ -315,11 +326,38 @@ test("an action a plugin registers at runtime counts as known", function () {
     const fake = installFakeContext();
 
     try {
-        expectOk('context.registerAction("freeplaycustom", function () {}, function () {}); return 1;');
+        // Registered the way a plugin registers one - outside any script, where the guard
+        // stands aside. Inside a script it is refused, because the game runs a custom
+        // action's execute function on a later tick.
+        expectOk("1 + 1");
+
+        const scope = globalThis as unknown as { context: Record<string, unknown> };
+        const register = scope.context.registerAction as (name: string, query: () => void, execute: () => void) => void;
+
+        register.call(scope.context, "freeplaycustom", function () { /* query */ }, function () { /* execute */ });
+
         expectOk('context.queryAction("freeplaycustom", {})');
 
         assert.deepEqual(fake.calls.registered, ["freeplaycustom"]);
         assert.deepEqual(fake.calls.queried, ["freeplaycustom"]);
+    } finally {
+        fake.restore();
+    }
+});
+
+test("a script cannot register a game action for the game to run later", function () {
+    const fake = installFakeContext();
+
+    try {
+        const error = expectError('context.registerAction("freeplaycheat", function () {}, function () {})');
+
+        assert.match(error, /cannot be called from an evaluated script/, error);
+        assert.match(error, /on a later tick/, "the execute function is the game's to run, not the script's: " + error);
+        assert.deepEqual(fake.calls.registered, [], "and nothing may reach the game's registry");
+
+        // The name must not have been let into the known-action set on the way past either.
+        assert.match(expectError('context.queryAction("freeplaycheat", {})'), /no game action named/);
+        assert.deepEqual(fake.calls.queried, []);
     } finally {
         fake.restore();
     }

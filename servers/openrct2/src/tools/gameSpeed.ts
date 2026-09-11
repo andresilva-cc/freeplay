@@ -186,8 +186,14 @@ export class GameSpeedTools {
             "scenario time.",
             "`speed` is the game's speed setting, not a multiplier: " + SPEED_HELP + ".",
             "`paused` stops the simulation dead — no guests arrive or move, no ride earns, no day passes —",
-            "until it is unpaused. Game actions still work while paused, but nothing they set in motion",
-            "happens until the clock runs again, so a ride opened while paused takes its first guest after.",
+            "until it is unpaused.",
+            "While paused the game refuses every action that changes the map, with \"Construction not possible",
+            "while game is paused!\". `build_path`, `remove_path`, `buy_land`, `clear_scenery` and `operate_ride`",
+            "`demolish` each fire such an action and report that refusal in their own result; `build_flat_ride`",
+            "refuses the whole call while the game is paused, and builds and charges nothing.",
+            "Settings do go through: `operate_ride` opening, closing, pricing and inspection intervals,",
+            "`hire_staff`, `open_park`, and this tool itself. Reading is never affected.",
+            "A ride opened while paused is open, but takes its first guest only once the clock runs again.",
             "Pass either or both in one call.",
             "The result reports the speed and pause state the game reads back as afterwards, which is what",
             "`ok` is about; `speed` in the result is the setting in effect, not the one you asked for.",
@@ -208,7 +214,12 @@ export class GameSpeedTools {
                 paused: {
                     type: "boolean",
                     description: "true to pause the simulation, false to let it run. While paused no scenario"
-                        + " time passes at all. Omit to leave it as it is."
+                        + " time passes at all, and the game refuses every action that changes the map -"
+                        + " build_path, remove_path, buy_land, clear_scenery, demolishing a ride, and the"
+                        + " track and door steps of build_flat_ride - with \"Construction not possible while"
+                        + " game is paused!\", which each of those tools reports back in its own result."
+                        + " Ride settings, hire_staff, open_park and reading still work."
+                        + " Omit to leave it as it is."
                 }
             },
             additionalProperties: false

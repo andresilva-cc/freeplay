@@ -360,3 +360,178 @@ test("a queue laid over a path, then taken up, leaves the ride bound to nothing"
             "the tile at the door survived, so the ride still has its queue");
     });
 });
+
+test("the park gate is named as the park gate, in a park with no rides in it at all", function () {
+    // Measured against the running game: an entrance element's `ride` is the raw ride index
+    // for all three kinds, so the gate of an empty park reads back as ride 0 and the old
+    // guard - `typeof entrance.ride !== "number"` - never fired. The refusal called the
+    // park's own gate "the entrance BUILDING of ride 0" and told the model to demolish ride
+    // 0, which cannot remove a gate and, in a park with a ride 0 in it, destroys that ride.
+    withGame(parkWithSpine, function (game) {
+        assert.equal(game.rides.length, 0, "the case that exposed this had no rides at all");
+
+        const outcome = take([{ x: 11, y: 4 }, { x: 11, y: 4 }]);
+        const message = String(outcome.error);
+
+        assert.equal(outcome.ok, false);
+        assert.match(message, /11,4/, "the refusal has to name the tile that stopped it");
+        assert.match(message, /park entrance BUILDING/);
+        assert.doesNotMatch(message, /ride \d/,
+            "there is no ride here to name, and naming one sends the model at the wrong thing");
+        assert.doesNotMatch(message, /operate_ride/,
+            "demolishing a ride cannot remove the park gate, so offering that call sends the model"
+            + " at something that will fail, or at a ride it did not mean to lose");
+        assert.match(message, /demolishing a ride will not/,
+            "the advice it replaces was followed, so say plainly that it does not work");
+        assert.ok(entranceAt(game, 11, 4), "the gate must still be standing");
+    });
+});
+
+test("a gate tile is still the gate when a ride 0 exists to be confused with it", function () {
+    // The defect printed "ride 0" whether or not a ride 0 existed. Checking `map.rides` would
+    // silence the empty-park case above and leave the destructive one standing, so this pins
+    // that the answer comes from the element's own `object` and not from the ride list.
+    withGame(function (game) {
+        parkWithSpine(game, 12);
+        rideWithQueueAt(game, { x: 10, y: 9 });
+    }, function (game) {
+        assert.equal(game.rides[0].id, 0, "the fixture needs a ride 0 for the old message to have named");
+
+        const outcome = take([{ x: 11, y: 4 }, { x: 11, y: 4 }]);
+
+        assert.match(String(outcome.error), /park entrance BUILDING/);
+        assert.doesNotMatch(String(outcome.error), /ride 0/,
+            "the gate belongs to no ride, however many rides the park has");
+        assert.equal(game.rides.length, 1, "a refusal must not have touched the ride list");
+    });
+});
+
+test("a ride door is still named with its ride, and its exit told apart from its entrance", function () {
+    // The other side of the same branch: fixing the gate must not cost the ride-door wording,
+    // which is the message that actually has a next call to name.
+    withGame(function (game) {
+        parkWithSpine(game, 12);
+        rideWithQueueAt(game, { x: 10, y: 9 });
+        game.addRideEntrance(12, 6, 0, 3, true);
+    }, function () {
+        assert.match(String(take([{ x: 10, y: 8 }, { x: 10, y: 8 }]).error),
+            /entrance BUILDING of ride 0[\s\S]*operate_ride `demolish`/);
+        assert.match(String(take([{ x: 12, y: 6 }, { x: 12, y: 6 }]).error),
+            /exit BUILDING of ride 0/);
+    });
+});
+
+test("an entrance kind this build does not know is refused without inheriting the ride wording", function () {
+    // `object` is an enum, and the bug was a two-way branch treating "not 1" as "0". Anything
+    // that is neither a ride door nor the gate must refuse on its own terms rather than be
+    // guessed at as a ride entrance.
+    withGame(parkWithSpine, function (game) {
+        game.tile(12, 8).elements.push({ type: "entrance", baseZ: 96, object: 7, sequence: 0, ride: 0 });
+
+        const outcome = take([{ x: 12, y: 8 }, { x: 12, y: 8 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(String(outcome.error), /12,8/);
+        assert.match(String(outcome.error), /unrecognised kind \(`object` 7\)/);
+        assert.doesNotMatch(String(outcome.error), /of ride/,
+            "an unknown entrance kind must not be reported as a ride's door");
+    });
+});
+
+test("a refusal reports no reachable count at all, rather than a zero that reads as a severed park", function () {
+    // `reachableFromEntrance: 0` on a refusal is a measurement that was never taken, in the
+    // one message the model reads when it is already off track.
+    withGame(parkWithSpine, function () {
+        const refused = take([{ x: 11, y: 4 }, { x: 11, y: 4 }]);
+
+        assert.equal(refused.ok, false);
+        assert.equal(refused.reachableFromEntrance, null,
+            "nothing was walked, so there is no figure to report");
+
+        const argumentError = callTool({ fromX: 10, fromY: 7 });
+        assert.equal(argumentError.reachableFromEntrance, null,
+            "an argument refusal never reaches the map either");
+
+        // And the field still carries the real count when the call did the work.
+        const done = take([{ x: 10, y: 12 }, { x: 10, y: 12 }]);
+        assert.equal(done.ok, true);
+        assert.equal(done.reachableFromEntrance, 7, "10,5 through 10,11 are what is left");
+    });
+});
+
+test("the fake's park gate carries a ride index, because the real one does", function () {
+    // This is the assertion the four tests above rest on. Measured: an entrance element's
+    // `ride` is the raw ride index for all three kinds of entrance, so the real gate reads
+    // back as ride 0. While the fake left it undefined, `typeof ride !== "number"` stood in
+    // for "this is the gate" and every gate test here passed with the defect in place -
+    // which is exactly what happened for as long as the defect shipped. Take this away and
+    // the gate tests stop being able to fail.
+    withGame(parkWithSpine, function (game) {
+        const gate = entranceAt(game, 11, 4);
+
+        assert.equal(gate?.object, 2, "`object` 2 is the park entrance, and the only field that says so");
+        assert.equal(gate?.ride, 0,
+            "the game reports a ride index for the gate too; a fake that omits it is gentler"
+            + " than the game and hides the branch these tests exist to check");
+    });
+});
+
+/**
+ * The pause, which remove_path used to report as a bare count.
+ *
+ * `footpathremove` carries no `Flags::AllowWhilePaused`, so OpenRCT2's
+ * `GameActionRunner.cpp::CheckActionInPausedMode` turns down every tile and answers
+ * "Construction not possible while game is paused!". The tool threw that answer away and
+ * said only how many tiles still carried a path, which names a category and not a fix.
+ */
+test("a paused removal reports the game's own refusal, not just a count", function () {
+    withGame(function (game) {
+        parkWithSpine(game);
+        game.gameValues.paused = true;
+    }, function (game) {
+        const outcome = take([{ x: 10, y: 7 }, { x: 10, y: 9 }]);
+
+        assert.equal(outcome.ok, false, "a paused removal takes nothing up, so it is not a success");
+        assert.equal(outcome.tilesRemoved, 0);
+        assert.ok(footpathAt(game, 10, 7), "the path is still on the map, which is what the refusal meant");
+        assert.equal(game.gameValues.paused, true, "and the clock is left exactly where the model put it");
+
+        assert.match(outcome.detail, /Removed 0 of 3 footpath tiles/, "the count is still reported");
+        assert.match(outcome.detail, /Construction not possible while game is paused!/,
+            "but the count alone is a category: the game's own words are the fact");
+        assert.match(outcome.detail, /footpathremove/, "and the action the pause refuses is not named");
+        assert.match(outcome.detail, /set_game_speed \{paused: false\}/,
+            "nor the one call a paused game does not refuse");
+    });
+});
+
+test("a removal refused for another reason is quoted, and gains no pause clause", function () {
+    // A clause appended unconditionally would satisfy the test above and be wrong here, and
+    // the discarded result was never a pause bug: any refusal was thrown away the same way.
+    withGame(function (game) {
+        parkWithSpine(game);
+        game.refuse.footpathremove = true;
+    }, function (game) {
+        const outcome = take([{ x: 10, y: 7 }, { x: 10, y: 9 }]);
+
+        assert.equal(game.gameValues.paused, false, "the fixture has to be a running game");
+        assert.equal(outcome.tilesRemoved, 0);
+        assert.match(outcome.detail, /The game refused the removal: Refused: test refusal\./,
+            "a refusal the game gave has to be quoted whatever the reason was");
+        assert.doesNotMatch(outcome.detail, /paused/, "an unpaused failure must not blame the clock");
+        assert.doesNotMatch(outcome.detail, /set_game_speed/,
+            "nor send the model to a lever it does not need");
+    });
+});
+
+test("tiles that stay put with no refusal read say that, rather than borrowing a reason", function () {
+    withGame(parkWithSpine, function (game) {
+        const outcome = take([{ x: 10, y: 7 }, { x: 10, y: 9 }]);
+
+        assert.equal(game.attempted.length, 3, "the removals were sent; only the read-back shows they did nothing");
+        assert.match(outcome.detail, /The game gave no refusal for 3 of them/,
+            "nothing was read, so nothing may be quoted - and saying so is the honest report");
+        assert.doesNotMatch(outcome.detail, /The game refused the removal/,
+            "no refusal was read, so none may be reported");
+    }, { inert: true });
+});

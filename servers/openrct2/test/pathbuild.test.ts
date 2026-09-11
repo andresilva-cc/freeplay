@@ -131,8 +131,12 @@ test("a run that comes up short names the tiles that got no path", function () {
         assert.equal(outcome.ok, false);
         assert.match(outcome.detail, /Only 1 of 4 tiles carry a path: no path reached 10,6 10,7 10,8/,
             "\"Only N of M\" without the tiles is a category, not a fix");
-        assert.match(outcome.detail, /`entranceDoor` and `exitDoor`/,
-            "the commonest cause of a short run is aiming at a door building");
+        // The game answered this call, so its words are the cause. The door-building sentence
+        // used to be appended here too, which is a cause the call had never read.
+        assert.match(outcome.detail, /The game refused the placement: Refused: test refusal\./,
+            "the game gave a reason and the result has to carry it");
+        assert.doesNotMatch(outcome.detail, /`entranceDoor` and `exitDoor`/,
+            "a cause the game supplied must not be displaced by one nothing checked");
     });
 });
 
@@ -636,4 +640,74 @@ test("a queue laid with no surfaceObject is surfaced 11, and a path 1", function
             assert.equal(path.surfaceObject, 1, "the walkway on the map is not surfaced as one");
         }
     });
+});
+
+/**
+ * The pause, which build_path used to report as something else entirely.
+ *
+ * `footpathplace` carries no `Flags::AllowWhilePaused`, so OpenRCT2's
+ * `GameActionRunner.cpp::CheckActionInPausedMode` turns down every tile of a run and
+ * answers "Construction not possible while game is paused!". The tool discarded that answer
+ * and printed a tile count followed by its standing sentence about door buildings - a cause
+ * it had never read, in the one message the model reads because something went wrong.
+ */
+test("a paused run reports the game's own refusal rather than a cause nothing checked", function () {
+    withGame(function (game) {
+        parkWithGate(game);
+        game.gameValues.paused = true;
+    }, function (game) {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 9 }]);
+
+        assert.equal(outcome.ok, false, "a paused run lays nothing, so it is not a success");
+        assert.equal(outcome.tilesPlaced, 0, "and no tile carries a path");
+        assert.equal(footpathAt(game, 10, 6), undefined, "the map has to agree the tile is bare");
+        assert.equal(game.gameValues.paused, true, "and the clock is left exactly where the model put it");
+
+        assert.match(outcome.detail, /Construction not possible while game is paused!/,
+            "the game's own words for the refusal are the fact, and they are missing");
+        assert.match(outcome.detail, /footpathplace/,
+            "nor does it name the action the pause refuses");
+        assert.match(outcome.detail, /set_game_speed \{paused: false\}/,
+            "nor the one call a paused game does not refuse");
+        assert.doesNotMatch(outcome.detail, /`entranceDoor` and `exitDoor`/,
+            "this run failed on the clock, and door buildings had nothing to do with it");
+        assert.doesNotMatch(outcome.detail, /`paths.reachableSample`/,
+            "no tile of this run is on the ground, so telling it to move an endpoint is a fix"
+            + " for a failure that did not happen");
+    });
+});
+
+test("a refusal that is not the pause is quoted too, and gains no pause clause", function () {
+    // The other half: the errorMessage gap was never a pause bug. A refusal for any other
+    // reason was thrown away in exactly the same way, and a clause appended unconditionally
+    // would satisfy the test above while lying here.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.refuse.footpathplace = true;
+    }, function (game) {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 9 }]);
+
+        assert.equal(game.gameValues.paused, false, "the fixture has to be a running game");
+        assert.match(outcome.detail, /The game refused the placement: Refused: test refusal\./,
+            "a refusal the game gave has to be quoted whatever the reason was");
+        assert.doesNotMatch(outcome.detail, /paused/, "an unpaused failure must not blame the clock");
+        assert.doesNotMatch(outcome.detail, /set_game_speed/,
+            "nor send the model to a lever it does not need");
+    });
+});
+
+test("a shortfall the game never answered keeps the door-building explanation", function () {
+    // Where nothing was read there is nothing to quote, and this is the case the standing
+    // sentence was written for: a placement the game takes and no path appears.
+    withGame(parkWithGate, function () {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 9 }]);
+
+        assert.equal(outcome.tilesPlaced, 0);
+        assert.match(outcome.detail, /The game gave no refusal for 4 of them/,
+            "it must say that nothing explained these tiles rather than inventing something");
+        assert.match(outcome.detail, /`entranceDoor` and `exitDoor`/,
+            "and the one general fact that fits is worth keeping where nothing else is known");
+        assert.doesNotMatch(outcome.detail, /The game refused the placement/,
+            "no refusal was read, so none may be reported");
+    }, { inert: true });
 });

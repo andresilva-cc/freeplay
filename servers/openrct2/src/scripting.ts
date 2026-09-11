@@ -286,8 +286,22 @@ const knownActions: Record<string, boolean> = (function () {
 
 type ActionInvoker = (name: string, args: object, callback?: (result: unknown) => void) => unknown;
 
+/**
+ * This load of the plugin, as an identity rather than a flag.
+ *
+ * OpenRCT2 keeps one `context` object for the whole process and re-runs the plugin file on
+ * every hot reload - which `npm run watch` triggers on every save - so the wrappers an
+ * earlier load installed are still sitting in the slots. Their closures hold that load's
+ * `insideEvaluate`, action log, refusal list and known-action set, and none of those are
+ * this load's. A boolean "already guarded" mark cannot tell the two apart, so every guard
+ * that reads module state was dead from the second load onwards while the report went on
+ * calling it frozen. Comparing identities is what makes re-installing possible.
+ */
+const GUARD_LOAD: object = {};
+
 interface Guarded {
-    __freeplayActionGuard?: boolean;
+    /** The load that installed this wrapper. `true` is how builds before this one marked it. */
+    __freeplayActionGuard?: object | boolean;
 }
 
 function isKnownActionName(name: string): boolean {
@@ -378,9 +392,28 @@ function refuseCheatAction(caller: string, name: unknown): void {
 }
 
 function markGuarded<T>(fn: T): T {
-    (fn as unknown as Guarded).__freeplayActionGuard = true;
+    (fn as unknown as Guarded).__freeplayActionGuard = GUARD_LOAD;
     return fn;
 }
+
+/**
+ * Installed by *this* load, not merely by some load of this plugin. The action wrappers
+ * close over the refusal list, the known-action set and the executed-action log, so one
+ * left behind by an earlier load is a different set of all three and has to be wrapped
+ * again rather than trusted.
+ */
+function isOurActionGuard(value: unknown): boolean {
+    return typeof value === "function" && (value as unknown as Guarded).__freeplayActionGuard === GUARD_LOAD;
+}
+
+/** Marked by any load of this plugin, including builds that marked it with `true`. */
+function isActionGuard(value: unknown): boolean {
+    return typeof value === "function"
+        && typeof (value as unknown as Guarded).__freeplayActionGuard !== "undefined";
+}
+
+/** The wrapper this load put in each slot, so a stranger in one can be evicted for it. */
+const ownActionGuards: Record<string, { owner: object; wrapper: ActionInvoker } | undefined> = {};
 
 /** The object in the prototype chain that actually owns `key`, so the original cannot survive. */
 function findPropertyOwner(target: object, key: string): object | null {
@@ -397,14 +430,22 @@ function findPropertyOwner(target: object, key: string): object | null {
     return null;
 }
 
+/**
+ * Put a wrapper in a slot and say whether it took.
+ *
+ * Always `configurable: false`, so `delete` and a redefinition both fail. `writable: true`
+ * on every guard slot, which costs nothing and buys the one thing that was missing: the
+ * next load of the plugin can take the slot back off the last one. A script that overwrites
+ * a writable slot reaches nothing by it - the real invoker exists only inside the wrapper's
+ * closure, so all it can do is break its own calls - and the next `evaluate` wraps whatever
+ * it left there before running anything.
+ */
 function replaceProperty(owner: object, key: string, value: unknown): boolean {
     const record = owner as Record<string, unknown>;
 
     try {
-        // Non-writable and non-configurable: a script cannot put the raw invoker back, and
-        // the original survives only inside the wrapper's closure, which nothing can reach.
         Object.defineProperty(owner, key, {
-            value: value, writable: false, configurable: false, enumerable: false
+            value: value, writable: true, configurable: false, enumerable: false
         });
     } catch (_defineError) {
         try {
@@ -417,20 +458,71 @@ function replaceProperty(owner: object, key: string, value: unknown): boolean {
     return record[key] === value;
 }
 
-function guardInvoker(key: string, wrap: (original: ActionInvoker) => ActionInvoker): void {
+function guardInvoker(key: string, wrap: (original: ActionInvoker) => ActionInvoker): GuardOutcome {
     const owner = findPropertyOwner(context as unknown as object, key);
 
     if (owner === null) {
-        return;
+        return "absent";
     }
 
     const original = (owner as Record<string, unknown>)[key];
 
-    if (typeof original !== "function" || (original as Guarded).__freeplayActionGuard === true) {
-        return;
+    if (isOurActionGuard(original)) {
+        return "frozen";
     }
 
-    replaceProperty(owner, key, markGuarded(wrap(original as ActionInvoker)));
+    if (typeof original !== "function") {
+        return "absent";
+    }
+
+    const own = ownActionGuards[key];
+
+    // Nothing legitimate swaps these three - unlike `context.setTimeout`, which src/mcp.ts
+    // does swap - so an unmarked function in a slot we have already taken is a script's,
+    // left behind by an earlier evaluate. Ours goes back rather than wrapping it, or every
+    // typed tool would spend the rest of the session calling whatever the script left.
+    if (typeof own !== "undefined" && own.owner === owner && !isActionGuard(original)) {
+        return replaceProperty(owner, key, own.wrapper) ? "frozen" : "refused";
+    }
+
+    // An earlier load's wrapper is wrapped rather than unwrapped: its original is sealed in
+    // its own closure, so the only way to get this load's refusal list in front of the game
+    // is to sit in front of it. The extra name check it does on the way through is harmless.
+    const wrapper = markGuarded(wrap(original as ActionInvoker));
+
+    ownActionGuards[key] = { owner: owner, wrapper: wrapper };
+
+    return replaceProperty(owner, key, wrapper) ? "frozen" : "refused";
+}
+
+type ResultCallback = (result: unknown) => void;
+
+/**
+ * A callback a script hands to the game runs under the same guards the script did.
+ *
+ * `context.executeAction` hands the action to the game and calls back when the game applies
+ * it, which is a later tick - by which point `evaluate` has answered and `insideEvaluate` is
+ * false again, so the script's own code would get a tick on which the timers, `subscribe`
+ * and `ui` are open to it. It is the script's code either way, so it keeps the script's
+ * rules. Nothing is refused that was not already: the callback itself still runs, and a
+ * callback a typed tool passes is untouched, because `insideEvaluate` is false when a tool
+ * calls and only what is handed over from inside a script is wrapped.
+ */
+function guardScriptCallback(callback: ResultCallback | undefined): ResultCallback | undefined {
+    if (!insideEvaluate || typeof callback !== "function") {
+        return callback;
+    }
+
+    return function (this: unknown, result: unknown): void {
+        const wasInsideEvaluate = insideEvaluate;
+        insideEvaluate = true;
+
+        try {
+            callback.call(this, result);
+        } finally {
+            insideEvaluate = wasInsideEvaluate;
+        }
+    };
 }
 
 /**
@@ -440,26 +532,31 @@ function guardInvoker(key: string, wrap: (original: ActionInvoker) => ActionInvo
  * method - not shadowed on `context` - so `Object.getPrototypeOf(context).queryAction`
  * is the wrapper too, and the original is reachable only from inside the closure.
  * Installing it is therefore not something an evaluated script can undo.
+ *
+ * Each slot is reported as a lever, because the refusal list lives here and nowhere else:
+ * a slot this load could not take is a hole, and it has to show up in `GET /v1` rather
+ * than in nothing at all.
  */
 export function installActionGuards(): void {
     if (typeof context === "undefined" || !context) {
         return;
     }
 
-    guardInvoker("queryAction", function (original) {
+    recordLever("context.queryAction", guardInvoker("queryAction", function (original) {
         return function (this: unknown, name: string, args: object, callback?: (result: unknown) => void): unknown {
             requireKnownActionName("queryAction", name);
             refuseCheatAction("queryAction", name);
 
             let answer: unknown;
             let answered = false;
+            const guarded = guardScriptCallback(callback);
 
             original.call(this, name, args, function (result: unknown) {
                 answer = result;
                 answered = true;
 
-                if (typeof callback === "function") {
-                    callback(result);
+                if (typeof guarded === "function") {
+                    guarded(result);
                 }
             });
 
@@ -468,9 +565,9 @@ export function installActionGuards(): void {
             // answer straight back is information and cannot be mistaken for a world change.
             return answered ? answer : undefined;
         };
-    });
+    }));
 
-    guardInvoker("executeAction", function (original) {
+    recordLever("context.executeAction", guardInvoker("executeAction", function (original) {
         return function (this: unknown, name: string, args: object, callback?: (result: unknown) => void): unknown {
             requireKnownActionName("executeAction", name);
             refuseCheatAction("executeAction", name);
@@ -478,20 +575,30 @@ export function installActionGuards(): void {
 
             // Deliberately not returning the result the way queryAction does: an accepted
             // action has not happened yet, and a result that looks like success is exactly
-            // what this project verifies by re-reading the world instead.
-            return original.call(this, name, args, callback);
+            // what this project verifies by re-reading the world instead. Which is also why
+            // the callback is wrapped: the game calls it on the tick it applies the action,
+            // and that is a tick the script would otherwise be running on unguarded.
+            return original.call(this, name, args, guardScriptCallback(callback));
         };
-    });
+    }));
 
-    guardInvoker("registerAction", function (original) {
+    recordLever("context.registerAction", guardInvoker("registerAction", function (original) {
         return function (this: unknown, name: string, query: object, execute?: (result: unknown) => void): unknown {
+            // The same hole as a timer, one step further round: the game runs a custom
+            // action's execute function when that action is executed, on a later tick.
+            // Only the plugin registers actions, and it does so outside any script.
+            if (insideEvaluate) {
+                throw new Error("context.registerAction() cannot be called from an evaluated script. "
+                    + CUSTOM_ACTIONS_RUN_LATER + " " + EARNED_INSTEAD);
+            }
+
             if (typeof name === "string" && name !== "") {
                 knownActions[name.toLowerCase()] = true;
             }
 
             return original.call(this, name, query, execute);
         };
-    });
+    }));
 }
 
 /**
@@ -547,6 +654,29 @@ const SCHEDULED_FOR_LATER = "A script runs inside one game tick and evaluate ans
 const TIMERS_BELONG_TO_TOOLS = "The timers in flight belong to the typed tools, which schedule their"
     + " own continuations across ticks, and cancelling one would strand a build half finished."
     + " A script has none of its own to cancel, because it cannot schedule one.";
+
+/**
+ * Why the whole namespace and not the members of it that take a callback.
+ *
+ * Every `ui` member that does anything takes one: `openWindow` alone carries onUpdate,
+ * onClose and onTabChange plus an onClick, onChange, onIncrement or onDraw on each widget,
+ * and `activateTool` five more. Enumerating them is a list that goes stale the next time the
+ * plugin API grows a member, which is exactly how `openWindow` sat open behind the timer
+ * guards. Nothing is lost by refusing the reads too: `ui.width` and `ui.tool` describe a
+ * screen the model cannot see, and the plugin's own error dialog is put up by a typed tool,
+ * outside any script, where the namespace is untouched.
+ */
+const NOBODY_IS_LOOKING = "The ui namespace is the game's window system, and every part of it that does"
+    + " anything takes a callback the game calls later: openWindow (onUpdate, onClose, and the onClick,"
+    + " onChange and onIncrement its widgets carry), activateTool, registerMenuItem, registerToolboxMenuItem,"
+    + " registerShortcut, showTextInput, showFileBrowse and showScenarioSelect. Nobody is at the screen to"
+    + " answer a window either, so there is nothing on the other side of it for you. The namespace is refused"
+    + " whole rather than those members one at a time, because a member nobody thought to list is how this"
+    + " stayed open. " + SCHEDULED_FOR_LATER;
+
+const CUSTOM_ACTIONS_RUN_LATER = "A custom action's query and execute functions are run by the game when that"
+    + " action is executed, on a later tick, and registering one also puts its name into the set of action"
+    + " names this plugin accepts - the check that catches an invented one. " + SCHEDULED_FOR_LATER;
 
 const HOOKS_FIRE_LATER = "A hook fires on a later tick, after evaluate has already answered, so nothing"
     + " it sees can be reported back to you - and several hooks hand the subscriber the figures the"
@@ -647,12 +777,24 @@ let insideEvaluate = false;
 let unguardedReported = false;
 
 function markStateGuard<T>(fn: T): T {
-    (fn as unknown as Record<string, unknown>)[STATE_GUARD_MARK] = true;
+    (fn as unknown as Record<string, unknown>)[STATE_GUARD_MARK] = GUARD_LOAD;
     return fn;
 }
 
+/**
+ * Guarded by some load of this plugin. Enough for a wrapper that reads no module state -
+ * a setter that only ever throws behaves the same whichever load wrote it, and a build
+ * before this one marked it with `true` rather than an identity.
+ */
 function isStateGuarded(value: unknown): boolean {
-    return typeof value === "function" && (value as unknown as Record<string, unknown>)[STATE_GUARD_MARK] === true;
+    return typeof value === "function"
+        && typeof (value as unknown as Record<string, unknown>)[STATE_GUARD_MARK] !== "undefined";
+}
+
+/** Guarded by this load. Required wherever the wrapper closes over something that moves. */
+function isOurStateGuard(value: unknown): boolean {
+    return typeof value === "function"
+        && (value as unknown as Record<string, unknown>)[STATE_GUARD_MARK] === GUARD_LOAD;
 }
 
 function recordLever(path: string, outcome: GuardOutcome): void {
@@ -797,7 +939,7 @@ function replaceMethod(root: object, key: string, wrap: (original: GuardedMethod
 
     const original = (owner as Record<string, unknown>)[key];
 
-    if (isStateGuarded(original)) {
+    if (isOurStateGuard(original)) {
         return "frozen";
     }
 
@@ -818,6 +960,12 @@ function replaceMethod(root: object, key: string, wrap: (original: GuardedMethod
  * the hole this closes. `configurable: false` still stops a script deleting it, and the
  * original is only ever reachable from inside this closure, so replacing the slot buys a
  * script nothing. If something else does replace it, the next `evaluate` puts it back.
+ *
+ * `isOurStateGuard`, not `isStateGuarded`: this wrapper is the one that reads
+ * `insideEvaluate`, and a wrapper left behind by an earlier load of the plugin reads that
+ * load's flag, which no `evaluate` running now will ever set. Accepting one as already
+ * guarded is what made `setTimeout`, `setInterval` and `subscribe` run freely inside an
+ * evaluated script while the report said all three were frozen.
  */
 function guardWhileEvaluating(root: object, label: string, key: string, because: string): GuardOutcome {
     const owner = findPropertyOwner(root, key);
@@ -828,7 +976,7 @@ function guardWhileEvaluating(root: object, label: string, key: string, because:
 
     const original = (owner as Record<string, unknown>)[key];
 
-    if (isStateGuarded(original)) {
+    if (isOurStateGuard(original)) {
         return "frozen";
     }
 
@@ -855,6 +1003,161 @@ function guardWhileEvaluating(root: object, label: string, key: string, because:
     }
 
     return (owner as Record<string, unknown>)[key] === wrapper ? "frozen" : "refused";
+}
+
+/** The accessor this load put over a whole namespace, so a stranger in the slot is evicted. */
+interface NamespaceGuard {
+    name: string;
+    owner: object;
+    enumerable: boolean;
+    get: () => unknown;
+    set: (value: unknown) => void;
+}
+
+/** The real namespace object, by name, held where an evaluated script cannot reach it. */
+const capturedNamespaces: Record<string, unknown> = {};
+const ownNamespaceGuards: Record<string, NamespaceGuard | undefined> = {};
+
+/**
+ * Put the accessor in the slot. `configurable: true` for the same reason the timer slots are
+ * `writable: true`: OpenRCT2 keeps one global object across hot reloads, and a slot the next
+ * load cannot take back is a guard that reads a previous load's `insideEvaluate` - dead, and
+ * reported as healthy. A script can therefore delete or redefine the slot, and gains nothing
+ * by it: the namespace itself only exists inside this closure, so all a script can do is take
+ * `ui` away from the plugin, which `restoreNamespaceGuards` puts back the moment it returns.
+ */
+function defineNamespaceGuard(guard: NamespaceGuard): boolean {
+    try {
+        Object.defineProperty(guard.owner, guard.name, {
+            get: guard.get, set: guard.set, enumerable: guard.enumerable, configurable: true
+        });
+    } catch (_defineError) {
+        return false;
+    }
+
+    const descriptor = Object.getOwnPropertyDescriptor(guard.owner, guard.name);
+
+    return typeof descriptor !== "undefined" && descriptor.get === guard.get;
+}
+
+/**
+ * Whether the namespace is there at all, asked of the binding rather than of the global
+ * object: a headless build has no `ui`, and a build that keeps one somewhere this cannot
+ * reach still has one. A guard that refuses the read is an answer too - something is there.
+ */
+function namespaceExists(check: () => boolean): boolean {
+    try {
+        return check();
+    } catch (_error) {
+        return true;
+    }
+}
+
+/**
+ * Refuse a whole global namespace for the duration of an evaluated script.
+ *
+ * A member-by-member guard can only refuse the members somebody listed, and `ui` is thirteen
+ * methods deep in callbacks with more arriving every plugin API version. So the script never
+ * gets the object at all: the read itself throws while a script is on the stack, and hands
+ * back the real namespace the rest of the time, so the plugin's own `ui.showError` - a typed
+ * tool, outside any script - does not notice this is here.
+ *
+ * The setter is what keeps that true through a swap: assigning `ui` outside a script moves
+ * what the getter hands back, the way an ordinary writable global would, so a build that
+ * replaces the namespace is followed rather than shadowed.
+ */
+function guardNamespaceWhileEvaluating(name: string, present: boolean, because: string): GuardOutcome {
+    if (typeof globalThis === "undefined" || !globalThis) {
+        // No global object to install on, which is a hole rather than an absence whenever
+        // the namespace itself is there. Checked rather than assumed because this runs in
+        // the game's own engine, and an exception here would take every other guard with it.
+        return present ? "refused" : "absent";
+    }
+
+    const scope = globalThis as unknown as Record<string, unknown>;
+    const owner = findPropertyOwner(scope as unknown as object, name);
+    const descriptor = owner === null ? undefined : Object.getOwnPropertyDescriptor(owner, name);
+
+    if (descriptor && isOurStateGuard(descriptor.get)) {
+        return "frozen";
+    }
+
+    const own = ownNamespaceGuards[name];
+    let current: unknown;
+
+    try {
+        // Through a previous load's getter if that is what is in the slot: its own
+        // `insideEvaluate` is false out here, so it hands over the real namespace.
+        current = owner === null ? undefined : (owner as Record<string, unknown>)[name];
+    } catch (_readError) {
+        current = undefined;
+    }
+
+    if (typeof current !== "undefined" && current !== null) {
+        capturedNamespaces[name] = current;
+    } else if (typeof own === "undefined") {
+        // A headless build has no `ui` at all: nothing to guard, and nothing to report. A
+        // namespace that exists somewhere this could not find is the other case, and has to
+        // be named on the endpoint rather than quietly counted as covered.
+        return present ? "refused" : "absent";
+    }
+
+    const message = name + " cannot be reached from an evaluated script. " + because + " " + EARNED_INSTEAD;
+    const guard: NamespaceGuard = own || {
+        name: name,
+        owner: owner === null ? (scope as unknown as object) : owner,
+        enumerable: descriptor ? descriptor.enumerable === true : true,
+        get: markStateGuard(function (): unknown {
+            if (insideEvaluate) {
+                throw new Error(message);
+            }
+
+            return capturedNamespaces[name];
+        }),
+        set: markStateGuard(function (value: unknown): void {
+            if (insideEvaluate) {
+                throw new Error(message);
+            }
+
+            capturedNamespaces[name] = value;
+        })
+    };
+
+    if (!defineNamespaceGuard(guard)) {
+        return "refused";
+    }
+
+    ownNamespaceGuards[name] = guard;
+
+    return "frozen";
+}
+
+/**
+ * Put back a namespace a script emptied or redefined, before anything else looks at it.
+ *
+ * Deliberately without re-reading the slot: `delete ui` followed by `ui = { showError: ... }`
+ * is two lines, and re-capturing what it left would have the plugin's own error dialog call
+ * the script's function on a later tick - the same deferred hole from the far end. Installing
+ * does re-read, because by then this has already run and only a legitimate swap can be there.
+ */
+function restoreNamespaceGuards(): void {
+    const names = Object.keys(ownNamespaceGuards);
+
+    for (let i = 0; i < names.length; i++) {
+        const guard = ownNamespaceGuards[names[i]];
+
+        if (typeof guard === "undefined") {
+            continue;
+        }
+
+        const descriptor = Object.getOwnPropertyDescriptor(guard.owner, guard.name);
+
+        if (descriptor && descriptor.get === guard.get) {
+            continue;
+        }
+
+        recordLever(guard.name, defineNamespaceGuard(guard) ? "frozen" : "refused");
+    }
 }
 
 /**
@@ -935,6 +1238,12 @@ function installGroup(resolve: () => object | null, install: (target: object) =>
  * `runScript` makes whatever is left loud rather than silent.
  */
 export function installStateGuards(): void {
+    // The action guards are part of the same freeze and are re-entrant in the same way, so
+    // they go in wherever this does: at startup from createApplication, and again before
+    // every script. Calling them from here rather than only from `runScript` is what puts
+    // `context.executeAction` in the report the `/v1` endpoint serves.
+    installActionGuards();
+
     installGroup(function () {
         return typeof park === "undefined" || !park ? null : park as unknown as object;
     }, function (target) {
@@ -1026,6 +1335,13 @@ export function installStateGuards(): void {
         recordLever("context.subscribe", guardWhileEvaluating(entry, "context", "subscribe", HOOKS_FIRE_LATER));
     }
 
+    // The last route a script had to a callback the game would run later. Re-checked on
+    // every call like the timers above, because a script can empty the slot and a later
+    // load of the plugin has to be able to take it back off this one.
+    recordLever("ui", guardNamespaceWhileEvaluating("ui", namespaceExists(function () {
+        return typeof ui !== "undefined";
+    }), NOBODY_IS_LOOKING));
+
     reportUnguarded();
 
     installGroup(function () {
@@ -1072,6 +1388,20 @@ interface InvariantSpec {
  * recalculates rating, guest count and company value on its own schedule, and the two
  * actions that could set them outright - cheatset and scenariosetsetting - are refused
  * above. So a change in one of those during a script is, by construction, not the game.
+ *
+ * What can actually reach this, measured rather than assumed: nothing, on a build where
+ * every lever froze. Assignment throws, the cheat actions are refused by name, an
+ * executeAction is queued rather than applied inside the synchronous window, and a script
+ * can no longer schedule work to land outside it. The one route left is the one this exists
+ * for - a lever that would not freeze, which is reported by name in `stateGuardSummary()`
+ * and served on `GET /v1`, so `unfrozen` being non-empty is exactly the condition under
+ * which this can fire. It is a backstop for a hole nobody has thought of yet, and it costs
+ * two reads of thirteen scalars per script; do not go looking for a positive case on a
+ * build whose `unfrozen` list is empty, because there is not one.
+ *
+ * Deliberately per-script, not across scripts: the game runs thousands of ticks between
+ * tool calls, during which guests pay, wages go out and rides earn, so comparing the end of
+ * one script with the start of the next would report ordinary play every single time.
  */
 const INVARIANTS: InvariantSpec[] = [
     { path: "park.cash", source: "park", key: "cash", movedBy: ["*"] },
@@ -1337,11 +1667,11 @@ export function runScript(code: string): ScriptOutcome {
         return { ok: false, error: "SyntaxError: " + describeError(error) };
     }
 
-    installActionGuards();
-    // Already installed at startup by createApplication. Repeated here because both
-    // installs are re-entrant on purpose: a scenario load swaps `park` and `scenario` for
-    // new objects, and src/mcp.ts assigns over `context.setTimeout` and back while its
-    // deferred calls are in flight. Neither would be re-guarded by a one-shot at startup.
+    // Already installed at startup by createApplication, and re-entrant on purpose: a
+    // scenario load swaps `park` and `scenario` for new objects, src/mcp.ts assigns over
+    // `context.setTimeout` and back while its deferred calls are in flight, and a hot
+    // reload leaves the previous load's wrappers in every slot. None of those would be
+    // re-guarded by a one-shot at startup. This also covers the action guards.
     installStateGuards();
 
     const world = captureWorld();
@@ -1363,6 +1693,10 @@ export function runScript(code: string): ScriptOutcome {
         // Restored even when the script throws: leaving this set would refuse the typed
         // tools their own continuations for the rest of the session.
         insideEvaluate = wasInsideEvaluate;
+
+        // And a namespace the script deleted or swapped goes back now rather than at the
+        // next evaluate, so a typed tool in between still finds the game's own `ui`.
+        restoreNamespaceGuards();
     }
 
     const executed = executedActions;

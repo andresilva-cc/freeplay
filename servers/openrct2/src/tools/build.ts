@@ -67,6 +67,9 @@ export class BuildTools {
             "`reachable` is false straight after building until the queue and the exit path are laid.",
             "The only build that leaves nothing behind is `ok: false`; anything else means a ride is standing, and",
             "`operate_ride` with `demolish` is how it goes away.",
+            "A paused game refuses the track and door actions, so this builds nothing and refuses while the clock",
+            "is stopped: the ride record `ridecreate` would leave behind has no track and cannot be demolished",
+            "until the game runs again. `set_game_speed` is what starts the clock.",
             "This does not build roller coasters; those need track laid piece by piece with `evaluate`."
         ].join(" "),
         inputSchema: {

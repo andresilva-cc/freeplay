@@ -1,11 +1,37 @@
 import { DIRECTION_VECTORS, toWorld, unitStep } from "./map.js";
-import { queuePathServes, walkableFromParkEntrance } from "./paths.js";
+import { PARK_ENTRANCE, queuePathServes, RIDE_ENTRANCE, RIDE_EXIT, walkableFromParkEntrance } from "./paths.js";
 import type { Tile } from "./paths.js";
 
 const STEP_DELAY_MS = 200;
 
 /** How many tile names one message will spell out before it starts counting instead. */
 const MAX_NAMED_TILES = 12;
+
+/**
+ * OpenRCT2 refuses any game action that does not carry `Flags::AllowWhilePaused` while the
+ * game is paused - `GameActionRunner.cpp`, `CheckActionInPausedMode` - answering
+ * STR_CONSTRUCTION_NOT_POSSIBLE_WHILE_GAME_IS_PAUSED.
+ *
+ * `footpathremove` is the only action this file fires, and it does not carry the flag, so a
+ * paused run takes nothing up. The run is still made rather than refused up front: a refused
+ * removal changes nothing and charges nothing, so there is nothing to protect against, and
+ * letting it run quotes the reason the game gave instead of restating a transcribed rule.
+ */
+function gamePaused(): boolean {
+    return context.paused === true;
+}
+
+/**
+ * `gamesetspeed` and `pausetoggle` both carry `Flags::AllowWhilePaused`, so this is the one
+ * call named in a paused refusal that is not itself refused by the pause.
+ */
+const UNPAUSE_CALL = "set_game_speed is not one of the calls a paused game refuses, so"
+    + " set_game_speed {paused: false} goes through and starts the clock.";
+
+/** The game's own words for a refusal. Same shape `src/park/build.ts` quotes them in. */
+function actionError(result: GameActionResult): string {
+    return (result.errorTitle || "") + (result.errorMessage ? ": " + result.errorMessage : "");
+}
 
 export interface RemovePathRequest {
     /** Corners of the run, in order. Two points means "you pick the corner". */
@@ -27,8 +53,15 @@ export interface RemovePathOutcome {
     tilesTargeted: number;
     route: Tile[];
     removed: Tile[];
-    /** Path tiles guests can still walk to from the park entrance, counted afterwards. */
-    reachableFromEntrance: number;
+    /**
+     * Path tiles guests can still walk to from the park entrance, counted afterwards.
+     *
+     * `null` when the call was refused before anything was touched: the network was never
+     * walked, so there is no figure. It used to report 0 there, which reads as "the park is
+     * completely severed" - a measurement that was never taken, in the one message the model
+     * is already reading because something went wrong.
+     */
+    reachableFromEntrance: number | null;
     ridesLeftWithoutQueue: RideWithoutQueue[];
     detail: string;
     /**
@@ -46,7 +79,7 @@ export function removePathRefusal(detail: string): RemovePathOutcome {
         tilesTargeted: 0,
         route: [],
         removed: [],
-        reachableFromEntrance: 0,
+        reachableFromEntrance: null,
         ridesLeftWithoutQueue: [],
         detail: detail,
         error: detail
@@ -170,13 +203,24 @@ function structureOnRun(tiles: Tile[]): string | null {
 
             const entrance = element as EntranceElement;
 
-            if (typeof entrance.ride !== "number") {
-                return "Tile " + tileName(tiles[i]) + " of this run is the park entrance BUILDING,"
-                    + " which is not a footpath and cannot be removed here. park_status gives the gate's"
-                    + " own tiles as `paths.entrance`. Give a run that goes round them. Nothing was removed.";
+            if (entrance.object === PARK_ENTRANCE) {
+                return "Tile " + tileName(tiles[i]) + " of this run is the park entrance BUILDING - the"
+                    + " park's own gate, which belongs to no ride and is not a footpath. Nothing in this"
+                    + " bridge removes it, and demolishing a ride will not: route around it instead."
+                    + " park_status gives the gate's own tiles as `paths.entrance`. Nothing was removed.";
             }
 
-            const which = entrance.object === 1 ? "exit" : "entrance";
+            if (entrance.object !== RIDE_ENTRANCE && entrance.object !== RIDE_EXIT) {
+                // Deliberately names no ride. The bug this replaces printed `ride 0` for the park
+                // gate because it treated "not a ride exit" as "a ride entrance"; an entrance kind
+                // this build does not know about must not inherit that guess.
+                return "Tile " + tileName(tiles[i]) + " of this run carries an entrance BUILDING of an"
+                    + " unrecognised kind (`object` " + String(entrance.object) + "), which is not a"
+                    + " footpath and cannot be removed here. Give a run that goes round it."
+                    + " Nothing was removed.";
+            }
+
+            const which = entrance.object === RIDE_EXIT ? "exit" : "entrance";
 
             return "Tile " + tileName(tiles[i]) + " of this run is the " + which + " BUILDING of ride "
                 + String(entrance.ride) + ", which is not a footpath and cannot be removed here."
@@ -257,6 +301,19 @@ export function removePath(request: RemovePathRequest, done: (outcome: RemovePat
     const reachableBefore = walkableFromParkEntrance();
     const servedBefore = ridesServedByQueue();
     const hadPath: { tile: Tile; queue: boolean }[] = [];
+    /**
+     * The game's answer to every removal it turned down, keyed by the tile it was asked
+     * about. A tile that still carries a path afterwards has exactly one honest explanation
+     * - the one the game gave - and this file used to report the count and discard it.
+     */
+    const refused: Record<string, string> = {};
+    const recorder = function (key: string): (result: GameActionResult) => void {
+        return function (result) {
+            if (result && result.error) {
+                refused[key] = actionError(result);
+            }
+        };
+    };
 
     for (let i = 0; i < tiles.length; i++) {
         const path = footpathOn(tiles[i]);
@@ -271,7 +328,7 @@ export function removePath(request: RemovePathRequest, done: (outcome: RemovePat
             x: toWorld(tiles[i].x),
             y: toWorld(tiles[i].y),
             z: path.baseZ
-        }, function () { /* verified by re-read */ });
+        }, recorder(tileName(tiles[i])));
     }
 
     context.setTimeout(function () {
@@ -337,9 +394,37 @@ export function removePath(request: RemovePathRequest, done: (outcome: RemovePat
         let summary: string;
 
         if (stayed.length > 0) {
+            // The count on its own names a category, not a fact the model can act on. What
+            // the game said about each tile it would not clear is the fact, so it is quoted.
+            const said: string[] = [];
+            let unexplained = 0;
+
+            for (let i = 0; i < stayed.length; i++) {
+                const answer = refused[tileName(stayed[i])];
+
+                if (typeof answer !== "string") {
+                    unexplained++;
+                } else if (said.indexOf(answer) < 0) {
+                    said.push(answer);
+                }
+            }
+
             summary = "Removed " + String(removed.length) + " of " + String(hadPath.length)
                 + " footpath tiles; " + nameTiles(stayed) + " still "
-                + (stayed.length === 1 ? "carries" : "carry") + " a path.";
+                + (stayed.length === 1 ? "carries" : "carry") + " a path."
+                + (said.length > 0 ? " The game refused the removal: " + said.join("; ") + "." : "")
+                + (unexplained > 0
+                    ? " The game gave no refusal for " + String(unexplained) + " of them and the path is"
+                        + " still on the map."
+                    : "")
+                // Read back now rather than inferred from the refusal text: a pause can arrive
+                // after these actions were fired, and the state at the moment the message is
+                // written is the one the model has to act on.
+                + (gamePaused()
+                    ? " The game is paused, and footpathremove - the action remove_path fires for every tile"
+                        + " that carries a path - is one of the actions a paused game refuses, so no path can"
+                        + " be taken up while the clock is stopped. " + UNPAUSE_CALL
+                    : "");
         } else if (hadPath.length === 0) {
             summary = "None of the " + plural(tiles.length, "tile") + " in this run carried a footpath,"
                 + " so nothing was removed.";

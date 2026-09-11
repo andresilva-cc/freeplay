@@ -2,6 +2,24 @@ import { readMapGrid } from "./map.js";
 
 const NEIGHBOURS = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
 
+/**
+ * Which of the three kinds of entrance an entrance element is, from its `object` field.
+ *
+ * These are OpenRCT2's `EntranceType` enum, which the plugin API hands over as
+ * `element.object`: rideEntrance, rideExit, parkEntrance, in that order. It is the *only*
+ * field that distinguishes them. `element.ride` does not: the API returns the raw ride
+ * index for every entrance element, so a park gate reads back as ride 0 rather than null,
+ * and `typeof element.ride !== "number"` is never true in the running game.
+ */
+export const RIDE_ENTRANCE = 0;
+export const RIDE_EXIT = 1;
+export const PARK_ENTRANCE = 2;
+
+/** True for the park's own gate, which belongs to no ride and no tool here can remove. */
+export function isParkEntranceElement(element: EntranceElement): boolean {
+    return element.object === PARK_ENTRANCE;
+}
+
 export interface Tile {
     x: number;
     y: number;

@@ -33,6 +33,8 @@ export class PathRemoveTools {
             "The result reports what the map says afterwards: `tilesRemoved` counted by re-reading each tile,",
             "`reachableFromEntrance` — how many path tiles guests can walk to from the park entrance now — and",
             "`ridesLeftWithoutQueue`, any ride whose bound queue went with the path.",
+            "On a refusal nothing is measured, so `reachableFromEntrance` is `null` rather than a number:",
+            "it is not a report that the park has been cut off.",
             "`ok: true` means every tile named now carries no footpath, which is also true of a run that never",
             "had one; `tilesRemoved` is what actually came up.",
             "Every result has the same shape, including refusals, where `detail` says what was wrong.",

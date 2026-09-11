@@ -1,5 +1,7 @@
 import { DIRECTION_VECTORS, readMapGrid, toWorld } from "./map.js";
-import { countPathTiles, tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
+import {
+    countPathTiles, isParkEntranceElement, RIDE_ENTRANCE, RIDE_EXIT, tileIsWalkable, walkableFromParkEntrance
+} from "./paths.js";
 import type { Tile } from "./paths.js";
 
 const STEP_DELAY_MS = 200;
@@ -8,6 +10,33 @@ export const DEFAULT_PATH_OBJECT = 1;
 const FOOTPATH_QUEUE_FLAG = 1;
 
 const NEIGHBOURS = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
+
+/**
+ * OpenRCT2 refuses any game action that does not carry `Flags::AllowWhilePaused` while the
+ * game is paused - `GameActionRunner.cpp`, `CheckActionInPausedMode` - answering
+ * STR_CONSTRUCTION_NOT_POSSIBLE_WHILE_GAME_IS_PAUSED.
+ *
+ * `footpathplace` is the only action this file fires, and it does not carry the flag, so a
+ * paused run lays nothing. The run is still made rather than refused up front: a refused
+ * placement creates nothing and charges nothing, so there is no orphan to protect against
+ * the way `src/park/build.ts` has to, and letting it run quotes the reason the game gave
+ * instead of restating a rule this file would have to transcribe.
+ */
+function gamePaused(): boolean {
+    return context.paused === true;
+}
+
+/**
+ * `gamesetspeed` and `pausetoggle` both carry `Flags::AllowWhilePaused`, so this is the one
+ * call named in a paused refusal that is not itself refused by the pause.
+ */
+const UNPAUSE_CALL = "set_game_speed is not one of the calls a paused game refuses, so"
+    + " set_game_speed {paused: false} goes through and starts the clock.";
+
+/** The game's own words for a refusal. Same shape `src/park/build.ts` quotes them in. */
+function actionError(result: GameActionResult): string {
+    return (result.errorTitle || "") + (result.errorMessage ? ": " + result.errorMessage : "");
+}
 
 export interface BuildPathRequest {
     /** Corners of the run, in order. Two points means "you pick the line". */
@@ -104,8 +133,10 @@ function rideDoorOn(tile: Tile): { isExit: boolean; opensOnto: Tile } | null {
 
         const entrance = element as EntranceElement;
 
-        if (typeof entrance.ride !== "number") {
-            // The park's own gate, which spans several tiles and belongs to no ride.
+        // Only a ride entrance or a ride exit has a door. `object` is the only field that
+        // says so: the API reports a ride index for the park gate too, so testing `ride`
+        // classified the gate as a ride door and handed back a door tile off the side of it.
+        if (entrance.object !== RIDE_ENTRANCE && entrance.object !== RIDE_EXIT) {
             return null;
         }
 
@@ -132,7 +163,7 @@ function isParkGate(tile: Tile): boolean {
     for (let i = 0; i < mapTile.numElements; i++) {
         const element = mapTile.getElement(i);
 
-        if (element.type === "entrance" && typeof (element as EntranceElement).ride !== "number") {
+        if (element.type === "entrance" && isParkEntranceElement(element as EntranceElement)) {
             return true;
         }
     }
@@ -337,6 +368,19 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
     const grid = readMapGrid();
     const reachableBefore = walkableFromParkEntrance();
     const before: Record<string, { path: boolean; queue: boolean }> = {};
+    /**
+     * The game's answer to every placement it turned down, keyed by the tile it was asked
+     * about. Kept because a tile that carries no path afterwards has exactly one honest
+     * explanation - the one the game gave - and this file used to discard it.
+     */
+    const refused: Record<string, string> = {};
+    const recorder = function (key: string): (result: GameActionResult) => void {
+        return function (result) {
+            if (result && result.error) {
+                refused[key] = actionError(result);
+            }
+        };
+    };
     let replacedExistingPath = 0;
     let replacedQueue = 0;
 
@@ -367,7 +411,7 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
             slopeType: 0,
             slopeDirection: 0,
             constructFlags: request.queue ? FOOTPATH_QUEUE_FLAG : 0
-        }, function () { /* verified by re-read */ });
+        }, recorder(tileName(tiles[i])));
     }
 
     context.setTimeout(function () {
@@ -465,10 +509,44 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
                     + (wrongKind.length === 1 ? "ies" : "y") + " " + otherKind + " rather than " + kind);
             }
 
+            // What the game said about the tiles that came up short, quoted rather than
+            // guessed at. Every shortfall used to carry the same sentence about door tiles,
+            // including the ones the game had turned down for money, for land, or for the
+            // pause - a cause this call had never read, in the one message it is read for.
+            const said: string[] = [];
+            const shortTiles = noPath.concat(wrongKind);
+            let unexplained = 0;
+
+            for (let i = 0; i < shortTiles.length; i++) {
+                const answer = refused[tileName(shortTiles[i])];
+
+                if (typeof answer !== "string") {
+                    unexplained++;
+                } else if (said.indexOf(answer) < 0) {
+                    said.push(answer);
+                }
+            }
+
             summary = "Only " + String(placed) + " of " + String(laidTiles.length) + " tiles carry a path: "
-                + shortfall.join("; ") + ". A tile a ride entrance, exit or park gate stands on cannot take a"
-                + " path at all - park_status gives the tile each door opens onto as `entranceDoor` and `exitDoor`,"
-                + " and those are the tiles a queue and an exit path run to.";
+                + shortfall.join("; ") + "."
+                + (said.length > 0 ? " The game refused the placement: " + said.join("; ") + "." : "")
+                + (unexplained > 0
+                    // Only where nothing was read is a general fact the best there is to offer,
+                    // and this is the one that fits: the game takes a placement on a door tile
+                    // and nothing appears.
+                    ? " The game gave no refusal for " + String(unexplained) + " of them. A tile a ride"
+                        + " entrance, exit or park gate stands on cannot take a path at all - park_status gives"
+                        + " the tile each door opens onto as `entranceDoor` and `exitDoor`, and those are the"
+                        + " tiles a queue and an exit path run to."
+                    : "")
+                // Read back now rather than inferred from the refusal text: a pause can arrive
+                // after these actions were fired, and the state at the moment the message is
+                // written is the one the model has to act on.
+                + (gamePaused()
+                    ? " The game is paused, and footpathplace - the action build_path fires for every tile of"
+                        + " a run - is one of the actions a paused game refuses, so no tile of this run could"
+                        + " be laid. " + UNPAUSE_CALL
+                    : "");
         }
 
         done({
@@ -480,7 +558,12 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
             route: laidTiles,
             connectedToPark: connected,
             detail: summary
-                + (connected
+                // `placed === 0` is a run with no tile of it on the ground, so there is
+                // nothing for guests to walk and nothing to connect. Saying it is cut off
+                // and offering `reachableSample` there points at moving the endpoints, which
+                // is a fix for a different failure - the same defect as the door-building
+                // sentence above, one clause along.
+                + (connected || placed === 0
                     ? ""
                     : " This run does not reach the park entrance, so guests cannot walk it: "
                         + (startConnected

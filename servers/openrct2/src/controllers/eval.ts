@@ -1,13 +1,6 @@
 import { httpGet, httpPath } from "./decorators.js";
 import { HttpController, type ControllerContext } from "./types.js";
-
-function evaluateExpression(expression: string): unknown {
-    try {
-        return new Function("return (" + expression + ");")();
-    } catch (_error) {
-        return new Function(expression)();
-    }
-}
+import { runScript } from "../scripting.js";
 
 @httpPath("/v1/eval")
 export class EvalController extends HttpController {
@@ -27,16 +20,30 @@ export class EvalController extends HttpController {
             };
         }
 
-        try {
-            context.response.headers["X-Eval-Endpoint"] = "true";
-            return {
-                result: evaluateExpression(expression)
-            };
-        } catch (error) {
+        context.response.headers["X-Eval-Endpoint"] = "true";
+
+        // Through runScript rather than a bare `new Function`, which is what this used to
+        // be: it is the same thing the evaluate tool does with the same code, so it has to
+        // carry the same guards. A second entry point running model-authored script with no
+        // `insideEvaluate` set is a way round every guard that only bites inside a script,
+        // whoever is typing into it. It also stops a mutating expression running twice,
+        // which the old try/catch did whenever the expression threw rather than failed to
+        // parse, and carries the unaccounted-change note through instead of dropping it.
+        const outcome = runScript(expression);
+
+        if (!outcome.ok) {
             this.response.statusCode = 400;
             return {
-                error: String(error)
+                error: outcome.error,
+                unaccountedChanges: outcome.unaccountedChanges,
+                note: outcome.note
             };
         }
+
+        return {
+            result: outcome.result,
+            unaccountedChanges: outcome.unaccountedChanges,
+            note: outcome.note
+        };
     }
 }

@@ -84,6 +84,27 @@ const STAFF_TYPE_NAMES: Record<number, string> = {
     0: "handyman", 1: "mechanic", 2: "security", 3: "entertainer"
 };
 
+/**
+ * The actions this plugin fires that OpenRCT2 lets through while the game is paused.
+ *
+ * Read off each action's `GetActionFlags()` in OpenRCT2 (`src/openrct2/actions/…`): these
+ * are the ones that OR in `Flags::AllowWhilePaused`. Everything else the bridge fires -
+ * footpathplace, footpathremove, landbuyrights, trackplace, rideentranceexitplace,
+ * ridedemolish, and the scenery, wall and banner removals - does not, so a paused game
+ * answers it with "Construction not possible while game is paused!" and changes nothing.
+ */
+export const ALLOWED_WHILE_PAUSED: Record<string, boolean> = {
+    gamesetspeed: true,
+    pausetoggle: true,
+    ridecreate: true,
+    ridesetstatus: true,
+    ridesetprice: true,
+    ridesetsetting: true,
+    parksetparameter: true,
+    parksetentrancefee: true,
+    staffhire: true
+};
+
 /** Money the way the game prints it in an error: tenths of a unit, so 150 is £15.00. */
 function formatMoney(tenths: number): string {
     return "£" + (tenths / 10).toFixed(2);
@@ -309,9 +330,21 @@ export class FakeGame {
         this.updateQueueChains();
     }
 
+    /**
+     * Put the park's own gate down: three tiles, `object: 2`, sequence 0 to 2.
+     *
+     * `ride: 0` is not a ride. The plugin API hands an entrance element's ride index over
+     * raw (`JS_NewUint32(el->getRideIndex())`), and the field is unused on a park entrance,
+     * so the gate of a park with no rides in it reads back as ride 0 rather than null. The
+     * fake used to leave it undefined, which let `typeof element.ride !== "number"` stand in
+     * for "this is the gate" - a test that only passed because the fake was gentler than the
+     * game. `object` is the only field that says which of the three kinds of entrance this is.
+     */
     public addParkEntrance(x: number, y: number): void {
         for (let i = 0; i < 3; i++) {
-            this.tile(x + i, y).elements.push({ type: "entrance", baseZ: 96, object: 2, sequence: i });
+            this.tile(x + i, y).elements.push({
+                type: "entrance", baseZ: 96, object: 2, sequence: i, ride: 0
+            });
         }
     }
 
@@ -381,6 +414,17 @@ export class FakeGame {
     }
 
     private apply(action: QueuedAction): Record<string, unknown> {
+        if (this.gameValues.paused && !ALLOWED_WHILE_PAUSED[action.name]) {
+            // OpenRCT2's own gate, GameActionRunner.cpp `CheckActionInPausedMode`: while the
+            // game is paused every action is refused unless it carries Flags::AllowWhilePaused.
+            // The message is the game's STR_CONSTRUCTION_NOT_POSSIBLE_WHILE_GAME_IS_PAUSED.
+            return {
+                error: 1,
+                errorTitle: "Can't do this...",
+                errorMessage: "Construction not possible while game is paused!"
+            };
+        }
+
         const args = action.args as Record<string, number & boolean>;
         const tileX = Math.floor((args.x as number) / 32);
         const tileY = Math.floor((args.y as number) / 32);

@@ -667,3 +667,96 @@ test("repricing teaches the same value mechanic building does, in the same words
     // The fact and the field that measures it, and nothing about what to charge.
     assert.doesNotMatch(price, /\b(should|recommend|advis|too (high|low)|aim for)\b/i);
 });
+
+/**
+ * The demolition, which is where build_flat_ride's own failures send the model.
+ *
+ * `ridedemolish` carries no `Flags::AllowWhilePaused`, so OpenRCT2's
+ * `GameActionRunner.cpp::CheckActionInPausedMode` turns it down and answers "Construction
+ * not possible while game is paused!". The tool discarded the action's result entirely and
+ * said "Could not demolish <name>." - which sent a model following build_flat_ride's advice
+ * into a dead end with nothing at all to act on.
+ */
+test("a demolition the pause refuses says so in the game's own words, and names the way out", function () {
+    const { game, restore } = park();
+    addRide(game);
+    game.gameValues.paused = true;
+
+    try {
+        const outcome = operate({ ride: 0, demolish: true });
+
+        assert.equal(outcome.ok, false, "the ride is still standing, so this is not a success");
+        assert.equal(game.rides.length, 1, "and the park still holds it");
+        assert.equal(game.gameValues.paused, true, "the clock is left exactly where the model put it");
+
+        assert.match(outcome.detail, /Could not demolish Carousel/, "the failure still names the ride");
+        assert.match(outcome.detail, /Construction not possible while game is paused!/,
+            "and the game's own reason for refusing it is the fact that was missing");
+        assert.match(outcome.detail, /ridedemolish/, "nor is the action the pause refuses named");
+        assert.match(outcome.detail, /set_game_speed \{paused: false\}/,
+            "nor the one call a paused game does not refuse");
+    } finally {
+        restore();
+    }
+});
+
+test("a demolition refused for another reason is quoted, and gains no pause clause", function () {
+    // A clause appended unconditionally would satisfy the test above and be wrong here. The
+    // game refuses a demolition for real reasons of its own - guests still on the ride, a
+    // scenario that protects it - and the result carried none of them.
+    const { game, restore } = park();
+    addRide(game);
+    game.refuse.ridedemolish = true;
+
+    try {
+        const outcome = operate({ ride: 0, demolish: true });
+
+        assert.equal(game.gameValues.paused, false, "the fixture has to be a running game");
+        assert.equal(game.rides.length, 1, "the ride is still standing");
+        assert.match(outcome.detail, /Could not demolish Carousel: Refused: test refusal\./,
+            "the game gave a reason and the result has to carry it");
+        assert.doesNotMatch(outcome.detail, /paused/, "an unpaused failure must not blame the clock");
+        assert.doesNotMatch(outcome.detail, /set_game_speed/,
+            "nor send the model to a lever it does not need");
+    } finally {
+        restore();
+    }
+});
+
+test("a demolition the game never answered reports exactly that", function () {
+    // Nothing was read, so nothing may be quoted - and claiming the game accepted it would
+    // be the same defect one step along.
+    const { game, restore } = park({ inert: true });
+    addRide(game);
+
+    try {
+        const outcome = operate({ ride: 0, demolish: true });
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /the game reported no refusal and the ride is still there/);
+        assert.equal(game.rides.length, 1);
+    } finally {
+        restore();
+    }
+});
+
+test("opening and pricing a ride are untouched by the pause, because the game allows them", function () {
+    // The other side of the split, pinned against the fake's gate rather than a sentence:
+    // ridesetstatus and ridesetprice both carry Flags::AllowWhilePaused, so a paused
+    // operate_ride that is not a demolition works normally and must gain no pause clause.
+    const { game, restore } = park();
+    addRide(game, { price: 5 });
+    game.gameValues.paused = true;
+
+    try {
+        const outcome = operate({ ride: 0, open: true, price: 25 });
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(game.rides[0].status, "open", "ridesetstatus is allowed while paused");
+        assert.equal(game.rides[0].price[0], 25, "and so is ridesetprice");
+        assert.doesNotMatch(outcome.detail, /paused/,
+            "nothing was refused, so the clock has no place in this message");
+    } finally {
+        restore();
+    }
+});

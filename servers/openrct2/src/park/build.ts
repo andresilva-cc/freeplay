@@ -6,6 +6,29 @@ import type { MapGrid } from "./map.js";
 /** Game actions apply on a later tick, so every step waits before verifying. */
 const STEP_DELAY_MS = 150;
 
+/**
+ * OpenRCT2 refuses any game action that does not carry `Flags::AllowWhilePaused` while the
+ * game is paused - `GameActionRunner.cpp`, `CheckActionInPausedMode` - answering
+ * STR_CONSTRUCTION_NOT_POSSIBLE_WHILE_GAME_IS_PAUSED.
+ *
+ * Of the six actions a build fires, `ridecreate`, `ridesetprice` and `ridesetstatus` carry
+ * the flag and `trackplace`, `rideentranceexitplace` and the `ridedemolish` that cleans up
+ * after a failed track do not. That split is the whole problem: a build started while
+ * paused creates the ride, cannot lay a single tile of its track, and cannot take the ride
+ * back out again either - and the remedy the failure would otherwise name, `operate_ride`
+ * with `demolish`, is the same refused action.
+ */
+function gamePaused(): boolean {
+    return context.paused === true;
+}
+
+/**
+ * `gamesetspeed` and `pausetoggle` both carry `Flags::AllowWhilePaused`, so this is the one
+ * call named in a paused refusal that is not itself refused by the pause.
+ */
+const UNPAUSE_CALL = "set_game_speed is not one of the calls a paused game refuses, so"
+    + " set_game_speed {paused: false} goes through and starts the clock.";
+
 /** Scenery a player bulldozes. Anything else standing on a tile is a structure. */
 const REMOVABLE_TYPES: Record<string, boolean> = {
     small_scenery: true,
@@ -288,6 +311,25 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
         finish({ ok: false, rideId: null, rideName: null, doorsAttached: null, open: false, reachable: false });
     };
 
+    // Checked before anything else, and before a single action is fired. A paused game
+    // refuses trackplace, so no build can finish; ridecreate is not refused, so going ahead
+    // would buy a ride, leave the ground empty, and strand it - the cleanup is refused too.
+    // Every other refusal below is a true statement about a call that was never going to
+    // run, so naming one of those instead would cost a turn and still leave the game paused.
+    if (gamePaused()) {
+        steps.push({
+            step: "paused",
+            ok: false,
+            detail: "The game is paused, and OpenRCT2 refuses construction while it is: trackplace and"
+                + " rideentranceexitplace both come back \"Construction not possible while game is paused!\"."
+                + " ridecreate is not refused, so going ahead would create the ride, put no track on the"
+                + " ground, and then fail to remove it - leaving a ride in the park with no track that"
+                + " operate_ride demolish cannot take out either, for the same reason. Nothing was created"
+                + " and nothing was charged. " + UNPAUSE_CALL
+        });
+        return refuse();
+    }
+
     const objects = context.getAllObjects("ride");
     // Indexed by `.index`, not by position: `list_ride_objects` reports `.index`, and the
     // two only coincide while the loaded object list has no gaps in it.
@@ -475,18 +517,38 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
 
                 // ridecreate succeeded, so without this the park keeps a ride with no
                 // track on it forever, occupying an id and showing up in park_status.
-                context.executeAction("ridedemolish", { ride: created, modifyType: 0 }, function () { /* verified by re-read */ });
+                let demolishResult: GameActionResult | undefined;
+                context.executeAction("ridedemolish", { ride: created, modifyType: 0 }, function (result) {
+                    demolishResult = result;
+                });
 
                 return context.setTimeout(function () {
                     const stillThere = !!map.getRide(created);
+                    // Read back now rather than inferred from the refusal text: the pause can
+                    // only have arrived after this build started, so the state at the moment
+                    // the message is written is the one the model has to act on.
+                    const pausedNow = gamePaused();
 
                     steps.push({
                         step: "cleanup",
                         ok: !stillThere,
                         detail: stillThere
                             ? "Ride " + String(created) + " was created but nothing was built on the ground, and"
-                                + " removing it failed, so it is still in the park with no track. Remove it with"
-                                + " operate_ride {ride: " + String(created) + ", demolish: true} before building again."
+                                + " removing it failed: "
+                                + (actionError(demolishResult)
+                                    || "the game accepted ridedemolish but the ride is still there")
+                                + ". It is in the park with no track."
+                                // Naming operate_ride demolish on its own here is a remedy that
+                                // cannot work while the game is paused: it fires the same
+                                // ridedemolish the game has just refused.
+                                + (pausedNow
+                                    ? " The game is paused, and ridedemolish is one of the actions a paused game"
+                                        + " refuses, so operate_ride {ride: " + String(created) + ", demolish: true}"
+                                        + " is refused for the same reason and cannot remove it yet. " + UNPAUSE_CALL
+                                        + " operate_ride {ride: " + String(created) + ", demolish: true} takes the"
+                                        + " ride out once the clock is running."
+                                    : " Remove it with operate_ride {ride: " + String(created)
+                                        + ", demolish: true} before building again.")
                             : "removed the ride that had nothing built on it"
                     });
 
@@ -551,6 +613,11 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                             failures.push("The exit did attach");
                         }
 
+                        // Both ways out fire an action a paused game refuses -
+                        // rideentranceexitplace and ridedemolish - so offering them without
+                        // saying so hands the model two remedies that cannot work.
+                        const pausedNow = gamePaused();
+
                         // The ride is standing. Saying only "failed" here is what produced two
                         // half-built burger bars: the model read it as "nothing happened" and
                         // built a second one.
@@ -564,6 +631,11 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                                 + " ride " + String(created) + "; or remove this ride with operate_ride {ride: "
                                 + String(created) + ", demolish: true} and build it again on a site from a fresh"
                                 + " find_build_sites."
+                                + (pausedNow
+                                    ? " The game is paused, and rideentranceexitplace and ridedemolish are both"
+                                        + " actions a paused game refuses, so neither of those two ways out goes"
+                                        + " through until the clock is running. " + UNPAUSE_CALL
+                                    : "")
                         });
 
                         return finish({

@@ -511,7 +511,8 @@ test("door arguments handed to a stall are called out, not silently dropped", fu
         for (let y = 0; y < game.height; y++) {
             for (let x = 0; x < game.width; x++) {
                 doors += game.tile(x, y).elements.filter(function (e) {
-                    return e.type === "entrance" && typeof e.ride === "number";
+                    // A ride door is `object` 0 or 1; the park gate is 2 and belongs to no ride.
+                    return e.type === "entrance" && e.object !== 2;
                 }).length;
             }
         }
@@ -656,7 +657,8 @@ test("a shop leaves no entrance or exit building anywhere on the map", function 
                 const elements = game.tile(x, y).elements;
 
                 for (let i = 0; i < elements.length; i++) {
-                    if (elements[i].type === "entrance" && typeof elements[i].ride === "number") {
+                    // A ride door is `object` 0 or 1; the park gate is 2 and belongs to no ride.
+                    if (elements[i].type === "entrance" && elements[i].object !== 2) {
                         doors++;
                     }
                 }
@@ -1012,4 +1014,207 @@ test("called directly, past the MCP layer, rotation 7 is passed on rather than w
     } finally {
         restore();
     }
+});
+
+/**
+ * Pause the game the moment a named action is fired, which is how a pause reaches a build
+ * that is already under way: `set_game_speed` is a separate call, and the model issues
+ * calls in parallel. The action still reaches the game and is refused there by the gate,
+ * exactly as it would be in OpenRCT2.
+ */
+function pauseWhen(game: FakeGame, actionName: string): void {
+    const scope = globalThis as unknown as { context: { executeAction: ExecuteAction } };
+    const real = scope.context.executeAction;
+
+    scope.context.executeAction = function (name, args, callback) {
+        if (name === actionName) {
+            game.gameValues.paused = true;
+        }
+
+        real(name, args, callback);
+    };
+}
+
+test("a paused game is refused before a ride is created, so nothing is stranded", function () {
+    // The trap this closes: `ridecreate` carries Flags::AllowWhilePaused and `trackplace`,
+    // `rideentranceexitplace` and `ridedemolish` do not, so a build begun while paused used
+    // to buy a ride, fail to lay a single tile of track, and then fail to remove it - and
+    // the remedy it named, operate_ride demolish, fires the same refused ridedemolish.
+    const { game, restore } = park();
+    game.gameValues.paused = true;
+
+    try {
+        const outcome = build({});
+
+        assert.equal(outcome.ok, false, "a paused build cannot finish, so it must not report one");
+        assert.equal(outcome.rideId, null, "and must not hand back an id for a ride nobody owns");
+        assert.deepEqual(game.attempted.map(function (a) { return a.name; }), [],
+            "not one game action may be fired: ridecreate is the one that goes through and strands the ride");
+        assert.equal(game.rides.length, 0, "no ride was created");
+        assert.equal(trackTiles(game, 0).length, 0, "and nothing is on the ground");
+        assert.equal(game.gameValues.paused, true, "and the clock is left exactly where the model put it");
+    } finally {
+        restore();
+    }
+});
+
+test("the paused refusal names the pause, and names a call the pause does not refuse", function () {
+    const { game, restore } = park();
+    game.gameValues.paused = true;
+
+    try {
+        const detail = step(build({}), "paused");
+
+        assert.match(detail, /game is paused/, "it does not say the game is paused");
+        assert.match(detail, /trackplace/, "nor which action the pause refuses");
+        assert.match(detail, /set_game_speed \{paused: false\}/, "nor the call that starts the clock again");
+        assert.match(detail, /Nothing was created/, "nor that this call left nothing behind");
+        // A remedy that cannot work is worse than none, so the message must not offer
+        // operate_ride demolish as something to do now - it fires the refused ridedemolish.
+        assert.match(detail, /operate_ride demolish cannot take out/,
+            "it offers operate_ride demolish without saying the pause refuses that too");
+    } finally {
+        restore();
+    }
+});
+
+test("the way out the paused refusal names goes through while paused, and demolish does not", function () {
+    // The message's claim, executed. Pinning only the wording lets the wording drift away
+    // from the gate; this fires the two actions at the paused game and reads back what
+    // happened, which is the same thing OpenRCT2's CheckActionInPausedMode does.
+    const { game, restore } = park();
+
+    try {
+        // ridecreate carries the flag, so a ride can exist in a paused park - which is
+        // precisely how one used to get stranded.
+        game.gameValues.paused = true;
+        let createError: unknown;
+        context.executeAction("ridecreate", {
+            rideType: 33, rideObject: 0, entranceObject: 0, colour1: 0, colour2: 0, inspectionInterval: 2
+        }, function (result) { createError = result.errorMessage; });
+        game.applyQueuedActions();
+
+        assert.equal(createError, undefined, "ridecreate is not refused while paused");
+        assert.equal(game.rides.length, 1, "so a paused game really can end up holding a ride");
+
+        let demolishError: unknown;
+        context.executeAction("ridedemolish", { ride: 0, modifyType: 0 }, function (result) {
+            demolishError = result.errorMessage;
+        });
+        game.applyQueuedActions();
+
+        assert.equal(demolishError, "Construction not possible while game is paused!",
+            "ridedemolish - which is what operate_ride demolish fires - must be refused while paused");
+        assert.equal(game.rides.length, 1, "and the ride must still be there");
+
+        // The call the refusal names, fired at the same paused game.
+        context.executeAction("pausetoggle", {}, function () { /* read back below */ });
+        game.applyQueuedActions();
+
+        assert.equal(context.paused, false, "set_game_speed's action must go through while paused");
+
+        context.executeAction("ridedemolish", { ride: 0, modifyType: 0 }, function () { /* read back below */ });
+        game.applyQueuedActions();
+
+        assert.equal(game.rides.length, 0, "and the ride comes out once the clock is running");
+    } finally {
+        restore();
+    }
+});
+
+test("a pause landing mid-build strands the ride, and the cleanup says the remedy is refused too", function () {
+    // The race the up-front refusal cannot cover: set_game_speed is its own call, and the
+    // model issues calls in parallel, so a pause can arrive between ridecreate and
+    // trackplace. The ride is then stranded for real and the message has to be accurate.
+    const { game, restore } = park();
+    pauseWhen(game, "trackplace");
+
+    try {
+        const outcome = build({});
+        const detail = step(outcome, "cleanup");
+
+        assert.equal(outcome.ok, false, "nothing reached the ground");
+        assert.equal(outcome.rideId, 0, "but the id the orphan is squatting on is reported");
+        assert.equal(game.rides.length, 1, "the orphan really is in the park");
+        assert.equal(trackTiles(game, 0).length, 0, "with nothing on the ground");
+
+        assert.match(detail, /Construction not possible while game is paused!/,
+            "the game's own reason for refusing the cleanup is not reported");
+        assert.match(detail, /ridedemolish is one of the actions a paused game refuses/,
+            "it does not say why the cleanup failed");
+        assert.match(detail, /operate_ride \{ride: 0, demolish: true\} is refused for the same reason/,
+            "it hands over a remedy without saying the pause refuses it too");
+        assert.match(detail, /set_game_speed \{paused: false\}/,
+            "and never names a call that would actually go through");
+    } finally {
+        restore();
+    }
+});
+
+test("a pause landing after the track says both ways out of a missing door are refused", function () {
+    const { game, restore } = park();
+    pauseWhen(game, "rideentranceexitplace");
+
+    try {
+        const outcome = build({});
+        const detail = step(outcome, "entrance/exit");
+
+        assert.equal(outcome.ok, true, "the track is on the ground, so the ride exists");
+        assert.equal(outcome.doorsAttached, false, "but neither door went up");
+        assert.deepEqual(trackTiles(game, 0), square(13, 9, 3, 3), "the track really is standing");
+        assert.equal(doorAt(game, 12, 10, false), undefined, "and the entrance building really is not");
+
+        assert.match(detail, /rideentranceexitplace/, "the way to finish the ride is not named");
+        assert.match(detail, /operate_ride \{ride: 0, demolish: true\}/, "nor the way to undo it");
+        // Both of those fire an action the pause refuses, so offering them bare is the same
+        // defect one step later.
+        assert.match(detail, /neither of those two ways out goes through until the clock is running/,
+            "it offers two remedies that the pause refuses, without saying so");
+        assert.match(detail, /set_game_speed \{paused: false\}/, "and never names the call that lifts the pause");
+    } finally {
+        restore();
+    }
+});
+
+test("a running game gets no pause clause on either failure", function () {
+    // The other half of every guard above: a clause appended unconditionally would satisfy
+    // all of them and would lie on every ordinary failure.
+    const cleanup = park();
+    cleanup.game.refuse.trackplace = true;
+    cleanup.game.refuse.ridedemolish = true;
+
+    try {
+        const detail = step(build({}), "cleanup");
+
+        assert.doesNotMatch(detail, /paused/, "an unpaused failure must not blame the clock");
+        assert.doesNotMatch(detail, /set_game_speed/, "nor send the model to a lever it does not need");
+        assert.match(detail, /Remove it with operate_ride \{ride: 0, demolish: true\}/,
+            "the plain remedy is the right one when the clock is running");
+    } finally {
+        cleanup.restore();
+    }
+
+    const doors = park();
+    dropAction(function (name, args) { return name === "rideentranceexitplace" && args.isExit === true; });
+
+    try {
+        const detail = step(build({}), "entrance/exit");
+
+        assert.doesNotMatch(detail, /paused/, "an unpaused door failure must not blame the clock either");
+        assert.doesNotMatch(detail, /set_game_speed/, "nor name a lever that changes nothing here");
+    } finally {
+        doors.restore();
+    }
+});
+
+test("build_flat_ride's description states that a paused game builds nothing", function () {
+    // The refusal above is reachable - no schema can check the clock - but the description
+    // is what the model reads before it decides to pause, and the fact belongs there too.
+    const definition = getMcpToolDefinitions(BuildTools)
+        .filter(function (tool) { return tool.name === "build_flat_ride"; })[0];
+
+    assert.ok(definition, "build_flat_ride is not registered");
+    assert.match(String(definition.description), /paused game refuses the track and door actions/,
+        "the description never says a paused game cannot build");
+    assert.match(String(definition.description), /set_game_speed/, "nor names what starts the clock");
 });
