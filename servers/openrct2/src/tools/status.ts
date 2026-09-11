@@ -38,6 +38,10 @@ export class StatusTools {
             "network outgrows the listing that flag turns false and `reachableSample` is a spread of it —",
             "`reachableTiles` is the real count either way, so compare the two before concluding that a",
             "tile is out of reach.",
+            "`speed` is the game's speed setting and `paused` says whether the clock is stopped. They are the",
+            "same two values `set_game_speed` sets: speed 1 is normal, 2 twice, 3 four times, 4 eight times,",
+            "and while `paused` is true no scenario time passes at all, so the date, the guest count and every",
+            "ride read back unchanged however long you leave it.",
             "`brokenDown` on a ride means it stays shut until a mechanic reaches it.",
             "It is cheaper than piecing the same picture together with evaluate."
         ].join(" "),

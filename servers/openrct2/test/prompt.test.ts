@@ -33,7 +33,7 @@ function readPrompt(): string {
  * learn nowhere else, so cutting one hides the rules rather than protecting its judgment.
  */
 const FACTS: { fact: string; why: string }[] = [
-    { fact: "`open_park` is the only thing that opens it", why: "nothing else admits guests" },
+    { fact: "`open_park` is the only thing in this bridge that opens it", why: "nothing else here admits guests, and `open_park.ts` says it with the same care: `evaluate` can still set the flag, which is what five earlier runs did" },
     { fact: "no guests exist otherwise", why: "a closed park has no guests to measure anything with" },
     { fact: "A queue bound to that ride sits on its `entranceDoor` tile: `hasQueue`", why: "an entrance needs a queue, not a footpath" },
     { fact: "`guestsCanReach` is what proves it; `hasQueue` alone proves nothing, because a queue can be an island", why: "the failure that looks finished from every angle the API offers" },
@@ -62,7 +62,8 @@ const FACTS: { fact: string; why: string }[] = [
     { fact: "Nothing goes on ground the park does not own, and `buy_land` buys only the tiles a scenario has put up for sale", why: "a tile outside the park is the one situation buying resolves, and an unlisted tile cannot be made buyable" },
     { fact: "Buying a sloped tile makes it the park's, not flat", why: "there is no levelling tool, so buying is not a remedy for ground a ride will not stand on" },
     { fact: "How fast it runs is `set_game_speed`: 1 is normal, 2 twice, 3 four times, 4 eight times", why: "these are the game's speed settings and not multipliers, so 8 is out of range and 4 is what eight times is called" },
-    { fact: "while it is `paused` no scenario time passes at all", why: "scenario time is charged against thinking time, and one test run lost a full scenario year that way" }
+    { fact: "while it is `paused` no scenario time passes at all", why: "scenario time is charged against thinking time, and one test run lost a full scenario year that way" },
+    { fact: "`park_status` carries both, as `speed` and `paused`", why: "a paused game is otherwise indistinguishable from a running one nothing is happening in, and a run can sit frozen to the end of it" }
 ];
 
 /**
@@ -80,7 +81,10 @@ const STEERS: { pattern: RegExp; why: string }[] = [
     { pattern: /\bprefer/i, why: "ranks two options the model is supposed to choose between" },
     { pattern: /\bideally\b/i, why: "names a preferred outcome" },
     { pattern: /\bbest\b/i, why: "ranking is the tool playing" },
-    { pattern: /\bworth\b/i, why: "whether something is worth it is the decision itself" },
+    // Narrowed from /\bworth\b/: `park_status` describes a ride's `value` as roughly what a
+    // guest thinks the ride is worth, which is the natural wording of the rule FACTS pins as
+    // the one that makes a price good or bad. The steer is the verdict, not the noun.
+    { pattern: /\bworth (?:it|doing)\b/i, why: "whether something is worth it is the decision itself" },
     { pattern: /\bconsider(?:s|ing|ed)?\b/i, why: "steers attention rather than stating a fact" },
     { pattern: /\bmake sure\b/i, why: "an instruction" },
     { pattern: /\bremember\b/i, why: "an instruction" },
@@ -114,6 +118,73 @@ test("the prompt tells the model what the world is, never what to want", functio
             null,
             "prompt.md has picked up \"" + (match ? match[0] : "") + "\" - " + STEERS[i].why
                 + ". docs/tool-design.md: a fact about the world stays, a steer goes."
+        );
+    }
+});
+
+/**
+ * The steer that survives a vocabulary audit is the one made of structure rather than words.
+ *
+ * Three passes cut steering phrases out of "Each turn" and left its shape untouched: a
+ * numbered 1-4 procedure, singular throughout, whose step 1 fixed the opening call of every
+ * turn and whose step 2 was one act. That is `start by` and "decide the one thing holding the
+ * park back" said in punctuation instead of words, and both of those are in STEERS above. The
+ * proof that STEERS cannot see it: "1. Call `park_status`. 2. Build a merry-go-round. 3. Price
+ * it at 15." passes every pattern in that list. So the shape is pinned here directly.
+ */
+const TURN_HEADING = "## Each turn";
+
+/** The "Each turn" section on its own, unfolded: the shape is what is being read. */
+function turnSection(): string {
+    const raw = readFileSync(PROMPT_PATH, "utf8");
+    const start = raw.indexOf(TURN_HEADING);
+
+    assert.ok(start >= 0, "prompt.md no longer has an \"" + TURN_HEADING + "\" section, so this is checking nothing");
+
+    const body = raw.slice(start + TURN_HEADING.length);
+    const next = body.indexOf("\n## ");
+
+    return next < 0 ? body : body.slice(0, next);
+}
+
+/**
+ * Openers that address the model directly. Not a list of forbidden English: each one can only
+ * be followed by an action, so a sentence starting with it is an instruction however carefully
+ * the rest of it is worded. The build recipe's own 1-4 is untouched by this, because the order
+ * the game requires - ride, then doors, then paths - is a mechanic and not a cadence.
+ */
+const IMPERATIVE_OPENERS = ["Open with", "Start with", "Start by", "Decide", "Pick", "Choose"];
+
+/** Start of a line, of a bullet, of a numbered step, or of a sentence. */
+function openerPattern(opener: string): RegExp {
+    return new RegExp("(?:^|\\n|[.!?;:]\\s|—\\s)[ \\t]*(?:[-*][ \\t]+|\\d+[.)][ \\t]+)?(" + opener + ")\\b", "i");
+}
+
+test("the turn section is prose, so it fixes no opening call and no act-per-turn", function () {
+    const numbered = /^[ \t]*\d+[.)][ \t]/m.exec(turnSection());
+
+    assert.equal(
+        numbered,
+        null,
+        "prompt.md's \"Each turn\" section has picked up a numbered step (\"" + (numbered ? numbered[0].trim() : "")
+            + "\"). A numbered procedure read every turn prescribes a first call and one action per turn, which is"
+            + " the steer STEERS cannot see because it is made of structure. docs/tool-design.md: a fact about the"
+            + " world stays, a steer goes."
+    );
+});
+
+test("no sentence in the prompt opens by telling the model what to do", function () {
+    const raw = readFileSync(PROMPT_PATH, "utf8");
+
+    for (let i = 0; i < IMPERATIVE_OPENERS.length; i++) {
+        const match = openerPattern(IMPERATIVE_OPENERS[i]).exec(raw);
+
+        assert.equal(
+            match,
+            null,
+            "prompt.md has picked up a sentence opening \"" + (match ? match[1] : "") + "\" - only an action can"
+                + " follow it, so the sentence is an instruction whatever it goes on to say."
+                + " docs/tool-design.md: a fact about the world stays, a steer goes."
         );
     }
 });

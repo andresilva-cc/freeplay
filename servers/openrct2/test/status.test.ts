@@ -1034,6 +1034,37 @@ test("each park-wide figure comes from its own field", function () {
 });
 
 /**
+ * Stopping the clock is the one mistake that hides itself. A paused park reads back exactly
+ * as it did last turn - same date, same guests, same rides, same cash - so without a field
+ * saying so, a model that paused has nothing to notice, and a run can sit frozen to the end
+ * of the scenario. Both values are read off `context` each time rather than remembered from
+ * whatever set_game_speed was last asked for, which is what makes them true after a pause
+ * from anywhere else.
+ */
+test("park_status reports the speed setting and whether the clock is stopped", function () {
+    withPark(function () { /* the fake starts at speed 1, running */ }, function (game) {
+        const running = readParkStatus();
+
+        assert.deepEqual(
+            { speed: running.speed, paused: running.paused },
+            { speed: 1, paused: false },
+            "a running park reports its speed setting and a clear pause flag");
+
+        game.gameValues.speed = 4;
+        game.gameValues.paused = true;
+
+        const stopped = readParkStatus();
+
+        assert.deepEqual(
+            { speed: stopped.speed, paused: stopped.paused },
+            { speed: 4, paused: true },
+            "and both come from the game as it stands, not from anything park_status kept");
+        assert.equal(stopped.date.day, running.date.day,
+            "nothing else in the status moved, which is exactly why `paused` has to be there");
+    });
+});
+
+/**
  * The rule `status.ts` and `build.ts` both exist to keep: a stall is served from ONE tile,
  * the neighbour on the side it faces, and `shopServingTile` is the single answer to which.
  * build.test.ts pins a path against the back wall; this pins the near miss the loose

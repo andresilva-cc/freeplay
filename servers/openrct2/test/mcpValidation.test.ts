@@ -362,8 +362,16 @@ test("the instructions name every tool, and count them correctly", function () {
         assert.ok(instructions.indexOf(tool.name) >= 0, tool.name + " is not mentioned in the instructions");
     });
 
-    const countWord = /^(\w+) tools/.exec(instructions);
-    assert.ok(countWord, "the instructions have to open by saying how many tools there are");
+    // The whole sentence, not just its first word. "Fourteen tools reach the running game."
+    // is a literal in mcp.ts that nothing else reads, so a fifteenth tool leaves it wrong and
+    // a rewording leaves the count unchecked - the count word can only be held against the
+    // registry while the sentence it sits in is still the sentence being read.
+    const countWord = /^(\w+) tools reach the running game\./.exec(instructions);
+    assert.ok(countWord, "the instructions have to open with \"<how many> tools reach the running game.\","
+        + " which is the one sentence that states the size of the tool set");
+    assert.ok(typeof COUNT_WORDS[countWord[1].toLowerCase()] === "number",
+        "the instructions open with \"" + countWord[1] + " tools\", which is not a number word this test knows,"
+        + " so the count is going unchecked: add it to COUNT_WORDS");
     assert.equal(COUNT_WORDS[countWord[1].toLowerCase()], listed.length,
         "the instructions say " + countWord[1] + " tools, but " + String(listed.length) + " are registered");
 });

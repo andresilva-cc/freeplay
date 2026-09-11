@@ -110,6 +110,14 @@ export interface ParkStatus {
     paths: PathNetwork;
     parkOpen: boolean;
     date: { year: number; month: number; day: number };
+    /**
+     * The game's own speed setting, 1 to 4, and whether the clock is stopped. Nothing else
+     * reported either, so a paused game looked exactly like a running one that nothing was
+     * happening in: the date, the guest count and every ride read back unchanged turn after
+     * turn with no field saying why.
+     */
+    speed: number;
+    paused: boolean;
     cash: number;
     bankLoan: number;
     maxBankLoan: number;
@@ -318,6 +326,8 @@ export function readParkStatus(): ParkStatus {
         },
         parkOpen: park.getFlag("open"),
         date: { year: date.year, month: date.month, day: date.day },
+        speed: typeof context.gameSpeed === "number" ? context.gameSpeed : 0,
+        paused: context.paused === true,
         cash: park.cash,
         bankLoan: park.bankLoan,
         maxBankLoan: park.maxBankLoan,
