@@ -21,9 +21,11 @@ nor OpenRCT2 is baked into the design.
                                    └──────────────────────────────────┘
 ```
 
-The model gets exactly one tool, `evaluate`, which runs JavaScript inside the game
-against the full OpenRCT2 plugin API. That is the entire action surface. See
-[docs/architecture.md](docs/architecture.md) for why.
+The model sees the park through tools that report what a player reads off the screen,
+and changes it through tools that carry out a decision it has already made. Where that
+line sits — and why it matters — is [docs/tool-design.md](docs/tool-design.md).
+`evaluate` runs arbitrary JavaScript against the plugin API and remains available for
+everything the other tools do not cover.
 
 ## Prerequisites
 
@@ -68,20 +70,30 @@ $EDITOR .env
 ```
 
 The script verifies both the bridge and the model endpoint before starting, copies
-`games/openrct2/prompt.md` into place as the system prompt, and launches pi with
-`evaluate` as its only tool. Everything pi needs lives in `./pi`, so your global pi
+`games/openrct2/prompt.md` into place as the system prompt, and launches pi with the
+bridge's tools and nothing else. Everything pi needs lives in `./pi`, so your global pi
 configuration is untouched.
 
 While the bridge is up you can also poke at it directly — `http://127.0.0.1:8080/swagger`
 for the REST surface, `/dashboard` for a status page.
 
+## Working on the plugin
+
+```bash
+./scripts/deploy-plugin.sh
+```
+
+Builds, installs, and then refuses to return until the running game reports the build id
+it just produced. OpenRCT2's plugin hot reloading is silent when it does not fire, and
+testing against a stale bundle is an expensive way to spend an afternoon. Turn hot
+reloading on with `enable_hot_reloading` under `[plugin]` in OpenRCT2's `config.ini`,
+edited while the game is closed.
+
 ## What this is at the moment
 
-One tool, one game, one model, attached and observed. There is no scoring, no scenario
-suite, no persistent agent memory and no reconciliation of what the agent believes
-against what the game says. Those are all interesting and all deferred, because every
-design choice past this point currently rests on a guess about how a model behaves when
-you hand it a theme park. One run replaces the guesses.
+One game, one model, attached and observed. There is no scoring, no scenario suite, no
+persistent agent memory and no reconciliation of what the agent believes against what
+the game says. Those are all interesting and all deferred.
 
 [docs/tool-design.md](docs/tool-design.md) covers where the line sits between helping
 the model and playing for it. [docs/why-this-is-hard.md](docs/why-this-is-hard.md) covers

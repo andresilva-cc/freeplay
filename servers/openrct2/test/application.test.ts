@@ -505,7 +505,7 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
 
         assert.deepEqual(
             Object.keys(toolsByName).sort(),
-            ["build_flat_ride", "build_path", "evaluate", "find_build_sites", "get_date", "get_park_info", "show_error"]
+            ["build_flat_ride", "build_path", "clear_scenery", "evaluate", "find_build_sites", "get_date", "get_park_info", "guest_feedback", "hire_staff", "list_ride_objects", "park_status", "show_error"]
         );
 
         assert.equal(toolsByName.get_date.title, "Get the current date");
@@ -517,6 +517,7 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
         assert.equal(toolsByName.find_build_sites.annotations?.readOnlyHint, true);
         assert.equal(toolsByName.build_flat_ride.annotations?.readOnlyHint, false);
         assert.equal(toolsByName.build_path.annotations?.readOnlyHint, false);
+        assert.equal(toolsByName.clear_scenery.annotations?.destructiveHint, true);
         assert.equal(toolsByName.get_park_info.outputSchema?.type, "object");
         assert.deepEqual(toolsByName.show_error.inputSchema, {
             type: "object",

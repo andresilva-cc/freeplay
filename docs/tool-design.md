@@ -35,10 +35,20 @@ path does not.
 
 | Tool | Gives the model | Leaves to the model |
 |---|---|---|
-| `find_build_sites` | Where land is level, owned, clear, and how far from a path | Which site, whether to build at all |
-| `build_flat_ride` | The create/place/entrance/exit action sequence, with correct arguments | What to build, where, at what price, whether to open |
+| `park_status` | What the game shows on screen: money, rating, guests, every ride | What any of it means, and what to do |
+| `guest_feedback` | What guests are complaining about | Which complaint is worth acting on |
+| `list_ride_objects` | What exists, its footprint, whether it builds in one action | What is worth building |
+| `find_build_sites` | Where a ride fits, and how far each door is from a path | Which site, which doors, whether to build at all |
+| `clear_scenery` | Removing trees from a square | Whether felling them is worth the money and the rating |
+| `build_flat_ride` | The create/place/entrance/exit sequence, with correct arguments | What, where, which way round, which doors, what price, whether to open |
 | `build_path` | Placement and routing around obstacles | Where paths go, and whether a run is a queue |
+| `hire_staff` | The hiring action | Who to hire and how many |
 | `evaluate` | The whole plugin API, unrestricted | Everything else |
+
+Note what none of them do: none rank options by "best", none choose a site, none decide
+a price, and none lay a path the model did not ask for. `find_build_sites` sorts by
+distance to a footpath because that is a measurement, and reports `totalFound` so the
+model knows the list is a window rather than the whole truth.
 
 `build_flat_ride` reports whether guests can actually reach the finished ride. It does
 not fix it. Telling the model its ride is unreachable is information; silently laying
@@ -53,6 +63,23 @@ out gave the decision back and made the tool smaller at the same time.
 
 The tell to watch for: if a tool's arguments stop describing *what the player wants* and
 start describing *nothing at all* — `build_me_a_good_park()` — it has crossed over.
+
+## Perception is most of the value
+
+The tools that earn their place fastest are the ones that simply let the model see. A
+person reads cash, rating, guest count and every ride's queue off the screen constantly
+and for free. Without `park_status` the model spends a call and a paragraph of
+JavaScript rebuilding that picture every turn, and usually rebuilds a worse one.
+
+`guest_feedback` is the same idea pointed at the game's own diagnostics. OpenRCT2 already
+knows why guests are unhappy and will say so — "can't find", "too expensive", "hungry".
+Surfacing that is not advice; it is reading a window that was already open.
+
+The clearest case was a filter nobody would have called a decision. `find_build_sites`
+originally returned only tiles with nothing on them at all. In a forest scenario that
+was about 40 sites out of 1,325 — it silently hid 97% of the buildable park, because
+trees are removable and a player would simply fell them. Reporting `sceneryToClear` and
+offering `clear_scenery` handed back a park the model never knew it had.
 
 ## Corollary: tools must not lie
 
@@ -71,3 +98,21 @@ that ride.
 So every step verifies by reading the world back, and reports what it found rather than
 what it attempted. Game actions apply on a later tick, so a tool that acts and checks in
 the same breath will always see the old world.
+
+The same applies to the bridge itself: each build is stamped with an id it reports over
+MCP, and `scripts/deploy-plugin.sh` refuses to continue until the running game reports
+the id that was just built. An hour went into debugging a stale bundle before that
+existed.
+
+## The clock is the harness's problem, not the model's
+
+A local model takes seconds to tens of seconds per decision. If the game is running
+while it thinks, thinking time is charged against the scenario clock, and a slower model
+scores worse for being slow rather than for playing worse. In a test run the game
+advanced a full scenario year while the bridge was being debugged, and the objective
+failed on time alone.
+
+So pacing belongs to the harness: pause while the model decides, advance a fixed number
+of ticks after it acts. `gamesetspeed` and `pausetoggle` are ordinary game actions, which
+makes this straightforward — but it has to be deliberate, or every run silently measures
+inference speed instead of play.

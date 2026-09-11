@@ -50,4 +50,16 @@ speed:
 
 agent:
   system_prompt: games/openrct2/prompt.md
-  tool: evaluate
+  tools:
+    # Perception: what a player reads off the screen.
+    - park_status
+    - guest_feedback
+    - list_ride_objects
+    - find_build_sites
+    # Action: the mechanics of carrying out a decision.
+    - clear_scenery
+    - build_flat_ride
+    - build_path
+    - hire_staff
+    # Everything else.
+    - evaluate

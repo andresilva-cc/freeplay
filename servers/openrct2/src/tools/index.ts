@@ -1,21 +1,27 @@
 import { getMcpToolDefinitions } from "./decorators.js";
 import { BuildTools } from "./build.js";
+import { ClearTools } from "./clear.js";
 import { DateTools } from "./date.js";
 import { EvalTools } from "./eval.js";
 import { ParkTools } from "./park.js";
 import { PathTools } from "./path.js";
 import { SiteTools } from "./sites.js";
+import { StaffTools } from "./staff.js";
+import { StatusTools } from "./status.js";
 import { UiTools } from "./ui.js";
 import type { McpToolAction, McpToolClass, McpToolDefinition } from "./types.js";
 
 export function getMcpToolControllers(): McpToolClass[] {
     return [
         BuildTools,
+        ClearTools,
         DateTools,
         EvalTools,
         ParkTools,
         PathTools,
         SiteTools,
+        StaffTools,
+        StatusTools,
         UiTools
     ];
 }

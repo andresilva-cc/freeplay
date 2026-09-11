@@ -1,5 +1,7 @@
 import { DIRECTION_VECTORS, directionBetween, readMapGrid } from "./map.js";
+import { flatRideShape, footprintOffsets, perimeterOffsets } from "./flatRides.js";
 import type { MapGrid } from "./map.js";
+import type { FlatRideShape, Offset } from "./flatRides.js";
 
 export interface DoorTile {
     x: number;
@@ -10,70 +12,60 @@ export interface DoorTile {
 
 /** One place an entrance or exit can go: the kiosk tile, and the tile its door opens onto. */
 export interface AccessOption {
-    /** Tile the entrance or exit building occupies. */
     x: number;
     y: number;
     /** Direction the building faces, pointing at the ride. */
     direction: number;
-    /** The tile in front of the door, where a queue or path must reach. */
     door: DoorTile;
-    /** Tiles from the door to the nearest existing footpath. 0 means the door is already on one. */
+    /** Tiles from the door to the nearest existing footpath. 0 means it is already on one. */
     pathDistance: number;
 }
 
 export interface BuildSite {
+    /** Origin tile to pass to build_flat_ride. */
     x: number;
     y: number;
     z: number;
-    size: number;
-    /**
-     * Every tile around the footprint where an entrance or exit will fit. Pick any two:
-     * they may sit on the same side, which usually gives a shorter, tidier queue than
-     * putting them on opposite sides.
-     */
+    rotation: number;
+    /** Tiles of the footprint holding scenery. 0 means bare ground; otherwise clear it first. */
+    sceneryToClear: number;
     access: AccessOption[];
     /** The shortest door-to-footpath distance among those options. */
     pathDistance: number;
 }
 
-/** Track piece for a square flat ride of a given footprint, from OpenRCT2's track table. */
-const FLAT_TRACK_BY_SIZE: Record<number, number | undefined> = {
-    1: 262,
-    2: 258,
-    3: 266,
-    4: 259
-};
-
-export function flatTrackTypeForSize(size: number): number | undefined {
-    return FLAT_TRACK_BY_SIZE[size];
+export interface SiteSearchResult {
+    ok: boolean;
+    ride?: { name: string; rideType: number; width: number; depth: number };
+    sites?: BuildSite[];
+    /** How many sites matched before the list was cut to `limit`. */
+    totalFound?: number;
+    error?: string;
 }
 
-function squareIsBuildable(grid: MapGrid, cx: number, cy: number, size: number): number | null {
-    const half = Math.floor(size / 2);
+function areaState(grid: MapGrid, cx: number, cy: number, offsets: Offset[]): { z: number; scenery: number } | null {
     let z: number | null = null;
+    let scenery = 0;
 
-    for (let dx = -half; dx <= half; dx++) {
-        for (let dy = -half; dy <= half; dy++) {
-            const cell = grid.at(cx + dx, cy + dy);
+    for (let i = 0; i < offsets.length; i++) {
+        const cell = grid.at(cx + offsets[i].dx, cy + offsets[i].dy);
 
-            if (!cell || !cell.owned || !cell.flat || !cell.clear) {
-                return null;
-            }
+        if (!cell || !cell.owned || !cell.flat || !cell.clearable) {
+            return null;
+        }
 
-            if (z === null) {
-                z = cell.baseZ;
-            } else if (cell.baseZ !== z) {
-                return null;
-            }
+        if (!cell.clear) {
+            scenery++;
+        }
+
+        if (z === null) {
+            z = cell.baseZ;
+        } else if (cell.baseZ !== z) {
+            return null;
         }
     }
 
-    return z;
-}
-
-function tileIsFree(grid: MapGrid, x: number, y: number, z: number): boolean {
-    const cell = grid.at(x, y);
-    return !!cell && cell.owned && cell.flat && cell.clear && cell.baseZ === z;
+    return z === null ? null : { z: z, scenery: scenery };
 }
 
 function collectPathTiles(grid: MapGrid): { x: number; y: number }[] {
@@ -104,43 +96,73 @@ function nearestPathDistance(paths: { x: number; y: number }[], x: number, y: nu
     return best;
 }
 
-/**
- * Sites are ranked by how far the entrance is from the existing footpath network.
- * A correctly built ride that guests cannot walk to is worthless, and that is the
- * mistake this ordering exists to prevent.
- */
-export function findBuildSites(size: number, limit: number): BuildSite[] {
+/** Which way a perimeter tile faces: towards whichever footprint tile it touches. */
+function facingDirection(offsets: Offset[], perimeter: Offset): number | null {
+    for (let i = 0; i < offsets.length; i++) {
+        const dx = offsets[i].dx - perimeter.dx;
+        const dy = offsets[i].dy - perimeter.dy;
+
+        if (Math.abs(dx) + Math.abs(dy) === 1) {
+            return directionBetween({ x: 0, y: 0 }, { x: dx, y: dy });
+        }
+    }
+
+    return null;
+}
+
+export function findBuildSites(rideObjectIndex: number, limit: number, rotation?: number): SiteSearchResult {
+    const objects = context.getAllObjects("ride");
+
+    if (rideObjectIndex < 0 || rideObjectIndex >= objects.length) {
+        return { ok: false, error: "No ride object at index " + String(rideObjectIndex) + "." };
+    }
+
+    const rideObject = objects[rideObjectIndex];
+    const rideType = rideObject.rideType[0];
+    const shape: FlatRideShape | undefined = flatRideShape(rideType);
+
+    if (typeof shape === "undefined") {
+        return {
+            ok: false,
+            error: rideObject.name + " is not a flat ride: it is built from track, piece by piece, with evaluate."
+        };
+    }
+
     const grid = readMapGrid();
     const paths = collectPathTiles(grid);
-    const half = Math.floor(size / 2);
+    const rotations = typeof rotation === "number" ? [rotation % 4] : [0, 1];
     const found: BuildSite[] = [];
 
-    for (let cy = 0; cy < grid.height; cy++) {
-        for (let cx = 0; cx < grid.width; cx++) {
-            const z = squareIsBuildable(grid, cx, cy, size);
+    for (let r = 0; r < rotations.length; r++) {
+        const turn = rotations[r];
+        const offsets = footprintOffsets(shape, turn);
+        const perimeter = perimeterOffsets(offsets);
 
-            if (z === null) {
-                continue;
-            }
+        for (let cy = 0; cy < grid.height; cy++) {
+            for (let cx = 0; cx < grid.width; cx++) {
+                const area = areaState(grid, cx, cy, offsets);
 
-            const options: AccessOption[] = [];
-            const half2 = half;
+                if (area === null) {
+                    continue;
+                }
 
-            for (let d = 0; d < DIRECTION_VECTORS.length; d++) {
-                const outward = DIRECTION_VECTORS[d];
-                // Walk the whole side, not just its middle tile.
-                for (let offset = -half2; offset <= half2; offset++) {
-                    const along = { dx: outward.dy, dy: outward.dx };
-                    const tile = {
-                        x: cx + outward.dx * (half2 + 1) + along.dx * offset,
-                        y: cy + outward.dy * (half2 + 1) + along.dy * offset
-                    };
+                const options: AccessOption[] = [];
 
-                    if (!tileIsFree(grid, tile.x, tile.y, z)) {
+                for (let p = 0; p < perimeter.length; p++) {
+                    const tile = { x: cx + perimeter[p].dx, y: cy + perimeter[p].dy };
+                    const cell = grid.at(tile.x, tile.y);
+
+                    if (!cell || !cell.owned || !cell.flat || !cell.clear || cell.baseZ !== area.z) {
                         continue;
                     }
 
-                    const towardsRide = { x: tile.x - outward.dx, y: tile.y - outward.dy };
+                    const direction = facingDirection(offsets, perimeter[p]);
+
+                    if (direction === null) {
+                        continue;
+                    }
+
+                    const outward = DIRECTION_VECTORS[(direction + 2) % 4];
                     const door = { x: tile.x + outward.dx, y: tile.y + outward.dy };
                     const doorCell = grid.at(door.x, door.y);
 
@@ -151,42 +173,51 @@ export function findBuildSites(size: number, limit: number): BuildSite[] {
                     options.push({
                         x: tile.x,
                         y: tile.y,
-                        direction: directionBetween(tile, towardsRide),
+                        direction: direction,
                         door: { x: door.x, y: door.y, isExistingPath: doorCell.path },
                         pathDistance: nearestPathDistance(paths, door.x, door.y)
                     });
                 }
-            }
 
-            if (options.length < 2) {
-                continue;
-            }
-
-            let shortest = Infinity;
-            for (let i = 0; i < options.length; i++) {
-                if (options[i].pathDistance < shortest) {
-                    shortest = options[i].pathDistance;
+                if (options.length < 2) {
+                    continue;
                 }
-            }
 
-            if (shortest === Infinity) {
-                continue;
-            }
+                let shortest = Infinity;
+                for (let i = 0; i < options.length; i++) {
+                    if (options[i].pathDistance < shortest) {
+                        shortest = options[i].pathDistance;
+                    }
+                }
 
-            found.push({
-                x: cx,
-                y: cy,
-                z: z,
-                size: size,
-                access: options,
-                pathDistance: shortest
-            });
+                if (shortest === Infinity) {
+                    continue;
+                }
+
+                found.push({
+                    x: cx,
+                    y: cy,
+                    z: area.z,
+                    rotation: turn,
+                    sceneryToClear: area.scenery,
+                    access: options,
+                    pathDistance: shortest
+                });
+            }
         }
     }
 
     found.sort(function (left, right) {
-        return left.pathDistance - right.pathDistance;
+        if (left.pathDistance !== right.pathDistance) {
+            return left.pathDistance - right.pathDistance;
+        }
+        return left.sceneryToClear - right.sceneryToClear;
     });
 
-    return found.slice(0, limit);
+    return {
+        ok: true,
+        ride: { name: rideObject.name, rideType: rideType, width: shape.width, depth: shape.depth },
+        sites: found.slice(0, limit),
+        totalFound: found.length
+    };
 }

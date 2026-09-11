@@ -49,6 +49,47 @@ plugin API, and it is not exposed over MCP.
 
 ## What Freeplay adds
 
+Nine tools beyond the three inherited ones. Where the line between them and the model
+sits is [tool-design.md](tool-design.md); what each one does is in its own description,
+which is what the model reads.
+
+| Tool | |
+|---|---|
+| `park_status` | Objective, money, rating, guests, and every ride including whether a queue is bound to it |
+| `guest_feedback` | Guest thoughts, counted |
+| `list_ride_objects` | What can be built, with footprints |
+| `find_build_sites` | Where a given ride fits, with every entrance and exit position |
+| `clear_scenery` | Fell trees on a square |
+| `build_flat_ride` | Create, place, entrance, exit, price, open |
+| `build_path` | A path or queue between two tiles |
+| `hire_staff` | Hire and place staff |
+| `evaluate` | Arbitrary JavaScript against the plugin API |
+
+### Things the API will not tell you, learned the hard way
+
+**Directions.** `TileDirectionDelta` is `0 = -x, 1 = +y, 2 = +x, 3 = -y`. Getting this
+rotated by one puts every ride entrance's door on the wrong wall. Nothing in the API
+complains; the ride reports itself open, with a rating, and no guest ever boards.
+
+**Flat-ride footprints.** A flat ride is placed with a single `trackplace` using the
+piece named by its `RideTypeDescriptor.StartTrackPiece` — `flatTrack3x3` is track type
+266, `flatTrack1x1A` is 262, and so on. The plugin API exposes no footprint at all, so
+`src/park/flatRides.ts` carries the table generated from OpenRCT2's source. Guessing
+fails in the worst way: a wrong piece can place *something* that satisfies the game's
+"constructed" check while building nothing visible.
+
+A footprint of N tiles spans `-floor(N/2)` to `N-1-floor(N/2)` from the origin passed to
+`trackplace`, verified in game against a 1x1 stall and a 1x4 Ferris Wheel.
+
+**Queues.** A ride entrance needs a *queue* path on the tile its door opens onto, bound
+to that ride. An ordinary footpath touching the door looks identical through the API and
+does nothing. The binding is `FootpathElement.ride`, set by the game when the queue
+connects; check it rather than assuming.
+
+**Actions apply on the next tick.** Nothing a game action does is visible within the
+same `evaluate` call. Tools that need to act then verify use the deferred-result path
+described below.
+
 **One MCP tool, `evaluate`.** It takes a `code` string, runs it in the plugin context and
 returns the value, annotated `readOnlyHint: false` and `destructiveHint: true`. This is
 the whole action surface; the reasoning is in [architecture.md](architecture.md).
@@ -96,6 +137,18 @@ The listener binds `127.0.0.1:8080`, loopback only.
 | `GET /openapi.yaml` | Generated OpenAPI document |
 | `GET /swagger` | Swagger UI over the above |
 | `GET /dashboard` | Status page |
+
+## Tools that span game ticks
+
+A game action does not take effect until a later tick, so a tool that creates a ride and
+then places track cannot do both in one call. `McpServer` supports deferred results for
+this: a tool returns `{ deferred: true, start }`, the MCP layer hijacks the connection
+with `context.connection.takeOver()`, and the response is written once `start` resolves.
+A 30 second timeout closes the socket if a tool never finishes. From the caller's side it
+is one request and one result.
+
+`build_flat_ride` uses this to run five actions in sequence, verifying each before the
+next, and reports which step failed.
 
 ## Adding a tool
 

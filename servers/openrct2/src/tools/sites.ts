@@ -6,20 +6,24 @@ export class SiteTools {
     @mcpTool({
         name: "Find build sites",
         description: [
-            "List places a flat ride of the given footprint can be built: owned, level and unobstructed.",
-            "Coordinates are tile coordinates; `x` and `y` are the CENTRE of the footprint.",
-            "Each site lists every `access` option — a tile where an entrance or exit building fits, the `door`",
-            "tile it opens onto, and that door's distance to the nearest existing footpath.",
-            "Pick any two for the entrance and exit. They may share a side, which usually makes for a shorter",
-            "queue than opposite sides. `pathDistance` is the best of those options; a ride guests cannot walk",
-            "to earns nothing, so sites far from a path cost you a long path to connect them."
+            "Find where a particular flat ride will fit. Pass the ride's index from `list_ride_objects`",
+            "and the tool works out its footprint for you, in both orientations.",
+            "Each site gives the `x`, `y` and `rotation` to hand to `build_flat_ride`, plus `access`:",
+            "every tile where an entrance or exit building fits, the `door` tile it opens onto, and that",
+            "door's distance to the nearest footpath. Pick any two for the entrance and exit — putting both",
+            "on the same side usually makes a shorter, straighter queue than opposite sides.",
+            "`sceneryToClear` counts tiles holding trees: the site works, but run `clear_scenery` first.",
+            "Sites come back nearest-to-a-path first and cut to `limit`; `totalFound` says how many exist,",
+            "so raise `limit` if you want to weigh somewhere further out."
         ].join(" "),
         inputSchema: {
             type: "object",
             properties: {
-                size: { type: "integer", description: "Footprint in tiles: 1, 2, 3 or 4. Most flat rides are 3." },
-                limit: { type: "integer", description: "How many sites to return (default 10)." }
+                rideObject: { type: "integer", description: "Index from list_ride_objects." },
+                rotation: { type: "integer", description: "Force one orientation, 0-3. Omit to see both." },
+                limit: { type: "integer", description: "How many sites to return (default 10, max 50)." }
             },
+            required: ["rideObject"],
             additionalProperties: false
         },
         annotations: {
@@ -30,17 +34,10 @@ export class SiteTools {
         }
     })
     public findBuildSites(args: Record<string, unknown>) {
-        const size = typeof args.size === "number" ? Math.floor(args.size) : 3;
+        const rideObject = typeof args.rideObject === "number" ? Math.floor(args.rideObject) : -1;
         const limit = typeof args.limit === "number" ? Math.floor(args.limit) : 10;
+        const rotation = typeof args.rotation === "number" ? Math.floor(args.rotation) : undefined;
 
-        if (size < 1 || size > 4) {
-            return { ok: false, error: "size must be 1, 2, 3 or 4." };
-        }
-
-        return {
-            ok: true,
-            size: size,
-            sites: findBuildSites(size, Math.max(1, Math.min(limit, 50)))
-        };
+        return findBuildSites(rideObject, Math.max(1, Math.min(limit, 50)), rotation);
     }
 }

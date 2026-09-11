@@ -6,11 +6,22 @@
 export interface SurfaceCell {
     owned: boolean;
     flat: boolean;
+    /** Nothing on the tile at all. */
     clear: boolean;
+    /** Only scenery, walls or banners are in the way: a bulldozer would fix it. */
+    clearable: boolean;
     baseZ: number;
     path: boolean;
     queue: boolean;
 }
+
+/** Scenery a player can simply remove, as opposed to rides, paths and park structures. */
+const REMOVABLE_TYPES: Record<string, boolean> = {
+    small_scenery: true,
+    large_scenery: true,
+    wall: true,
+    banner: true
+};
 
 export interface MapGrid {
     width: number;
@@ -29,6 +40,7 @@ export function readMapGrid(): MapGrid {
             const tile = map.getTile(x, y);
             let surface: SurfaceElement | null = null;
             let clear = true;
+            let onlyRemovable = true;
             let path = false;
             let queue = false;
 
@@ -41,6 +53,10 @@ export function readMapGrid(): MapGrid {
                 }
 
                 clear = false;
+
+                if (!REMOVABLE_TYPES[element.type]) {
+                    onlyRemovable = false;
+                }
 
                 if (element.type === "footpath") {
                     path = true;
@@ -55,6 +71,7 @@ export function readMapGrid(): MapGrid {
                 owned: surface !== null && surface.hasOwnership,
                 flat: surface !== null && surface.slope === 0,
                 clear: clear,
+                clearable: clear || onlyRemovable,
                 baseZ: surface !== null ? surface.baseZ : -1,
                 path: path,
                 queue: queue

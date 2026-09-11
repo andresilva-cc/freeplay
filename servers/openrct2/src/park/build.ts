@@ -1,6 +1,6 @@
-import { DIRECTION_VECTORS, directionBetween, unitStep, readMapGrid, toWorld } from "./map.js";
+import { DIRECTION_VECTORS, directionBetween, readMapGrid, toWorld } from "./map.js";
 import { queuePathServes, tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
-import { flatTrackTypeForSize } from "./sites.js";
+import { flatRideShape, footprintOffsets } from "./flatRides.js";
 import type { MapGrid } from "./map.js";
 
 /** Game actions apply on a later tick, so every step waits before verifying. */
@@ -19,7 +19,6 @@ export interface BuildFlatRideRequest {
     rideObject: number;
     x: number;
     y: number;
-    size: number;
     price: number;
     open: boolean;
     /** Aesthetic and operational choices the player would normally make. */
@@ -28,11 +27,10 @@ export interface BuildFlatRideRequest {
     entranceObject: number;
     inspectionInterval: number;
     rotation: number;
-    /** Where the entrance and exit buildings go. Omit to let the tool pick the two
-     *  tiles closest to a path — but placing them yourself is how you control the
-     *  queue's shape, and putting both on the same side is often tidier. */
-    entrance?: { x: number; y: number };
-    exit?: { x: number; y: number };
+    /** Where the entrance and exit buildings go. Required: their placement decides the
+     *  queue's shape, which is park design and therefore the caller's call. */
+    entrance: { x: number; y: number };
+    exit: { x: number; y: number };
 }
 
 export interface BuildStep {
@@ -70,11 +68,27 @@ function tileHasTrackFor(x: number, y: number, rideId: number): boolean {
     return false;
 }
 
-function accessAt(grid: MapGrid, cx: number, cy: number, size: number, z: number, tile: { x: number; y: number }) {
-    const half = Math.floor(size / 2);
-    const withinSide = Math.abs(tile.x - cx) === half + 1 || Math.abs(tile.y - cy) === half + 1;
+function accessAt(
+    grid: MapGrid,
+    cx: number,
+    cy: number,
+    offsets: { dx: number; dy: number }[],
+    z: number,
+    tile: { x: number; y: number }
+) {
+    let facing: number | null = null;
 
-    if (!withinSide) {
+    for (let i = 0; i < offsets.length; i++) {
+        const dx = (cx + offsets[i].dx) - tile.x;
+        const dy = (cy + offsets[i].dy) - tile.y;
+
+        if (Math.abs(dx) + Math.abs(dy) === 1) {
+            facing = directionBetween({ x: 0, y: 0 }, { x: dx, y: dy });
+            break;
+        }
+    }
+
+    if (facing === null) {
         return null;
     }
 
@@ -84,77 +98,7 @@ function accessAt(grid: MapGrid, cx: number, cy: number, size: number, z: number
         return null;
     }
 
-    const towards = { x: tile.x + unitStep(cx - tile.x), y: tile.y + unitStep(cy - tile.y) };
-    return { x: tile.x, y: tile.y, direction: directionBetween(tile, towards) };
-}
-
-/** Fallback when the caller does not say where the doors go: the two tiles nearest a path. */
-function nearestAccessPair(grid: MapGrid, cx: number, cy: number, size: number, z: number) {
-    const half = Math.floor(size / 2);
-    const candidates: { x: number; y: number; direction: number; distance: number }[] = [];
-
-    for (let d = 0; d < DIRECTION_VECTORS.length; d++) {
-        const outward = DIRECTION_VECTORS[d];
-
-        for (let offset = -half; offset <= half; offset++) {
-            const along = { dx: outward.dy, dy: outward.dx };
-            const tile = {
-                x: cx + outward.dx * (half + 1) + along.dx * offset,
-                y: cy + outward.dy * (half + 1) + along.dy * offset
-            };
-            const access = accessAt(grid, cx, cy, size, z, tile);
-
-            if (!access) {
-                continue;
-            }
-
-            const door = { x: tile.x + outward.dx, y: tile.y + outward.dy };
-            const doorCell = grid.at(door.x, door.y);
-
-            if (!doorCell || !doorCell.owned) {
-                continue;
-            }
-
-            candidates.push({
-                x: access.x,
-                y: access.y,
-                direction: access.direction,
-                distance: nearestPathDistance(grid, door.x, door.y)
-            });
-        }
-    }
-
-    if (candidates.length < 2) {
-        return null;
-    }
-
-    candidates.sort(function (left, right) {
-        return left.distance - right.distance;
-    });
-
-    return { entrance: candidates[0], exit: candidates[1] };
-}
-
-function nearestPathDistance(grid: MapGrid, x: number, y: number): number {
-    let best = Infinity;
-
-    for (let ty = 0; ty < grid.height; ty++) {
-        for (let tx = 0; tx < grid.width; tx++) {
-            const cell = grid.at(tx, ty);
-
-            if (!cell || !cell.path) {
-                continue;
-            }
-
-            const distance = Math.abs(tx - x) + Math.abs(ty - y);
-
-            if (distance < best) {
-                best = distance;
-            }
-        }
-    }
-
-    return best;
+    return { x: tile.x, y: tile.y, direction: facing };
 }
 
 export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: BuildOutcome) => void): void {
@@ -162,13 +106,6 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
     const finish = function (ok: boolean, rideId: number | null, rideName: string | null, reachable: boolean): void {
         done({ ok: ok, rideId: rideId, rideName: rideName, reachable: reachable, steps: steps });
     };
-
-    const trackType = flatTrackTypeForSize(request.size);
-
-    if (typeof trackType === "undefined") {
-        steps.push({ step: "size", ok: false, detail: "No flat-ride track piece for size " + String(request.size) + "; use 1, 2, 3 or 4." });
-        return finish(false, null, null, false);
-    }
 
     const objects = context.getAllObjects("ride");
 
@@ -178,6 +115,19 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
     }
 
     const rideObject = objects[request.rideObject];
+    const shape = flatRideShape(rideObject.rideType[0]);
+
+    if (typeof shape === "undefined") {
+        steps.push({
+            step: "ride",
+            ok: false,
+            detail: rideObject.name + " is not a flat ride: it is built from track, piece by piece, with evaluate."
+        });
+        return finish(false, null, null, false);
+    }
+
+    const trackType = shape.trackType;
+    const offsets = footprintOffsets(shape, request.rotation);
     const grid = readMapGrid();
     const centre = grid.at(request.x, request.y);
 
@@ -186,26 +136,20 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
         return finish(false, null, null, false);
     }
 
-    let access: { entrance: { x: number; y: number; direction: number }; exit: { x: number; y: number; direction: number } } | null = null;
+    const entranceAccess = accessAt(grid, request.x, request.y, offsets, centre.baseZ, request.entrance);
+    const exitAccess = accessAt(grid, request.x, request.y, offsets, centre.baseZ, request.exit);
 
-    if (request.entrance && request.exit) {
-        const entrance = accessAt(grid, request.x, request.y, request.size, centre.baseZ, request.entrance);
-        const exit = accessAt(grid, request.x, request.y, request.size, centre.baseZ, request.exit);
-
-        if (!entrance || !exit) {
-            steps.push({ step: "site", ok: false, detail: "Those entrance or exit tiles are not clear, level, owned tiles touching the footprint." });
-            return finish(false, null, null, false);
-        }
-
-        access = { entrance: entrance, exit: exit };
-    } else {
-        access = nearestAccessPair(grid, request.x, request.y, request.size, centre.baseZ);
-    }
-
-    if (!access) {
-        steps.push({ step: "site", ok: false, detail: "No pair of clear tiles around the footprint for an entrance and exit." });
+    if (!entranceAccess || !exitAccess) {
+        steps.push({
+            step: "site",
+            ok: false,
+            detail: "The entrance or exit tile is not a clear, level, owned tile touching the footprint."
+                + " Use an option from this site's `access` list."
+        });
         return finish(false, null, null, false);
     }
+
+    const access = { entrance: entranceAccess, exit: exitAccess };
 
     const idsBefore: Record<number, boolean> = {};
     map.rides.forEach(function (ride) {

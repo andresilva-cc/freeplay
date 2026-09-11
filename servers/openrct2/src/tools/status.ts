@@ -1,0 +1,86 @@
+import { mcpTool, mcpToolController } from "./decorators.js";
+import { listRideObjects, readGuestFeedback, readParkStatus } from "../park/status.js";
+
+@mcpToolController
+export class StatusTools {
+    @mcpTool({
+        name: "Park status",
+        description: [
+            "Everything the game would show you at a glance: the scenario objective and how far along it is,",
+            "whether the park is open, the date, cash, loan, rating, guest count, entrance fee, net profit for",
+            "the last four months, how many staff of each kind you have, and every ride with its status, price,",
+            "ratings, customers, profit, queue time, breakdown record, and whether a queue is actually bound to",
+            "its entrance. `hasQueue: false` means guests cannot board it however finished it looks.",
+            "Money is in tenths of a currency unit: 1000 means 100.00. Ratings are fixed-point: 652 means 6.52.",
+            "Call this before deciding anything; it is cheaper than piecing the same picture together with evaluate."
+        ].join(" "),
+        inputSchema: { type: "object", additionalProperties: false },
+        annotations: {
+            readOnlyHint: true,
+            idempotentHint: true,
+            destructiveHint: false,
+            openWorldHint: false
+        }
+    })
+    public parkStatus() {
+        return readParkStatus();
+    }
+
+    @mcpTool({
+        name: "Guest feedback",
+        description: [
+            "What guests are thinking, counted across the park, most common first.",
+            "This is the game telling you what is wrong in its own words: whether they cannot find a ride,",
+            "think a price is too high, are hungry, lost, or want to go home.",
+            "Also gives average happiness out of 255 and average cash carried.",
+            "When the park rating falls or guests leave, look here before guessing."
+        ].join(" "),
+        inputSchema: {
+            type: "object",
+            properties: {
+                sample: { type: "integer", description: "How many guests to read (default 100)." }
+            },
+            additionalProperties: false
+        },
+        annotations: {
+            readOnlyHint: true,
+            idempotentHint: true,
+            destructiveHint: false,
+            openWorldHint: false
+        }
+    })
+    public guestFeedback(args: Record<string, unknown>) {
+        const sample = typeof args.sample === "number" ? Math.floor(args.sample) : 100;
+        return readGuestFeedback(Math.max(1, Math.min(sample, 500)));
+    }
+
+    @mcpTool({
+        name: "List ride objects",
+        description: [
+            "Every ride and stall this scenario lets you build, with the index `find_build_sites` and",
+            "`build_flat_ride` expect. `isFlatRide` true means it goes up in one action; false means it is a",
+            "tracked ride that has to be built piece by piece with evaluate. `footprint` is its size in tiles."
+        ].join(" "),
+        inputSchema: {
+            type: "object",
+            properties: {
+                flatRidesOnly: { type: "boolean", description: "Only rides that can be built in one action." }
+            },
+            additionalProperties: false
+        },
+        annotations: {
+            readOnlyHint: true,
+            idempotentHint: true,
+            destructiveHint: false,
+            openWorldHint: false
+        }
+    })
+    public listRideObjects(args: Record<string, unknown>) {
+        const all = listRideObjects();
+        const objects = args.flatRidesOnly === true
+            ? all.filter(function (object) { return object.isFlatRide; })
+            : all;
+
+        return { count: objects.length, objects: objects };
+    }
+}
