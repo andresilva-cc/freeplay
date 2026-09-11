@@ -48,7 +48,10 @@ chose, sets the price, opens it. It builds no paths.
 Shops and stalls are different: they have no entrance or exit at all. Leave those
 arguments out, place the shop on a tile next to a path, and guests buy from the path.
 
-**`build_path`** — a path or a queue between two tiles, routing around obstacles.
+**`build_path`** — lays a path or a queue. Give `waypoints`, a list of corners, and it
+draws straight runs between them: that is how you choose the shape of your park. Give
+only two endpoints and it picks the line itself, which is quicker but means it is
+laying out your park for you. Either way it routes around trees, which you cannot see.
 
 **`hire_staff`** — handymen, mechanics, security, entertainers. Each draws wages monthly.
 Rides break down on their own and stay broken until a mechanic walks to them, so a park

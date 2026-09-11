@@ -7,8 +7,11 @@ export class PathTools {
     @mcpTool({
         name: "Build a path",
         description: [
-            "Lay a footpath or a queue line between two tiles, routing around trees and other obstacles.",
-            "Coordinates are tile coordinates. Both ends are paved, including the tiles you name.",
+            "Lay a footpath or a queue line. Coordinates are tile coordinates, and every tile you name is paved.",
+            "Give `waypoints` to draw the line yourself — a list of corners, laid as straight runs between them.",
+            "That is how you control the shape of your park. With only `fromX/fromY` and `toX/toY` the tool picks",
+            "the line for you, which is convenient but means it is choosing your layout.",
+            "Either way it routes around trees, because you cannot see them from here.",
             "Set `queue: true` to build a queue line: a ride's entrance needs a queue tile touching its door,",
             "or guests crowd around the building and never board. Ordinary paths are how guests get anywhere else.",
             "Where paths go is your decision — this only handles the placement."
@@ -20,11 +23,15 @@ export class PathTools {
                 fromY: { type: "integer", description: "Tile y of one end." },
                 toX: { type: "integer", description: "Tile x of the other end." },
                 toY: { type: "integer", description: "Tile y of the other end." },
+                waypoints: {
+                    type: "array",
+                    description: "Corners of the path, in order, each {x, y}. Use this to choose the shape yourself."
+                },
                 queue: { type: "boolean", description: "Build a queue line rather than an ordinary path. Default false." },
                 surfaceObject: { type: "integer", description: "Footpath surface style, from context.getAllObjects(\"footpath_surface\"). Queue styles are separate objects. Defaults to a plain path, or a blue queue." },
                 railingsObject: { type: "integer", description: "Railing style, from context.getAllObjects(\"footpath_railings\"). Default 0." }
             },
-            required: ["fromX", "fromY", "toX", "toY"],
+            required: [],
             additionalProperties: false
         },
         annotations: {
@@ -41,9 +48,16 @@ export class PathTools {
 
         const queue = args.queue === true;
 
+        const waypoints = Array.isArray(args.waypoints)
+            ? (args.waypoints as { x?: unknown; y?: unknown }[]).map(function (point) {
+                return { x: number(point.x), y: number(point.y) };
+            })
+            : [];
+
         const request = {
-            from: { x: number(args.fromX), y: number(args.fromY) },
-            to: { x: number(args.toX), y: number(args.toY) },
+            points: waypoints.length >= 2
+                ? waypoints
+                : [{ x: number(args.fromX), y: number(args.fromY) }, { x: number(args.toX), y: number(args.toY) }],
             queue: queue,
             surfaceObject: typeof args.surfaceObject === "number"
                 ? Math.floor(args.surfaceObject)

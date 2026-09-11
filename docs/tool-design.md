@@ -54,6 +54,22 @@ model knows the list is a window rather than the whole truth.
 not fix it. Telling the model its ride is unreachable is information; silently laying
 the path for it is park design, which is the interesting part of the game.
 
+## Where the line genuinely blurs
+
+`build_path` is the honest hard case. Routing around a tree is perception — the model
+cannot see the trees, and dumping a tile map into its context to fix that costs more than
+it is worth. But the *shape* of the line between two points is park layout, which is one
+of the few creative decisions in the game. Both live in one call.
+
+It shipped routing both, and the parks it produced showed it: braided dirt swathes that
+no player would draw. The resolution is to separate them rather than to route more
+prettily. The caller passes `waypoints` — the corners it wants — and the tool lays
+straight runs between them, handling only the tiles. Two bare endpoints still work, and
+the description says plainly that the tool is then choosing the layout.
+
+Routing better would have hidden the problem. A tool that makes a decision *well* is
+still making it.
+
 ## How we got here
 
 The first version of `build_flat_ride` routed its own paths to the nearest footpath.

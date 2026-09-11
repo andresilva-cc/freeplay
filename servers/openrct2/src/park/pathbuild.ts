@@ -10,8 +10,8 @@ const FOOTPATH_QUEUE_FLAG = 1;
 const NEIGHBOURS = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
 
 export interface BuildPathRequest {
-    from: Tile;
-    to: Tile;
+    /** Corners of the run, in order. Two points means "you pick the line". */
+    points: Tile[];
     queue: boolean;
     /** Surface and railing styles: the player's choice, not the bridge's. */
     surfaceObject: number;
@@ -133,16 +133,37 @@ function route(from: Tile, to: Tile): Tile[] | null {
 }
 
 export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOutcome) => void): void {
-    const tiles = route(request.from, request.to);
+    // Route each leg separately: with waypoints the caller has chosen the shape and the
+    // tool only fills in tiles. With two points the tool picks the line, which is a
+    // design decision it is making on the caller's behalf.
+    let tiles: Tile[] | null = [];
 
-    if (tiles === null) {
+    for (let i = 0; i + 1 < request.points.length && tiles !== null; i++) {
+        const leg = route(request.points[i], request.points[i + 1]);
+
+        if (leg === null) {
+            tiles = null;
+            break;
+        }
+
+        for (let t = 0; t < leg.length; t++) {
+            const last = tiles.length > 0 ? tiles[tiles.length - 1] : null;
+
+            if (!last || last.x !== leg[t].x || last.y !== leg[t].y) {
+                tiles.push(leg[t]);
+            }
+        }
+    }
+
+    if (tiles === null || tiles.length === 0) {
         return done({
             ok: false,
             tilesPlaced: 0,
             tilesRouted: 0,
             route: [],
             connectedToPark: false,
-            detail: "No level, owned, unobstructed route between those tiles. Clear the way or pick another line."
+            detail: "No level, owned, unobstructed route between those points. Clear the way, or give"
+                + " waypoints that go round the obstruction."
         });
     }
 
@@ -182,7 +203,9 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
     context.setTimeout(function () {
         const placed = countPathTiles(tiles);
         const walkable = walkableFromParkEntrance();
-        const connected = tileIsWalkable(walkable, request.from) && tileIsWalkable(walkable, request.to);
+        const first = request.points[0];
+        const last = request.points[request.points.length - 1];
+        const connected = tileIsWalkable(walkable, first) && tileIsWalkable(walkable, last);
         // Measure the damage rather than warn about it in the abstract: a queue laid across
         // a through route cuts everything beyond it off from the park entrance.
         const reachableAfter = Object.keys(walkable).length;
