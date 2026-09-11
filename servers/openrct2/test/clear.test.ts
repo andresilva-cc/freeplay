@@ -5,6 +5,8 @@ import { FakeGame } from "./fakeGame.ts";
 import { FakeSocket } from "./fakeSocket.ts";
 import { createApplication } from "../src/app.ts";
 import { centredSquare, clearRect } from "../src/park/clear.ts";
+import { ClearTools } from "../src/tools/clear.ts";
+import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
 import type { ClearAreaOutcome } from "../src/park/clear.ts";
 
 /** A flat, owned, entirely bare park. Each test puts in its own obstructions. */
@@ -692,4 +694,30 @@ test("a site's four bounds go straight into clear_scenery and clear the ride's g
     } finally {
         restore();
     }
+});
+
+test("the description states what clearing costs and never weighs it up", function () {
+    // docs/tool-design.md: what clearing costs is a rule of the game the model cannot read
+    // anywhere else, so it stays. Whether felling a tree is worth it is the model's call,
+    // and a description that frames it as "a trade" has made half of that call already.
+    // Verified against OpenRCT2: SmallSceneryRemoveAction and LargeSceneryRemoveAction
+    // charge `removal_price`, WallRemoveAction sets cost 0, BannerRemoveAction refunds
+    // three quarters of the price, and CalculateParkRating has no scenery term at all -
+    // scenery reaches ratings through ride_ratings_get_scenery_score, which counts small
+    // and large scenery within five tiles of a ride's station.
+    const definitions = getMcpToolDefinitions(ClearTools).filter(function (definition) {
+        return definition.handlerName === "clearScenery";
+    });
+
+    assert.equal(definitions.length, 1, "clear_scenery is registered once");
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /removal price/, "clearing costs money, which is a fact about the game");
+    assert.match(text, /five tiles of a ride's station/, "and so is where scenery reaches a ride's ratings");
+    assert.match(text, /excitement rating/);
+    assert.doesNotMatch(text, /park rating/i,
+        "OpenRCT2's park rating has no scenery term: claiming one would teach a false rule");
+    assert.doesNotMatch(text, /it is a trade|not free ground|guests like scenery/,
+        "whether the ground is worth the money is the model's to weigh");
 });

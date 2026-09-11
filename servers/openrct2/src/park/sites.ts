@@ -310,7 +310,7 @@ function whyNothingFound(shape: FlatRideShape, footprintFits: number, accessFits
     if (footprintFits === 0) {
         return "Nothing found: nowhere in the park is a " + size + " block of owned, level tiles all at"
             + " one height. Trees do not count against it, but rides, paths and slopes do. Buy or level"
-            + " land, or pick a smaller ride from list_ride_objects.";
+            + " land.";
     }
 
     if (accessFits === 0) {

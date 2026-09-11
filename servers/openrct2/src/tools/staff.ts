@@ -16,7 +16,8 @@ export class StaffTools {
             "Hire staff and place them in the park. Handymen sweep paths and mow grass, mechanics fix and",
             "inspect rides, security deter vandals, entertainers keep queueing guests happy.",
             "Staff are hired near the park entrance and wander freely; set patrol areas with evaluate if you",
-            "want them somewhere specific. Each one draws wages every month, so hiring is a running cost."
+            "want them somewhere specific. Hiring itself costs nothing; each member of staff is paid a wage",
+            "every month for as long as they are employed."
         ].join(" "),
         inputSchema: {
             type: "object",

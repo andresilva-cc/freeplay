@@ -65,7 +65,7 @@ export class SiteTools {
                         + " but which neighbour guests are served from. So passing one narrows a ride's search to a"
                         + " facing, and a shop's to a serving side."
                 },
-                limit: { type: "integer", minimum: 1, maximum: 50, description: "How many sites to return (default 3, max 50). Each one is sizeable, so ask for more only when you need the choice." }
+                limit: { type: "integer", minimum: 1, maximum: 50, description: "How many sites to return (default 3, max 50). Each one is a sizeable object." }
             },
             required: ["rideObject"],
             additionalProperties: false

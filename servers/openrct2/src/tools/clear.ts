@@ -112,7 +112,9 @@ export class ClearTools {
             "Rides, paths and park structures are never touched and are reported as still blocking.",
             "`area` in the result is the rectangle actually worked on, and `tilesStillBlocked` what is",
             "still standing on it. At most " + String(MAX_TILES) + " tiles in one call.",
-            "Clearing costs money and guests like scenery, so it is a trade, not free ground."
+            "Small and large scenery each cost their removal price to take down; walls are free and a",
+            "banner refunds part of its price. Scenery within five tiles of a ride's station counts towards",
+            "that ride's excitement rating, so clearing there lowers the ride's ratings and its `value`."
         ].join(" "),
         inputSchema: {
             type: "object",

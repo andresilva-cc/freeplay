@@ -92,6 +92,8 @@ export class OperateTools {
                     minimum: 0,
                     maximum: MAX_PRICE,
                     description: "Ticket price in tenths of a currency unit: 10 means 1.00 and 1000 means 100.00."
+                        + " Charge above what guests think the ride is worth and they walk past; park_status"
+                        + " reports each ride's `value`."
                 },
                 inspectionInterval: {
                     type: "integer",

@@ -992,3 +992,36 @@ test("a stall is judged by its counter tile, not by a neighbour of the counter",
         assert.equal(served.guestsCanReach, true, "and only now is the stall served");
     });
 });
+
+test("a stall's fix names the counter tile without arguing against rebuilding", function () {
+    // docs/tool-design.md: `counter` being the tile a path has to reach is the game's
+    // geometry. Whether to path to it or tear the stall down and rebuild it facing the
+    // other way is park design - and rebuilding is right when the counter tile is unowned
+    // or sloped, which the description was talking the model out of.
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "parkStatus";
+    });
+
+    assert.equal(definitions.length, 1, "park_status is registered once");
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /`counter` is the tile build_path has to reach/, "the mechanic and the call stay");
+    assert.doesNotMatch(text, /rather than rebuilding/,
+        "which of the two fixes to use is the model's decision");
+});
+
+test("`price` against `value` is stated as a symptom, not as a price to charge", function () {
+    // Kept deliberately: an overpriced ride and an unreachable one both show
+    // `totalCustomers: 0`, so this sentence separates two causes of one symptom. That is
+    // perception. It stops short of saying what to charge.
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "parkStatus";
+    });
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /Price well above it and they walk past/);
+    assert.match(text, /looks exactly like a ride nobody can reach/, "the two causes it separates");
+    assert.doesNotMatch(text, /\bshould\b|\brecommend|\badvis/i, "and no instruction on what to charge");
+});

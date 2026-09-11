@@ -6,6 +6,7 @@ import type { FakeRide } from "./fakeGame.ts";
 import { operateRide } from "../src/park/operate.ts";
 import type { OperateRideOutcome, OperateRideRequest } from "../src/park/operate.ts";
 import { OperateTools } from "../src/tools/operate.ts";
+import { BuildTools } from "../src/tools/build.ts";
 import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
 import type { DeferredMcpResult } from "../src/tools/types.ts";
 
@@ -633,14 +634,36 @@ test("the schema itself explains the traps, because the refusals below it may ne
 test("the description reports facts and never advises what to charge or when to open", function () {
     // docs/tool-design.md: the tool owns the actions and the read-back. Whether a ride
     // should be open, and what it should cost, is the game the model is here to play.
+    // How the simulation answers a price is a different thing, and it stays - see below.
     const definition = toolDefinition();
     const properties = definition.inputSchema.properties || {};
     const text = String(definition.description) + " "
         + Object.keys(properties).map(function (key) { return String(properties[key].description); }).join(" ");
 
-    assert.doesNotMatch(text, /compare against/i, "pricing against the ride's value is a pricing strategy");
     assert.doesNotMatch(text, /\bshould\b/i);
     assert.doesNotMatch(text, /\b(recommend|advis|best|worth it|profitable)/i);
     assert.match(definition.description as string, /what the ride is actually doing afterwards/,
         "what it does say is what it read back");
+});
+
+test("repricing teaches the same value mechanic building does, in the same words", function () {
+    // Guests weighing price against value is a rule of OpenRCT2's simulation, not an
+    // opinion: the model cannot read it anywhere else, so removing it hid a rule rather
+    // than a recommendation. It was live in build_flat_ride and missing here, so the model
+    // learnt it when building a ride and not when repricing one - which is exactly the
+    // repair five runs failed to make. The two now say it identically; drifting apart is
+    // the failure this pins.
+    const MECHANIC = "Charge above what guests think the ride is worth and they walk past;"
+        + " park_status reports each ride's `value`.";
+
+    const price = String((toolDefinition().inputSchema.properties || {}).price.description);
+    const buildPrice = String(((getMcpToolDefinitions(BuildTools).filter(function (definition) {
+        return definition.handlerName === "buildFlatRide";
+    })[0].inputSchema.properties || {}).price as { description?: string }).description);
+
+    assert.ok(price.indexOf(MECHANIC) >= 0, "operate_ride's price states the mechanic: " + price);
+    assert.ok(buildPrice.indexOf(MECHANIC) >= 0, "and build_flat_ride still does: " + buildPrice);
+
+    // The fact and the field that measures it, and nothing about what to charge.
+    assert.doesNotMatch(price, /\b(should|recommend|advis|too (high|low)|aim for)\b/i);
 });

@@ -5,6 +5,7 @@ import { FakeGame } from "./fakeGame.ts";
 import { FakeSocket } from "./fakeSocket.ts";
 import { createApplication } from "../src/app.ts";
 import { StaffTools } from "../src/tools/staff.ts";
+import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
 import { isDeferredMcpResult } from "../src/tools/types.ts";
 
 /**
@@ -363,4 +364,22 @@ test("someone hired while the call is in flight is not counted as one of ours", 
         assert.equal(body.totalStaff, 3, "which is the number totalStaff is for");
         assert.equal(body.ok, true, String(body.detail));
     });
+});
+
+test("the description says wages are monthly and never calls hiring a cost", function () {
+    // OpenRCT2's StaffHireNewAction sets no cost at all - it only tags the expenditure as
+    // wages - and FinancePayWages pays a quarter of the monthly wage each week. "Hiring is
+    // a running cost" was both wrong about the action and a nudge about whether to hire.
+    const definitions = getMcpToolDefinitions(StaffTools).filter(function (definition) {
+        return definition.handlerName === "hireStaff";
+    });
+
+    assert.equal(definitions.length, 1, "hire_staff is registered once");
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /Hiring itself costs nothing/, "the hire action is free, and the model can read that");
+    assert.match(text, /paid a wage\s+every month/, "what it actually costs is the monthly wage");
+    assert.doesNotMatch(text, /running cost/,
+        "whether the payroll is affordable is the model's call, not the tool's");
 });

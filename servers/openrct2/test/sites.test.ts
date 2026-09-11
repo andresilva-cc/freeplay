@@ -4,6 +4,7 @@ import test from "node:test";
 import { FakeGame } from "./fakeGame.ts";
 import { MAX_ACCESS_OPTIONS, findBuildSites } from "../src/park/sites.ts";
 import { SiteTools } from "../src/tools/sites.ts";
+import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
 
 /** Ride type 33 is the 3x3 merry-go-round; 37 is the 1x4 ferris wheel; 28 a 1x1 stall. */
 function gameWith(rideType: number, build?: (game: FakeGame) => void): { game: FakeGame; restore: () => void } {
@@ -599,7 +600,11 @@ test("finding nothing says which constraint nothing got past", function () {
         assert.equal(result.ok, true);
         assert.equal((result.sites || []).length, 0);
         assert.match(String(result.note), /4x4/, "the size that would not fit has to be in the message");
-        assert.match(String(result.note), /list_ride_objects/, "and the call that offers something smaller");
+        assert.match(String(result.note), /Buy or level land/, "and the fix for the constraint that failed");
+        // docs/tool-design.md: naming the land constraint is mechanics; proposing a different
+        // ride is the model's decision, and a refusal that makes it is the tool playing.
+        assert.doesNotMatch(String(result.note), /smaller ride|list_ride_objects/,
+            "what to build instead is not the refusal's to suggest");
     } finally {
         restore();
     }
@@ -1123,4 +1128,23 @@ test("the tool clamps `limit` into range instead of passing it through", functio
     } finally {
         restore();
     }
+});
+
+test("`limit` says how big a site is and never how few to ask for", function () {
+    // docs/tool-design.md: the size of a result is a fact about it. Telling the model to
+    // ask for fewer discourages looking at alternatives, which is the deliberation this
+    // tool exists to enable - and a description is read every single turn.
+    const definitions = getMcpToolDefinitions(SiteTools).filter(function (definition) {
+        return definition.handlerName === "findBuildSites";
+    });
+
+    assert.equal(definitions.length, 1, "find_build_sites is registered once");
+
+    const properties = definitions[0].inputSchema.properties || {};
+    const limit = String((properties.limit as { description?: string }).description);
+
+    assert.match(limit, /sizeable/, "how large one site is stays: it is a fact about the result");
+    assert.match(limit, /default 3, max 50/, "and so do the bounds");
+    assert.doesNotMatch(limit, /ask for more only|only when you need/,
+        "how many alternatives to look at is the model's call");
 });
