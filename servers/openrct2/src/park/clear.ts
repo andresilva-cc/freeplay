@@ -6,6 +6,7 @@ const STEP_DELAY_MS = 200;
 export interface ClearAreaOutcome {
     ok: boolean;
     tilesRequested: number;
+    /** Tiles still not bare: occupied by something unremovable, or outside the park. */
     tilesStillBlocked: number;
     detail: string;
 }
@@ -58,23 +59,35 @@ export function clearArea(cx: number, cy: number, size: number, done: (outcome: 
     context.setTimeout(function () {
         const grid = readMapGrid();
         let blocked = 0;
+        let unowned = 0;
 
         for (let i = 0; i < tiles.length; i++) {
             const cell = grid.at(tiles[i].x, tiles[i].y);
 
-            if (!cell || !cell.clear) {
+            if (!cell || !cell.owned) {
+                unowned++;
+                continue;
+            }
+
+            if (!cell.clear) {
                 blocked++;
             }
         }
 
         done({
-            ok: blocked === 0,
+            ok: blocked === 0 && unowned === 0,
             tilesRequested: tiles.length,
-            tilesStillBlocked: blocked,
-            detail: blocked === 0
+            tilesStillBlocked: blocked + unowned,
+            detail: (blocked === 0 && unowned === 0
                 ? "Cleared " + String(tiles.length) + " tiles."
-                : String(blocked) + " of " + String(tiles.length) + " tiles are still occupied by something that is not"
-                    + " scenery - a ride, a path or a park structure. Those have to be removed on their own terms."
+                : "")
+                + (unowned > 0
+                    ? String(unowned) + " of " + String(tiles.length) + " tiles are outside the park's land."
+                    : "")
+                + (blocked > 0
+                    ? " " + String(blocked) + " are occupied by something that is not scenery - a ride, a path or a"
+                        + " park structure. Those have to be removed on their own terms."
+                    : "")
         });
     }, STEP_DELAY_MS);
 }

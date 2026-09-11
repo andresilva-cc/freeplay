@@ -73,6 +73,15 @@ export class PathTools {
             }
         }
 
+        if (waypoints.length === 1) {
+            return {
+                deferred: true,
+                start: function (resolve) {
+                    resolve({ ok: false, error: "waypoints needs at least two points: where the path starts and ends." });
+                }
+            };
+        }
+
         const request = {
             points: waypoints.length >= 2
                 ? waypoints

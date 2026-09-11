@@ -20,7 +20,9 @@ const MAX_RESULT_CHARS = 16000;
  * promised, which is worse than no sanitising at all.
  */
 const TOOL_MAX_DEPTH = 12;
-const TOOL_MAX_NODES = 20000;
+const TOOL_MAX_NODES = 40000;
+const TOOL_MAX_ARRAY_ITEMS = 500;
+const TOOL_MAX_OBJECT_KEYS = 200;
 
 export interface ScriptSuccess {
     ok: true;
@@ -38,6 +40,25 @@ export type ScriptOutcome = ScriptSuccess | ScriptFailure;
 interface Budget {
     nodes: number;
 }
+
+/** The caps a sanitise pass runs under. */
+interface Limits {
+    depth: number;
+    arrayItems: number;
+    objectKeys: number;
+}
+
+const EVALUATE_LIMITS: Limits = {
+    depth: MAX_DEPTH,
+    arrayItems: MAX_ARRAY_ITEMS,
+    objectKeys: MAX_OBJECT_KEYS
+};
+
+const TOOL_LIMITS: Limits = {
+    depth: TOOL_MAX_DEPTH,
+    arrayItems: TOOL_MAX_ARRAY_ITEMS,
+    objectKeys: TOOL_MAX_OBJECT_KEYS
+};
 
 function describeError(error: unknown): string {
     const candidate = error as { name?: unknown; message?: unknown };
@@ -95,15 +116,19 @@ function collectKeys(value: object): string[] {
 }
 
 export function sanitizeValue(value: unknown): unknown {
-    return sanitize(value, 0, [], { nodes: MAX_NODES }, MAX_DEPTH);
+    return sanitize(value, 0, [], { nodes: MAX_NODES }, EVALUATE_LIMITS);
 }
 
-/** Sanitise a tool's own result, preserving the structure the tool intended. */
+/**
+ * Sanitise a tool's own result, preserving the structure the tool intended. Truncating
+ * here would silently drop rows a tool promised: `list_ride_objects` returned 40 of 41
+ * rides with a string in place of the last, while its own count said 41.
+ */
 export function sanitizeToolResult(value: unknown): unknown {
-    return sanitize(value, 0, [], { nodes: TOOL_MAX_NODES }, TOOL_MAX_DEPTH);
+    return sanitize(value, 0, [], { nodes: TOOL_MAX_NODES }, TOOL_LIMITS);
 }
 
-function sanitize(value: unknown, depth: number, stack: object[], budget: Budget, maxDepth: number): unknown {
+function sanitize(value: unknown, depth: number, stack: object[], budget: Budget, limits: Limits): unknown {
     if (budget.nodes <= 0) {
         return "<truncated: too many values>";
     }
@@ -140,7 +165,7 @@ function sanitize(value: unknown, depth: number, stack: object[], budget: Budget
         }
     }
 
-    if (depth >= maxDepth) {
+    if (depth >= limits.depth) {
         return Array.isArray(value) ? "<array depth limit>" : "<object depth limit>";
     }
 
@@ -149,10 +174,10 @@ function sanitize(value: unknown, depth: number, stack: object[], budget: Budget
     try {
         if (Array.isArray(value)) {
             const items: unknown[] = [];
-            const limit = Math.min(value.length, MAX_ARRAY_ITEMS);
+            const limit = Math.min(value.length, limits.arrayItems);
 
             for (let i = 0; i < limit; i++) {
-                items.push(sanitize(value[i], depth + 1, stack, budget, maxDepth));
+                items.push(sanitize(value[i], depth + 1, stack, budget, limits));
             }
 
             if (value.length > limit) {
@@ -165,7 +190,7 @@ function sanitize(value: unknown, depth: number, stack: object[], budget: Budget
         const source = value as Record<string, unknown>;
         const keys = collectKeys(source);
         const output: Record<string, unknown> = {};
-        const limit = Math.min(keys.length, MAX_OBJECT_KEYS);
+        const limit = Math.min(keys.length, limits.objectKeys);
 
         for (let i = 0; i < limit; i++) {
             const key = keys[i];
@@ -182,7 +207,7 @@ function sanitize(value: unknown, depth: number, stack: object[], budget: Budget
                 continue;
             }
 
-            output[key] = sanitize(propertyValue, depth + 1, stack, budget, maxDepth);
+            output[key] = sanitize(propertyValue, depth + 1, stack, budget, limits);
         }
 
         if (keys.length > limit) {
@@ -237,7 +262,7 @@ export function runScript(code: string): ScriptOutcome {
         return { ok: false, error: describeError(error) };
     }
 
-    const sanitized = sanitize(value, 0, [], { nodes: MAX_NODES }, MAX_DEPTH);
+    const sanitized = sanitize(value, 0, [], { nodes: MAX_NODES }, EVALUATE_LIMITS);
     const serialized = JSON.stringify(sanitized);
 
     if (typeof serialized === "string" && serialized.length > MAX_RESULT_CHARS) {

@@ -94,7 +94,9 @@ function accessAt(
 
     const cell = grid.at(tile.x, tile.y);
 
-    if (!cell || !cell.owned || !cell.clear || cell.baseZ !== z) {
+    // `clearable`, not `clear`: find_build_sites offers tiles with scenery on them and
+    // flags needsClearing. Demanding bare ground here rejected the tool's own advice.
+    if (!cell || !cell.owned || !cell.clearable || cell.baseZ !== z) {
         return null;
     }
 
@@ -152,7 +154,8 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                 step: "site",
                 ok: false,
                 detail: "The entrance or exit tile is not a clear, level, owned tile touching the footprint."
-                    + " Use an option from this site's `access` list."
+                    + " Use an option from this site's `access` list, and clear_scenery it first if the"
+                + " option says needsClearing."
             });
             return finish(false, null, null, false);
         }

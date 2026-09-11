@@ -88,9 +88,15 @@ export function findParkEntranceTiles(): Tile[] {
 /**
  * Every path tile guests can walk to from the park entrance.
  *
- * A queue can be joined but not walked through: guests queue along it to reach one ride
- * and cannot use it as a corridor to anywhere else. So queue tiles are reachable but are
- * never expanded from, and anything lying beyond one is correctly treated as cut off.
+ * Queues are one-way in a particular sense: a guest walks the length of a queue to reach
+ * the ride at the end of it, but cannot cut through one to get anywhere else. So a queue
+ * tile expands only to other queue tiles — following the line to its door — and never
+ * back out onto ordinary path.
+ *
+ * Getting this wrong in either direction is expensive. Treating a queue as ordinary path
+ * marks everything behind it reachable when it is not; refusing to expand from it at all
+ * marks every ride with more than a one-tile queue unreachable, which is worse, because
+ * that is the normal case.
  */
 export function walkableFromParkEntrance(): Record<string, boolean> {
     const gate = findParkEntranceTiles();
@@ -111,19 +117,22 @@ export function walkableFromParkEntrance(): Record<string, boolean> {
 
     while (queue.length > 0) {
         const current = queue.shift() as Tile;
-
-        if (isQueue(current.x, current.y)) {
-            continue;
-        }
+        const alongQueue = isQueue(current.x, current.y);
 
         for (let i = 0; i < NEIGHBOURS.length; i++) {
             const x = current.x + NEIGHBOURS[i].dx;
             const y = current.y + NEIGHBOURS[i].dy;
 
-            if (!seen[key(x, y)] && isPath(x, y)) {
-                seen[key(x, y)] = true;
-                queue.push({ x: x, y: y });
+            if (seen[key(x, y)] || !isPath(x, y)) {
+                continue;
             }
+
+            if (alongQueue && !isQueue(x, y)) {
+                continue;
+            }
+
+            seen[key(x, y)] = true;
+            queue.push({ x: x, y: y });
         }
     }
 

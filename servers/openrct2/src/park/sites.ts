@@ -181,7 +181,12 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
     const grid = readMapGrid();
     const paths = collectPathTiles(grid);
     const rideTiles = collectRideTiles();
-    const rotations = typeof rotation === "number" ? [rotation % 4] : [0, 1];
+    // A square footprint occupies the same tiles either way round, so searching both
+    // finds every position twice and doubles totalFound.
+    const squareFootprint = shape.width === shape.depth;
+    const rotations = typeof rotation === "number"
+        ? [rotation % 4]
+        : (squareFootprint ? [0] : [0, 1]);
     const found: BuildSite[] = [];
 
     for (let r = 0; r < rotations.length; r++) {

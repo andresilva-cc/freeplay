@@ -122,3 +122,37 @@ test("no route exists across unowned land", function () {
         assert.equal(routeToParkNetwork({ x: 10, y: 9 }, 96, walkableFromParkEntrance()), null);
     });
 });
+
+test("a guest can walk the length of a queue to its ride", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+        // A four-tile queue leading away from the path, as any real ride has.
+        game.addPath(10, 6, true);
+        game.addPath(10, 7, true);
+        game.addPath(10, 8, true);
+        game.addPath(10, 9, true);
+    }, function () {
+        const walkable = walkableFromParkEntrance();
+
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 6 }), true, "the near end");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 9 }), true, "and the ride door at the far end");
+    });
+});
+
+test("a queue is still not a shortcut between two paths", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+        game.addPath(10, 6, true);
+        game.addPath(10, 7, true);
+        game.addPath(10, 8);          // ordinary path on the far side of the queue
+        game.addPath(10, 9);
+    }, function () {
+        const walkable = walkableFromParkEntrance();
+
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 7 }), true, "the queue itself");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 8 }), false, "but not through it to open path");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 9 }), false);
+    });
+});
