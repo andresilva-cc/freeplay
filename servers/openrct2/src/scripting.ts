@@ -3,12 +3,24 @@
  * back into something JSON-serialisable and small enough to put in a prompt.
  */
 
+/**
+ * Limits for `evaluate`, where the model can ask for the whole world by accident.
+ */
 const MAX_DEPTH = 4;
 const MAX_ARRAY_ITEMS = 40;
 const MAX_OBJECT_KEYS = 60;
 const MAX_STRING_LENGTH = 1000;
 const MAX_NODES = 2000;
 const MAX_RESULT_CHARS = 16000;
+
+/**
+ * Limits for results a tool composed itself. These are already shaped deliberately, so
+ * the sanitiser is here only to catch native objects, cycles and throwing getters - not
+ * to trim them. A tight depth limit here silently empties nested fields the tool
+ * promised, which is worse than no sanitising at all.
+ */
+const TOOL_MAX_DEPTH = 12;
+const TOOL_MAX_NODES = 20000;
 
 export interface ScriptSuccess {
     ok: true;
@@ -83,10 +95,15 @@ function collectKeys(value: object): string[] {
 }
 
 export function sanitizeValue(value: unknown): unknown {
-    return sanitize(value, 0, [], { nodes: MAX_NODES });
+    return sanitize(value, 0, [], { nodes: MAX_NODES }, MAX_DEPTH);
 }
 
-function sanitize(value: unknown, depth: number, stack: object[], budget: Budget): unknown {
+/** Sanitise a tool's own result, preserving the structure the tool intended. */
+export function sanitizeToolResult(value: unknown): unknown {
+    return sanitize(value, 0, [], { nodes: TOOL_MAX_NODES }, TOOL_MAX_DEPTH);
+}
+
+function sanitize(value: unknown, depth: number, stack: object[], budget: Budget, maxDepth: number): unknown {
     if (budget.nodes <= 0) {
         return "<truncated: too many values>";
     }
@@ -123,7 +140,7 @@ function sanitize(value: unknown, depth: number, stack: object[], budget: Budget
         }
     }
 
-    if (depth >= MAX_DEPTH) {
+    if (depth >= maxDepth) {
         return Array.isArray(value) ? "<array depth limit>" : "<object depth limit>";
     }
 
@@ -135,7 +152,7 @@ function sanitize(value: unknown, depth: number, stack: object[], budget: Budget
             const limit = Math.min(value.length, MAX_ARRAY_ITEMS);
 
             for (let i = 0; i < limit; i++) {
-                items.push(sanitize(value[i], depth + 1, stack, budget));
+                items.push(sanitize(value[i], depth + 1, stack, budget, maxDepth));
             }
 
             if (value.length > limit) {
@@ -165,7 +182,7 @@ function sanitize(value: unknown, depth: number, stack: object[], budget: Budget
                 continue;
             }
 
-            output[key] = sanitize(propertyValue, depth + 1, stack, budget);
+            output[key] = sanitize(propertyValue, depth + 1, stack, budget, maxDepth);
         }
 
         if (keys.length > limit) {
@@ -220,7 +237,7 @@ export function runScript(code: string): ScriptOutcome {
         return { ok: false, error: describeError(error) };
     }
 
-    const sanitized = sanitize(value, 0, [], { nodes: MAX_NODES });
+    const sanitized = sanitize(value, 0, [], { nodes: MAX_NODES }, MAX_DEPTH);
     const serialized = JSON.stringify(sanitized);
 
     if (typeof serialized === "string" && serialized.length > MAX_RESULT_CHARS) {

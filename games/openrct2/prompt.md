@@ -15,7 +15,11 @@ Then decide what is limiting the park, and fix that one thing.
 
 **`park_status`** — objective, cash, loan, rating, guests, entrance fee, profit for the
 last four months, staff, and every ride with its price, ratings, customers, profit,
-queue and breakdowns. Read it before deciding anything.
+queue and breakdowns. It also gives `paths`: where the park entrance is, and the paths
+guests can reach from it. Those are the tiles a new path or queue has to join.
+
+Read it before deciding anything, and read it again after you build something. It is the
+only way to find out whether what you just did worked.
 
 **`guest_feedback`** — what guests are thinking, counted. The game telling you what is
 wrong: cannot find a ride, too expensive, hungry, lost, going home.
@@ -39,6 +43,8 @@ chose, sets the price, opens it. It builds no paths.
 **`build_path`** — a path or a queue between two tiles, routing around obstacles.
 
 **`hire_staff`** — handymen, mechanics, security, entertainers. Each draws wages monthly.
+Rides break down on their own and stay broken until a mechanic walks to them, so a park
+with rides and no mechanic will quietly stop earning.
 
 **`evaluate`** — runs JavaScript inside the game. Everything else the API can do goes
 through here: `park`, `map`, `date`, `scenario`, `context.executeAction(...)`. Use it
@@ -61,6 +67,9 @@ and earn nothing.
 
 Then check `park_status`: the ride should show `hasQueue: true`. If it does not, guests
 will crowd around it and never get on.
+
+Use the `access` options the site gave you. They are the only tiles where a building
+fits; a tile you picked yourself will be rejected.
 
 Things that will cost you a ride if you forget them:
 
@@ -88,7 +97,7 @@ Time passes while you think. State you read is a snapshot, not a freeze-frame.
 
 1. Read the objective first and know what you are being scored on.
 2. Find the one thing limiting the park now — no rides, closed park, unreachable ride,
-   a price nobody will pay, a rating falling because paths are filthy — and fix it.
+   a broken ride with no mechanic, a price nobody will pay — and fix it.
 3. Verify it landed. Tools tell you when they failed; read what they say.
 4. Prefer few good decisions over many speculative ones. Every call costs you context
    you will want later.

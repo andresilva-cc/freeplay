@@ -1,4 +1,10 @@
 import { flatRideShape } from "./flatRides.js";
+import { findParkEntranceTiles, walkableFromParkEntrance } from "./paths.js";
+
+/** Bit positions in Ride.flags, from OpenRCT2's RideFlag enum. */
+const RIDE_FLAG_BROKEN_DOWN = 1 << 7;
+const RIDE_FLAG_QUEUE_FULL = 1 << 9;
+const RIDE_FLAG_CRASHED = 1 << 10;
 
 export interface RideSummary {
     id: number;
@@ -17,10 +23,25 @@ export interface RideSummary {
     exit: { x: number; y: number } | null;
     downtime: number;
     reliability: number;
+    /** Broken down right now. It earns nothing until a mechanic reaches it. */
+    brokenDown: boolean;
+    crashed: boolean;
+    queueFull: boolean;
+}
+
+export interface PathNetwork {
+    /** Tiles of the park entrance itself. Guests enter here. */
+    entrance: { x: number; y: number }[];
+    /** How many path tiles guests can actually walk to from the entrance. */
+    reachableTiles: number;
+    /** A spread of those tiles, as targets for build_path. */
+    reachableSample: { x: number; y: number }[];
 }
 
 export interface ParkStatus {
     scenario: { name: string; objective: object; status: string };
+    /** Where guests come in, and which paths they can reach. Paths must join this. */
+    paths: PathNetwork;
     parkOpen: boolean;
     date: { year: number; month: number; day: number };
     cash: number;
@@ -95,7 +116,10 @@ export function readParkStatus(): ParkStatus {
             entrance: entrance ? { x: entrance.x / 32, y: entrance.y / 32 } : null,
             exit: exit ? { x: exit.x / 32, y: exit.y / 32 } : null,
             downtime: ride.downtime,
-            reliability: ride.reliability
+            reliability: ride.reliability,
+            brokenDown: (ride.flags & RIDE_FLAG_BROKEN_DOWN) !== 0,
+            crashed: (ride.flags & RIDE_FLAG_CRASHED) !== 0,
+            queueFull: (ride.flags & RIDE_FLAG_QUEUE_FULL) !== 0
         };
     });
 
@@ -115,8 +139,23 @@ export function readParkStatus(): ParkStatus {
         }
     }
 
+    const walkable = walkableFromParkEntrance();
+    const reachableKeys = Object.keys(walkable);
+    const sample: { x: number; y: number }[] = [];
+    const stride = Math.max(1, Math.floor(reachableKeys.length / 12));
+
+    for (let i = 0; i < reachableKeys.length; i += stride) {
+        const parts = reachableKeys[i].split(",");
+        sample.push({ x: Number(parts[0]), y: Number(parts[1]) });
+    }
+
     return {
         scenario: { name: scenario.name, objective: scenario.objective, status: scenario.status },
+        paths: {
+            entrance: findParkEntranceTiles(),
+            reachableTiles: reachableKeys.length,
+            reachableSample: sample
+        },
         parkOpen: park.getFlag("open"),
         date: { year: date.year, month: date.month, day: date.day },
         cash: park.cash,

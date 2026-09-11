@@ -1,7 +1,7 @@
 import type { HttpRequest, RequestContext } from "./http/types.js";
 import { HttpResponse } from "./http/response.js";
 import { BUILD_ID } from "./buildInfo.js";
-import { sanitizeValue } from "./scripting.js";
+import { sanitizeToolResult } from "./scripting.js";
 import { getMcpTools, invokeMcpTool, isDeferredMcpResult } from "./tools/index.js";
 import type { DeferredMcpResult, McpToolDefinition, McpToolSchema } from "./tools/index.js";
 
@@ -200,7 +200,7 @@ function validateAgainstSchema(value: unknown, schema: McpToolSchema): Validatio
  * serialise as {}, silently emptying a field the model was told to rely on.
  */
 function createToolResult(rawResult: unknown): Record<string, unknown> {
-    const result = sanitizeValue(rawResult);
+    const result = sanitizeToolResult(rawResult);
 
     if (isRecord(result)) {
         return {

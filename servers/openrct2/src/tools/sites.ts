@@ -21,7 +21,7 @@ export class SiteTools {
             properties: {
                 rideObject: { type: "integer", description: "Index from list_ride_objects." },
                 rotation: { type: "integer", description: "Force one orientation, 0-3. Omit to see both." },
-                limit: { type: "integer", description: "How many sites to return (default 10, max 50)." }
+                limit: { type: "integer", description: "How many sites to return (default 3, max 50). Each one is sizeable, so ask for more only when you need the choice." }
             },
             required: ["rideObject"],
             additionalProperties: false
@@ -35,7 +35,7 @@ export class SiteTools {
     })
     public findBuildSites(args: Record<string, unknown>) {
         const rideObject = typeof args.rideObject === "number" ? Math.floor(args.rideObject) : -1;
-        const limit = typeof args.limit === "number" ? Math.floor(args.limit) : 10;
+        const limit = typeof args.limit === "number" ? Math.floor(args.limit) : 3;
         const rotation = typeof args.rotation === "number" ? Math.floor(args.rotation) : undefined;
 
         return findBuildSites(rideObject, Math.max(1, Math.min(limit, 50)), rotation);

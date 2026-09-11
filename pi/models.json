@@ -14,7 +14,7 @@
           "name": "Qwen3.6 35B-A3B (4bit, local)",
           "reasoning": true,
           "input": ["text"],
-          "contextWindow": 32768,
+          "contextWindow": 65536,
           "maxTokens": 4096,
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
         },
@@ -23,7 +23,7 @@
           "name": "Gemma 4 26B-A4B (5bit QAT, local)",
           "reasoning": false,
           "input": ["text"],
-          "contextWindow": 32768,
+          "contextWindow": 65536,
           "maxTokens": 4096,
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
         }

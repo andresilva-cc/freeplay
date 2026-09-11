@@ -3,6 +3,9 @@ import { flatRideShape, footprintOffsets, perimeterOffsets } from "./flatRides.j
 import type { MapGrid } from "./map.js";
 import type { FlatRideShape, Offset } from "./flatRides.js";
 
+/** How many door positions to return per site. */
+const MAX_ACCESS_OPTIONS = 6;
+
 export interface DoorTile {
     x: number;
     y: number;
@@ -29,7 +32,10 @@ export interface BuildSite {
     rotation: number;
     /** Tiles of the footprint holding scenery. 0 means bare ground; otherwise clear it first. */
     sceneryToClear: number;
+    /** Door positions, nearest a path first. Not exhaustive for large footprints. */
     access: AccessOption[];
+    /** How many positions exist in total, before this list was trimmed. */
+    accessTotal: number;
     /** The shortest door-to-footpath distance among those options. */
     pathDistance: number;
 }
@@ -183,12 +189,15 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     continue;
                 }
 
-                let shortest = Infinity;
-                for (let i = 0; i < options.length; i++) {
-                    if (options[i].pathDistance < shortest) {
-                        shortest = options[i].pathDistance;
-                    }
-                }
+                // Every option is read by the model on every call, so return the ones
+                // nearest a path rather than all twelve sides of a large footprint.
+                options.sort(function (left, right) {
+                    return left.pathDistance - right.pathDistance;
+                });
+
+                const shown = options.slice(0, MAX_ACCESS_OPTIONS);
+
+                const shortest = shown[0].pathDistance;
 
                 if (shortest === Infinity) {
                     continue;
@@ -200,7 +209,8 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     z: area.z,
                     rotation: turn,
                     sceneryToClear: area.scenery,
-                    access: options,
+                    access: shown,
+                    accessTotal: options.length,
                     pathDistance: shortest
                 });
             }

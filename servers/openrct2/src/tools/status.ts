@@ -12,6 +12,9 @@ export class StatusTools {
             "ratings, customers, profit, queue time, breakdown record, and whether a queue is actually bound to",
             "its entrance. `hasQueue: false` means guests cannot board it however finished it looks.",
             "Money is in tenths of a currency unit: 1000 means 100.00. Ratings are fixed-point: 652 means 6.52.",
+            "`paths` gives the park entrance tiles and a sample of the paths guests can reach from it:",
+            "those are the targets a new path or queue has to join up with.",
+            "`brokenDown` on a ride means it is earning nothing until a mechanic gets to it — hire one.",
             "Call this before deciding anything; it is cheaper than piecing the same picture together with evaluate."
         ].join(" "),
         inputSchema: { type: "object", additionalProperties: false },
