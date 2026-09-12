@@ -12,6 +12,7 @@ import { PathRemoveTools } from "./pathRemove.js";
 import { SiteTools } from "./sites.js";
 import { StaffTools } from "./staff.js";
 import { StatusTools } from "./status.js";
+import { WaitTools } from "./wait.js";
 import type { McpToolAction, McpToolClass, McpToolDefinition } from "./types.js";
 
 /**
@@ -33,7 +34,8 @@ export function getMcpToolControllers(): McpToolClass[] {
         PathRemoveTools,
         SiteTools,
         StaffTools,
-        StatusTools
+        StatusTools,
+        WaitTools
     ];
 }
 

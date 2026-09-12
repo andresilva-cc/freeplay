@@ -120,7 +120,9 @@ Time runs while you think, so what you read is a snapshot, not a freeze-frame. H
 runs is `set_game_speed`, whose `speed` is a setting and not a multiplier, and while it is
 `paused` no scenario time passes at all. `park_status` carries both, as `speed` and
 `paused`, so a stopped clock is something the park reports rather than something nothing
-mentions.
+mentions. Nothing asks you anything again unless you call a tool, so a turn that ends by
+letting the park run and checking back later ends the run there instead; `wait` is the call
+that lets the clock run for a few real seconds and reports what moved while it did.
 
 The record of earlier turns does not survive either. When the context fills it is replaced
 by a written summary, and the summaries are additive: each carries the last one's facts

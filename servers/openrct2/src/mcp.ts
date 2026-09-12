@@ -631,12 +631,14 @@ export class McpServer {
                 description: "MCP bridge into a running OpenRCT2 game."
             },
             instructions: [
-                "Fifteen tools reach the running game.",
+                "Sixteen tools reach the running game.",
                 "`park_status` returns the whole park in one call;",
                 "`guest_feedback`, `list_ride_objects`, `find_build_sites` and `view_map` read further.",
                 "`clear_scenery`, `build_flat_ride`, `build_path`, `remove_path`, `buy_land`, `operate_ride`,",
                 "`open_park`, `hire_staff` and `set_game_speed` act,",
                 "and answer once the work has landed a few ticks later.",
+                "`wait` lets the clock run for a few seconds without touching the park,",
+                "and reports what moved while it ran.",
                 "`evaluate` runs plugin-API JavaScript and is the escape hatch for what no typed tool covers,",
                 "such as tracked rides."
             ].join(" ")

@@ -271,12 +271,33 @@ export class FakeGame {
         objective: { type: "guests_by", guests: 250, year: 4 },
         status: "inProgress"
     };
-    /** The in-game date, as `date` reports it. Month is the index within the year. */
-    public readonly date = { year: 1, month: 0, day: 1 };
+    /**
+     * The in-game date, as `date` reports it. Month is the index within the year, 0 being
+     * March. Every field is derived from the tick count by `advanceTicks`, so nothing can
+     * move the day without the clock having actually run.
+     */
+    public readonly date = {
+        ticksElapsed: 0,
+        monthsElapsed: 0,
+        yearsElapsed: 0,
+        monthProgress: 0,
+        year: 1,
+        month: 0,
+        day: 1
+    };
     /** Long waits, held rather than fired. Call `fireWatchdogs()` to test a timeout. */
     public readonly watchdogs: (() => void)[] = [];
     /** Waits longer than this are treated as watchdogs rather than ticks. */
     public static readonly WATCHDOG_THRESHOLD_MS = 5000;
+    /** Game updates per real second at speed 1: OpenRCT2's GAME_UPDATE_FPS. */
+    public static readonly TICKS_PER_SECOND = 40;
+    /** `monthProgress` is incremented by 4 per tick and a month ends at 65536. */
+    public static readonly MONTH_PROGRESS_PER_TICK = 4;
+    public static readonly MONTH_PROGRESS_PER_MONTH = 65536;
+    /** Months in a game year, March to October. */
+    public static readonly MONTHS_PER_YEAR = 8;
+    /** OpenRCT2's `days_in_month` from Date.cpp, in the same order. */
+    public static readonly DAYS_IN_MONTH = [31, 30, 31, 30, 31, 31, 30, 31];
 
     private readonly tiles: { elements: FakeElement[] }[];
     private nextRideId = 0;
@@ -496,6 +517,54 @@ export class FakeGame {
         while (this.watchdogs.length > 0) {
             (this.watchdogs.shift() as () => void)();
         }
+    }
+
+    /**
+     * Run the simulation for a number of game ticks, exactly as OpenRCT2's `DateUpdate`
+     * does: `monthProgress` climbs by 4 a tick, a month ends at 65536, and the day of the
+     * month is how far through it that leaves us. Nothing else here moves the date, so a
+     * test that sees a later day has seen the clock run.
+     */
+    public advanceTicks(ticks: number): void {
+        if (ticks <= 0) {
+            return;
+        }
+
+        this.date.ticksElapsed += ticks;
+        this.date.monthProgress += ticks * FakeGame.MONTH_PROGRESS_PER_TICK;
+
+        while (this.date.monthProgress >= FakeGame.MONTH_PROGRESS_PER_MONTH) {
+            this.date.monthProgress -= FakeGame.MONTH_PROGRESS_PER_MONTH;
+            this.date.monthsElapsed++;
+        }
+
+        this.date.yearsElapsed = Math.floor(this.date.monthsElapsed / FakeGame.MONTHS_PER_YEAR);
+        this.date.year = this.date.yearsElapsed + 1;
+        this.date.month = this.date.monthsElapsed % FakeGame.MONTHS_PER_YEAR;
+        this.date.day = Math.floor(
+            this.date.monthProgress * FakeGame.DAYS_IN_MONTH[this.date.month]
+                / FakeGame.MONTH_PROGRESS_PER_MONTH
+        ) + 1;
+    }
+
+    /**
+     * Real time passing, which is what a tool's `context.setTimeout` is denominated in.
+     *
+     * How much of the simulation that buys is the speed setting: the loop runs
+     * `1 << (speed - 1)` updates per frame, so a second of real time at speed 4 advances
+     * the game eight times as far as it does at speed 1. A paused game advances not at
+     * all, which is the whole reason waiting through a pause is a wasted call.
+     */
+    public advanceRealMilliseconds(milliseconds: number): void {
+        if (this.gameValues.paused || milliseconds <= 0) {
+            return;
+        }
+
+        const updatesPerTick = 1 << (this.gameValues.speed - 1);
+
+        this.advanceTicks(Math.floor(
+            milliseconds / 1000 * FakeGame.TICKS_PER_SECOND * updatesPerTick
+        ));
     }
 
     public applyQueuedActions(): void {
@@ -1023,6 +1092,9 @@ function installGlobals(game: FakeGame): () => void {
          * The real game applies queued actions between ticks, so do that before the wait
          * ends. Long waits are watchdogs — a tool's 30 second timeout — and must not fire
          * just because work was queued; they are held so a test can trigger them itself.
+         *
+         * The delay is real time, and real time is what the simulation runs on, so the
+         * clock moves by it too. Without that a tool could claim a wait it never took.
          */
         setTimeout: function (callback: () => void, delay?: number) {
             if (typeof delay === "number" && delay > FakeGame.WATCHDOG_THRESHOLD_MS) {
@@ -1030,6 +1102,7 @@ function installGlobals(game: FakeGame): () => void {
                 return game.watchdogs.length;
             }
 
+            game.advanceRealMilliseconds(typeof delay === "number" ? delay : 0);
             game.applyQueuedActions();
             callback();
             return 0;

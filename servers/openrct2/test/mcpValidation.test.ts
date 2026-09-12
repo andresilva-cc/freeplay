@@ -329,7 +329,8 @@ test("a request without a session id is refused rather than served", function ()
 });
 
 const COUNT_WORDS: Record<string, number | undefined> = {
-    eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15
+    eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
+    sixteen: 16
 };
 
 test("the instructions name every tool, and count them correctly", function () {

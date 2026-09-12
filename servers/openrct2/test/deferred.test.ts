@@ -63,6 +63,8 @@ interface DeferredClock {
 interface FakeTimer {
     handle: number;
     callback: () => void;
+    /** How long the tool asked to wait. Real time, which is what the game's clock runs on. */
+    delay: number;
 }
 
 function installClock(game: FakeGame): DeferredClock {
@@ -81,7 +83,11 @@ function installClock(game: FakeGame): DeferredClock {
     // Handles are unique across both queues: a cancelled watchdog must not take a tool's
     // pending tick with it.
     scope.context.setTimeout = function (callback: () => void, delay?: number): number {
-        const timer = { handle: ++nextHandle, callback: callback };
+        const timer = {
+            handle: ++nextHandle,
+            callback: callback,
+            delay: typeof delay === "number" ? delay : 0
+        };
 
         if (typeof delay === "number" && delay > FakeGame.WATCHDOG_THRESHOLD_MS) {
             watchdogs.push(timer);
@@ -114,6 +120,10 @@ function installClock(game: FakeGame): DeferredClock {
             }
 
             const timer = queue.shift() as FakeTimer;
+
+            // The delay is real time and the simulation runs on real time, so letting a
+            // timer come due moves the game's clock by exactly what it waited for.
+            game.advanceRealMilliseconds(timer.delay);
             game.applyQueuedActions();
 
             try {
@@ -523,6 +533,41 @@ test("a deferred tool's failure comes back as a result, not a broken connection"
     });
 });
 
+/**
+ * The failure this tool was added for happened one layer up from the tool: a turn ended
+ * with the model deciding to let the park run, the loop had nothing to continue on, and
+ * the run stopped. So the thing worth pinning here is not that `wait` waits - wait.test.ts
+ * does that against the game's own clock - but that a call whose entire job is to take
+ * several seconds still comes back as an answer on the socket, inside the watchdog, rather
+ * than as the timeout error that a 30 second guard turns a too-long wait into.
+ */
+test("a wait answers on the socket inside the watchdog rather than timing out", function () {
+    withPark(function (app, game, clock) {
+        const headers = openSession(app);
+        const socket = new FakeSocket();
+
+        const call = callTool(app, headers, socket, 2, "wait", { seconds: 3 });
+
+        assert.equal(call.hijacked, true, "a wait spans ticks, so it takes the connection over");
+        assert.equal(socket.written, "", "and writes nothing until the game has actually run");
+        assert.equal(clock.watchdogs, 1, "the guard is armed while it runs");
+
+        clock.runSteps();
+
+        const structured = soleToolResult(socket, 2).structuredContent as {
+            ok: boolean;
+            seconds: number;
+        };
+
+        assert.equal(structured.ok, true, "the answer is a result, not the watchdog's error");
+        assert.equal(structured.seconds, 3);
+        assert.equal(game.date.ticksElapsed, 120, "three real seconds of simulation at speed 1");
+        assert.equal(clock.watchdogs, 0, "the watchdog was cancelled by the answer, not left to fire");
+        assert.equal(clock.timerIsTheGames, true, "and the game's timer was handed back");
+        assert.deepEqual(clock.tickErrors, []);
+    });
+});
+
 test("every mutating tool is reachable through tools/call", function () {
     withPark(function (app) {
         const headers = openSession(app);
@@ -536,7 +581,7 @@ test("every mutating tool is reachable through tools/call", function () {
         assert.deepEqual(names, [
             "build_flat_ride", "build_path", "buy_land", "clear_scenery", "evaluate", "find_build_sites",
             "guest_feedback", "hire_staff", "list_ride_objects", "open_park", "operate_ride",
-            "park_status", "remove_path", "set_game_speed", "view_map"
+            "park_status", "remove_path", "set_game_speed", "view_map", "wait"
         ]);
     });
 });

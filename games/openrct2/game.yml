@@ -60,13 +60,14 @@ agent:
   # The one system prompt. scripts/run.sh copies it to pi/SYSTEM.md on every run, and
   # that copy is gitignored: edit this file, never the copy.
   system_prompt: games/openrct2/prompt.md
-  # Fourteen, matching src/tools/index.ts. Every one is re-read by the model each turn.
+  # Sixteen, matching src/tools/index.ts. Every one is re-read by the model each turn.
   tools:
     # Perception: what a player reads off the screen.
     - park_status
     - guest_feedback
     - list_ride_objects
     - find_build_sites
+    - view_map
     # Action: the mechanics of carrying out a decision. These are the deferred ones —
     # they act, then answer once the work has landed a few ticks later.
     - clear_scenery
@@ -77,7 +78,9 @@ agent:
     - open_park
     - hire_staff
     - buy_land
-    # The clock. A human player controls game speed, so the model does too.
+    # The clock. A human player controls game speed and spends time watching, so the
+    # model does both. wait is deferred like the action tools above.
     - set_game_speed
+    - wait
     # Everything else.
     - evaluate
