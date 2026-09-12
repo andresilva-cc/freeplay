@@ -7,16 +7,38 @@ import type { FlatRideShape, Offset } from "./flatRides.js";
 /** How many door positions to return per site, after every side is represented. */
 export const MAX_ACCESS_OPTIONS = 8;
 
+/** A run of footpath the park gate reaches nothing of, named the way park_status names it. */
+export interface StrandedIsland {
+    /** Footpath tiles in the fragment. */
+    tiles: number;
+    /** The two corners it spans, which is how park_status lists it under `paths.islands`. */
+    fromX: number;
+    fromY: number;
+    toX: number;
+    toY: number;
+}
+
 export interface DoorTile {
     x: number;
     y: number;
     /** True when this tile is already a footpath, so a queue here would replace it. */
     isExistingPath: boolean;
+    /** A guest can walk here from the park gate today - the same question park_status asks
+     *  of a ride it has already built, under the same name. False on bare ground, which
+     *  nothing leads to yet and `pathDistance` prices; false as well on a footpath the gate
+     *  cannot reach, which looks identical to the main walk from the tile itself and takes
+     *  no guests. Measured over the game's own footpath edges, so a line the game has cut -
+     *  a queue another ride claimed - reads as cut here too. */
+    guestsCanReach: boolean;
     /** True when a queue already stands here bound to no ride - what a demolished ride
      *  leaves behind. It is not in the way: placing the entrance chains it to the new ride,
      *  so the queue is done before it is built. A queue bound to another ride is a
      *  different thing, and those tiles are not offered at all. */
     hasUnboundQueue: boolean;
+    /** Set only when this tile carries a footpath the gate cannot reach: the fragment it
+     *  belongs to. A ride whose queue joins one takes no guests until the fragment itself
+     *  is joined to the network. */
+    island?: StrandedIsland;
 }
 
 /** One place an entrance or exit can go: the kiosk tile, and the tile its door opens onto. */
@@ -33,16 +55,22 @@ export interface AccessOption {
     door?: DoorTile;
     /** Trees or scenery stand on this tile or its door; clear_scenery them first. */
     needsClearing: boolean;
-    /** Tiles from the door to the nearest existing footpath. 0 means it is already on one.
-     *  -1 when the park has no footpath at all. */
+    /** Tiles from the door to the nearest footpath the park gate reaches. 0 means the door
+     *  already stands on that network. -1 when the gate reaches no footpath at all.
+     *  Measured against the reachable network rather than against paving anywhere, because
+     *  a stranded fragment is still paving: a door standing on one read 0 - the same number
+     *  as a door on the main walk, and the first place this list sorts to - while no guest
+     *  could ever arrive at it. */
     pathDistance: number;
     /** How many path tiles stop being reachable from the park entrance once an entrance
      *  here claims a queue on `door`. A ride claiming a queue dead-ends the one tile its
      *  door opens onto, so this is what the park loses if that tile stops carrying traffic
      *  through. A door on bare ground is 0: the queue tiles leading to it are new ground
-     *  that carried nobody before. The rest of a queue line is walked like any other path
-     *  and cuts nothing. A measurement of what would happen, not a ranking: the list is not
-     *  reordered by it. */
+     *  that carried nobody before. A door the gate cannot reach is 0 as well, for the
+     *  opposite reason - there is no route through it to lose - so the figure says what it
+     *  says only beside `door.guestsCanReach`. The rest of a queue line is walked like any
+     *  other path and cuts nothing. A measurement of what would happen, not a ranking: the
+     *  list is not reordered by it. */
     queueCutsOff: number;
 }
 
@@ -68,8 +96,8 @@ export interface BuildSite {
     access: AccessOption[];
     /** How many positions exist in total, before this list was trimmed. */
     accessTotal: number;
-    /** Distance to the nearest footpath: from the best door, or from the shop's serving tile.
-     *  -1 when the park has no footpath at all. */
+    /** Distance to the nearest footpath the park gate reaches: from the best door, or from
+     *  the shop's serving tile. -1 when the gate reaches no footpath at all. */
     pathDistance: number;
     /** Tiles to the nearest existing ride. Small numbers mean no room for queues between them. */
     nearestRideDistance: number;
@@ -169,19 +197,93 @@ function collectRideTiles(): { x: number; y: number }[] {
     return tiles;
 }
 
-function collectPathTiles(grid: MapGrid): { x: number; y: number }[] {
+/**
+ * The footpath tiles a guest can actually walk to from the gate, which is what every
+ * distance here is measured against.
+ *
+ * This swept the whole grid for anything carrying a footpath. Paving the gate reaches
+ * nothing of counted the same as the main walk, so a door standing on a stranded fragment
+ * came back `pathDistance` 0 with `isExistingPath` true - the markers of the best door in
+ * the park - and sorted to the top of a list the model takes the first entry of. Two rides
+ * of one run went onto a five-tile island that park_status had named as stranded in the
+ * turn before.
+ */
+function reachablePathTiles(grid: MapGrid, reachable: Record<string, boolean>): { x: number; y: number }[] {
     const tiles: { x: number; y: number }[] = [];
 
     for (let y = 0; y < grid.height; y++) {
         for (let x = 0; x < grid.width; x++) {
             const cell = grid.at(x, y);
-            if (cell && cell.path) {
+            if (cell && cell.path && reachable[key(x, y)]) {
                 tiles.push({ x: x, y: y });
             }
         }
     }
 
     return tiles;
+}
+
+/**
+ * The fragments of footpath the gate reaches nothing of, keyed by every tile on one, so a
+ * door standing on a fragment can name it.
+ *
+ * Grouped by plain adjacency rather than by route, which is how `network.ts` groups the
+ * same fragments for park_status's `paths.islands`: an island is a physical thing, and the
+ * two reports naming one thing differently is the state the model cannot reconcile.
+ */
+function strandedIslands(grid: MapGrid, reachable: Record<string, boolean>): Record<string, StrandedIsland> {
+    const found: Record<string, StrandedIsland> = {};
+
+    for (let y = 0; y < grid.height; y++) {
+        for (let x = 0; x < grid.width; x++) {
+            const cell = grid.at(x, y);
+
+            if (!cell || !cell.path || reachable[key(x, y)] || found[key(x, y)]) {
+                continue;
+            }
+
+            const blob: { x: number; y: number }[] = [];
+            const pending: { x: number; y: number }[] = [{ x: x, y: y }];
+            const seen: Record<string, boolean> = {};
+            seen[key(x, y)] = true;
+
+            while (pending.length > 0) {
+                const current = pending.shift() as { x: number; y: number };
+                blob.push(current);
+
+                for (let i = 0; i < NEIGHBOURS.length; i++) {
+                    const nx = current.x + NEIGHBOURS[i].dx;
+                    const ny = current.y + NEIGHBOURS[i].dy;
+                    const neighbour = grid.at(nx, ny);
+
+                    if (!neighbour || !neighbour.path || reachable[key(nx, ny)] || seen[key(nx, ny)]) {
+                        continue;
+                    }
+
+                    seen[key(nx, ny)] = true;
+                    pending.push({ x: nx, y: ny });
+                }
+            }
+
+            const island: StrandedIsland = {
+                tiles: blob.length,
+                fromX: blob[0].x,
+                fromY: blob[0].y,
+                toX: blob[0].x,
+                toY: blob[0].y
+            };
+
+            for (let i = 0; i < blob.length; i++) {
+                island.fromX = Math.min(island.fromX, blob[i].x);
+                island.fromY = Math.min(island.fromY, blob[i].y);
+                island.toX = Math.max(island.toX, blob[i].x);
+                island.toY = Math.max(island.toY, blob[i].y);
+                found[key(blob[i].x, blob[i].y)] = island;
+            }
+        }
+    }
+
+    return found;
 }
 
 /** -1 rather than Infinity, which JSON turns into null. */
@@ -206,21 +308,73 @@ function nearestPathDistance(paths: { x: number; y: number }[], x: number, y: nu
 const NEIGHBOURS = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
 
 /**
+ * The four directions in OpenRCT2's own order, so the index is the bit position in a
+ * footpath's `edges`: 0 is -x, 1 is +y, 2 is +x, 3 is -y. This is `CoordsDirectionDelta`,
+ * kept separate from `NEIGHBOURS`, whose order is arbitrary.
+ */
+const EDGE_DIRECTIONS = [{ dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }];
+
+/** The bit in `edges` that points the other way down the same link. */
+function opposite(direction: number): number {
+    return (direction + 2) % 4;
+}
+
+/**
+ * The sides a guest may step off each footpath tile, as the game records them.
+ *
+ * `readMapGrid` carries whether a tile has a path but not its `edges`, and the edges are
+ * the connectivity rather than a hint about it - `PathGetPermittedEdges` hands the guest
+ * pathfinder that bitfield verbatim. `src/park/paths.ts` has the measurement. Only tiles
+ * the grid already calls a path are read, so this costs one native lookup per footpath
+ * rather than one per tile.
+ */
+function readPathEdges(grid: MapGrid): Record<string, number> {
+    const edges: Record<string, number> = {};
+
+    for (let y = 0; y < grid.height; y++) {
+        for (let x = 0; x < grid.width; x++) {
+            const cell = grid.at(x, y);
+
+            if (!cell || !cell.path) {
+                continue;
+            }
+
+            const tile = map.getTile(x, y);
+            let bits = 0;
+
+            for (let i = 0; i < tile.numElements; i++) {
+                const element = tile.getElement(i);
+
+                if (element.type === "footpath") {
+                    // Only the low nibble is the four orthogonal edges; the high nibble is corners.
+                    bits |= (element as FootpathElement).edges & 0x0f;
+                }
+            }
+
+            edges[key(x, y)] = bits;
+        }
+    }
+
+    return edges;
+}
+
+/**
  * Path tiles guests can walk to from the park entrance, optionally with one named tile
  * treated as a dead end: reachable, but carrying nobody through to the far side.
  *
- * Over the cached grid rather than the live map, so it can be re-run cheaply once per
- * footpath tile with a hypothetical in place. paths.ts `walkableFromParkEntrance` reads
- * the game's own `edges` bitfield, which the grid does not carry; here the flood is plain
- * adjacency over footpath tiles, which is the same answer wherever the game has not cut a
- * link, and `deadEnd` is how the one cut that matters is asked about.
+ * The same walk as paths.ts `walkableFromParkEntrance` over the same graph - the game's own
+ * footpath edges, with both ends of a link required to claim it - so this tool and
+ * park_status answer "can a guest get there" the same way. It stood on plain adjacency over
+ * the cached grid instead, which agrees with the game only where the game has cut no link:
+ * a queue another ride has claimed, the one cut the game actually makes, read as a road
+ * still open.
  *
  * A queue is walked like any other path. The rule that stood here - a queue tile expands
  * only to other queue tiles - is not what the game does: turning path into queue moves no
  * edge bit at all. A ride's entrance claiming a queue is what severs, and it dead-ends the
  * single tile the door opens onto, which is exactly what `deadEnd` models.
  */
-function walkableFrom(grid: MapGrid, gate: { x: number; y: number }[], deadEnd: string | null): Record<string, boolean> {
+function walkableFrom(edges: Record<string, number>, gate: { x: number; y: number }[], deadEnd: string | null): Record<string, boolean> {
     const seen: Record<string, boolean> = {};
     const frontier: { x: number; y: number }[] = [];
 
@@ -228,9 +382,8 @@ function walkableFrom(grid: MapGrid, gate: { x: number; y: number }[], deadEnd: 
         for (let i = 0; i < NEIGHBOURS.length; i++) {
             const x = gate[g].x + NEIGHBOURS[i].dx;
             const y = gate[g].y + NEIGHBOURS[i].dy;
-            const cell = grid.at(x, y);
 
-            if (cell && cell.path && !seen[key(x, y)]) {
+            if (typeof edges[key(x, y)] === "number" && !seen[key(x, y)]) {
                 seen[key(x, y)] = true;
                 frontier.push({ x: x, y: y });
             }
@@ -245,12 +398,18 @@ function walkableFrom(grid: MapGrid, gate: { x: number; y: number }[], deadEnd: 
             continue;
         }
 
-        for (let i = 0; i < NEIGHBOURS.length; i++) {
-            const x = current.x + NEIGHBOURS[i].dx;
-            const y = current.y + NEIGHBOURS[i].dy;
-            const cell = grid.at(x, y);
+        const from = edges[key(current.x, current.y)];
 
-            if (seen[key(x, y)] || !cell || !cell.path) {
+        for (let d = 0; d < EDGE_DIRECTIONS.length; d++) {
+            if ((from & (1 << d)) === 0) {
+                continue;
+            }
+
+            const x = current.x + EDGE_DIRECTIONS[d].dx;
+            const y = current.y + EDGE_DIRECTIONS[d].dy;
+            const to = edges[key(x, y)];
+
+            if (seen[key(x, y)] || typeof to !== "number" || (to & (1 << opposite(d))) === 0) {
                 continue;
             }
 
@@ -371,33 +530,40 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
     }
 
     const grid = readMapGrid();
-    const paths = collectPathTiles(grid);
     const rideTiles = collectRideTiles();
     const gate = findParkEntranceTiles();
-    const reachableNow = gate.length > 0 ? walkableFrom(grid, gate, null) : {};
+    const edges = readPathEdges(grid);
+    const reachableNow = gate.length > 0 ? walkableFrom(edges, gate, null) : {};
+    // Everything a distance is measured against, and everything it is not: paving the gate
+    // reaches, and the fragments it does not.
+    const paths = reachablePathTiles(grid, reachableNow);
+    const islands = strandedIslands(grid, reachableNow);
 
     // The answer is a property of the footpath tile, not of the door, and thousands of
-    // doors share a handful of footpaths, so it is measured once per tile and kept. Only
-    // a tile that already carries a path can cut anything: a queue laid on bare ground
-    // adds to the network and takes no route out of it. A tile already carrying a queue
-    // counts - an entrance placed here claims that queue and dead-ends this tile, which is
-    // the `hasUnboundQueue` door the search offers as a finished one.
+    // doors share a handful of footpaths, so it is measured once per tile and kept. Only a
+    // tile the gate reaches can cut anything: a queue laid on bare ground adds to the
+    // network and takes no route out of it, and a stranded fragment has no route to take.
+    // A reachable tile already carrying a queue counts - an entrance placed here claims
+    // that queue and dead-ends this tile, which is the `hasUnboundQueue` door the search
+    // offers as a finished one.
     const severance: Record<string, number> = {};
 
     const costOfDeadEnding = function (x: number, y: number): number {
-        const cell = grid.at(x, y);
+        const tile = key(x, y);
 
-        if (gate.length === 0 || !cell || !cell.path) {
+        // Only a tile guests reach today has a route through it to lose. Bare ground carries
+        // nobody, and neither does paving on a fragment the gate cannot reach: dead-ending
+        // one of those takes nothing from anyone, which is a true 0 and a different 0 from
+        // the one a door on the network earns.
+        if (gate.length === 0 || !reachableNow[tile]) {
             return 0;
         }
-
-        const tile = key(x, y);
 
         if (typeof severance[tile] === "number") {
             return severance[tile];
         }
 
-        const after = walkableFrom(grid, gate, tile);
+        const after = walkableFrom(edges, gate, tile);
         let lost = 0;
 
         for (const reached in reachableNow) {
@@ -501,10 +667,12 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                         const door = { x: tile.x + outward.dx, y: tile.y + outward.dy };
                         const doorCell = grid.at(door.x, door.y);
 
-                        // A door onto the existing path network is the best door there is -
-                        // pathDistance 0, nothing to lay but the queue itself. Requiring bare
-                        // ground here quietly discarded exactly those, and left `isExistingPath`
-                        // a flag that could never be true.
+                        // A door onto the path network the gate reaches is the shortest work
+                        // there is - pathDistance 0, nothing to lay but the queue itself.
+                        // Requiring bare ground here quietly discarded exactly those, and left
+                        // `isExistingPath` a flag that could never be true. A door onto paving
+                        // the gate does not reach looks identical from this tile and is not the
+                        // same thing at all, which is what `guestsCanReach` below separates.
                         if (!doorCell || !doorCell.owned || (!doorCell.clearable && !doorCell.path)) {
                             continue;
                         }
@@ -530,7 +698,9 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                                 x: door.x,
                                 y: door.y,
                                 isExistingPath: doorCell.path,
-                                hasUnboundQueue: doorCell.queue
+                                guestsCanReach: reachableNow[key(door.x, door.y)] === true,
+                                hasUnboundQueue: doorCell.queue,
+                                island: islands[key(door.x, door.y)]
                             },
                             pathDistance: pathDistanceOrNone(paths, door.x, door.y),
                             queueCutsOff: queueCutsOffAt(door.x, door.y)
@@ -587,8 +757,11 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                 // the serving tile is where the guest has to be able to stand.
                 const distanceToPath = shown[0].pathDistance;
 
-                // A park with no footpath anywhere leaves every distance unmeasurable.
-                // Dropping those sites would report an empty park as an unbuildable one.
+                // A park whose gate reaches no footpath at all - none laid yet, or every
+                // fragment of it stranded - leaves every distance unmeasurable, and dropping
+                // those sites would report such a park as unbuildable. `paths` is the
+                // reachable network, so a park with paving the gate cannot reach is that
+                // case too, and every site there comes back at -1 rather than vanishing.
                 if (distanceToPath < 0 && paths.length > 0) {
                     continue;
                 }
@@ -620,10 +793,14 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
         }
     }
 
-    // Ordered by distance to a footpath only. Preferring bare ground over treed ground at
-    // equal distance would be a preference, not a measurement; sceneryToClear is reported
-    // so the caller can weigh it. Doors that would sever the park are reported, not moved
-    // down the list: naming the consequence is perception, choosing the tile is not.
+    // Ordered by distance to the footpath network the gate reaches, and by nothing else.
+    // Preferring bare ground over treed ground at equal distance would be a preference, not
+    // a measurement; sceneryToClear is reported so the caller can weigh it. A site whose
+    // doors stand on paving the gate cannot reach is not moved anywhere either, and not
+    // dropped: it sorts on the same number as every other site, which for it is the tiles
+    // between it and the network rather than the 0 it used to report. Doors that would sever
+    // the park are reported, not moved down the list: naming the consequence is perception,
+    // choosing the tile is not.
     found.sort(function (left, right) {
         const rank = function (distance: number): number {
             return distance < 0 ? Infinity : distance;

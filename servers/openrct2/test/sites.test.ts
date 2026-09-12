@@ -3,6 +3,8 @@ import test from "node:test";
 
 import { FakeGame } from "./fakeGame.ts";
 import { MAX_ACCESS_OPTIONS, findBuildSites } from "../src/park/sites.ts";
+import type { AccessOption, BuildSite } from "../src/park/sites.ts";
+import { tileIsWalkable, walkableFromParkEntrance } from "../src/park/paths.ts";
 import { SiteTools } from "../src/tools/sites.ts";
 import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
 
@@ -32,7 +34,11 @@ test("a tracked ride is refused, with a reason", function () {
 
 test("every side of the footprint is offered, not just those nearest a path", function () {
     const { restore } = gameWith(37, function (game) {
-        game.addParkEntrance(10, 0);
+        // The gate is at the head of the path column, so the column is paving guests reach
+        // and the distances this trim sorts on are real ones. A gate across the map would
+        // leave every option at -1, where sorting by distance cannot be told from not
+        // sorting at all.
+        game.addParkEntrance(1, 0);
         for (let y = 1; y <= 20; y++) {
             game.addPath(2, y);
         }
@@ -538,6 +544,344 @@ test("a queue that cuts nothing is never flagged", function () {
     }
 });
 
+/**
+ * The park the run produced, rebuilt: a trunk the gate reaches, and a five-tile fragment of
+ * path further down that joins nothing - the "islands" park_status had listed in the turn
+ * before find_build_sites offered a door on one as option #1, twice.
+ *
+ * Two identical bands of owned ground, one beside each, leave exactly one 3x3 site apiece
+ * with three of its doors on the paving beside it. The two sites are the same shape and the
+ * same distance from their own paving, and differ in one thing: whether a guest can get
+ * there. That is what makes the pair a discriminator - a fixture with only the island in it
+ * cannot tell a tool that measures reachability from one that reports false for everything.
+ */
+function trunkAndIslandPark(): FakeGame {
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(9, 0);
+
+    // Joined to the gate at (10,0).
+    for (let y = 1; y <= 6; y++) {
+        game.addPath(10, y);
+    }
+
+    // Five tiles, joined to nothing.
+    for (let y = 14; y <= 18; y++) {
+        game.addPath(10, y);
+    }
+
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            game.own(x, y, x >= 10 && x <= 17 && ((y >= 4 && y <= 6) || (y >= 15 && y <= 17)));
+        }
+    }
+
+    return game;
+}
+
+function optionForDoor(site: BuildSite, x: number, y: number): AccessOption | undefined {
+    return site.access.filter(function (option) {
+        return option.door && option.door.x === x && option.door.y === y;
+    })[0];
+}
+
+function siteAt(sites: BuildSite[], x: number, y: number): BuildSite | undefined {
+    return sites.filter(function (site) { return site.x === x && site.y === y; })[0];
+}
+
+test("a door on paving the gate cannot reach is not reported as a door on the network", function () {
+    const game = trunkAndIslandPark();
+    const restore = game.install();
+
+    try {
+        // The park's own answer, not a second implementation of one: whatever this says is
+        // what the tool has to agree with.
+        const walkable = walkableFromParkEntrance();
+
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 5 }), true, "the trunk is paving guests reach");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 16 }), false, "the fragment is not, or this fixture proves nothing");
+
+        const sites = findBuildSites(0, 50, 0).sites || [];
+        const onTheTrunk = siteAt(sites, 13, 5);
+        const onTheIsland = siteAt(sites, 13, 16);
+
+        assert.ok(onTheTrunk, "the site beside the trunk: " + sites.map(function (s) { return String(s.x) + "," + String(s.y); }).join(" "));
+        assert.ok(onTheIsland, "and the one beside the fragment, which is still offered rather than hidden");
+
+        const good = optionForDoor(onTheTrunk, 10, 5);
+        const stranded = optionForDoor(onTheIsland, 10, 16);
+
+        assert.ok(good && good.door, "the trunk door");
+        assert.ok(stranded && stranded.door, "the fragment door");
+
+        // Both stand on a footpath, which is the whole difficulty: from the tile itself they
+        // look identical, and both used to come back with the markers of the best door in the
+        // park - pathDistance 0, isExistingPath true, queueCutsOff 0.
+        assert.equal(good.door.isExistingPath, true);
+        assert.equal(stranded.door.isExistingPath, true);
+
+        assert.equal(good.door.guestsCanReach, true, "a guest walks from the gate to this one");
+        assert.equal(stranded.door.guestsCanReach, false, "and can never arrive at this one");
+
+        assert.equal(good.pathDistance, 0, "the trunk door is on the network");
+        assert.equal(stranded.pathDistance, 10,
+            "(10,16) to the nearest tile the gate reaches, (10,6), is ten tiles of paving - it used to read 0");
+
+        assert.equal(good.door.island, undefined, "a door on the network belongs to no fragment");
+        assert.deepEqual(stranded.door.island, { tiles: 5, fromX: 10, fromY: 14, toX: 10, toY: 18 },
+            "and the fragment is named, by the same corners park_status lists it under");
+
+        // Every door, not just the two picked out, agrees with the park's own reachability.
+        sites.forEach(function (site) {
+            site.access.forEach(function (option) {
+                const door = option.door;
+                assert.ok(door);
+                assert.equal(door.guestsCanReach, tileIsWalkable(walkable, { x: door.x, y: door.y }),
+                    String(door.x) + "," + String(door.y) + " disagrees with walkableFromParkEntrance");
+            });
+        });
+
+        assert.equal(JSON.stringify(sites).indexOf("null"), -1, "an absent island is an absent field, not a null");
+    } finally {
+        restore();
+    }
+});
+
+test("a door the gate cannot reach is still offered, with what it is attached to named", function () {
+    // Excluding it would be the tool deciding the site is not worth having, and a fragment
+    // is joinable: build_path reaches it, and then the ride on it earns. What the tool owes
+    // the caller is the fact, which is `guestsCanReach` and `island` - docs/tool-design.md.
+    const game = trunkAndIslandPark();
+    const restore = game.install();
+
+    try {
+        const sites = findBuildSites(0, 50, 0).sites || [];
+        const onTheIsland = siteAt(sites, 13, 16);
+
+        assert.ok(onTheIsland, "the site beside the fragment is in the list at all");
+
+        const doors = onTheIsland.access.filter(function (option) {
+            return option.door && option.door.x === 10;
+        });
+
+        assert.equal(doors.length, 3, "all three tiles of the fragment beside the ride are offered");
+        doors.forEach(function (option) {
+            assert.equal(option.door && option.door.guestsCanReach, false);
+            assert.ok(option.door && option.door.island, "each says which fragment it is on");
+        });
+    } finally {
+        restore();
+    }
+});
+
+/**
+ * The same two bands, with the ground beside the trunk stopping two tiles short of it, so
+ * the network site's best door is on bare ground two tiles out while the fragment site's
+ * door is on paving. Measured against any paving at all, the fragment site is the 0 and
+ * sorts first - which is the run's failure exactly: option #1, taken in 4 of 4 builds.
+ *
+ * Nothing here reorders anything. The comparator is the same ascending pathDistance it has
+ * always been; the number it sorts on stopped counting paving guests cannot reach.
+ */
+function islandOutranksNetworkPark(): FakeGame {
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(9, 0);
+
+    for (let y = 1; y <= 6; y++) {
+        game.addPath(10, y);
+    }
+
+    for (let y = 14; y <= 18; y++) {
+        game.addPath(10, y);
+    }
+
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            const besideTheTrunk = x >= 12 && x <= 18 && y >= 4 && y <= 6;
+            const besideTheIsland = x >= 10 && x <= 18 && y >= 15 && y <= 17;
+            game.own(x, y, besideTheTrunk || besideTheIsland);
+        }
+    }
+
+    return game;
+}
+
+test("a site whose doors are on a stranded fragment does not outrank one on the network", function () {
+    const game = islandOutranksNetworkPark();
+    const restore = game.install();
+
+    try {
+        const walkable = walkableFromParkEntrance();
+        const sites = findBuildSites(0, 50, 0).sites || [];
+        const first = sites[0];
+
+        assert.ok(first, "the park holds sites at all");
+        assert.deepEqual([first.x, first.y], [15, 5],
+            "the site beside the trunk, whose best door is two tiles of bare ground from it");
+        assert.equal(first.pathDistance, 2);
+
+        const door = first.access[0].door;
+        assert.ok(door);
+        assert.equal(door.isExistingPath, false, "it is not even on a footpath, which is what makes this the test");
+
+        const onTheIsland = siteAt(sites, 13, 16);
+        assert.ok(onTheIsland, "and the fragment site is still in the list, below it");
+        assert.equal(onTheIsland.pathDistance, 9,
+            "nine tiles from its best door at (10,15) to (10,6), the nearest tile the gate reaches");
+
+        const strandedDoor = optionForDoor(onTheIsland, 10, 15);
+        assert.ok(strandedDoor && strandedDoor.door);
+        assert.equal(strandedDoor.door.isExistingPath, true, "measured against paving anywhere this door is the 0");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 15 }), false, "and no guest can stand on it");
+
+        assert.ok(sites.indexOf(onTheIsland) > sites.indexOf(first),
+            "so the honest number, not a rule about islands, is what puts it second");
+    } finally {
+        restore();
+    }
+});
+
+/**
+ * The cut the game itself makes: a ride's entrance claiming the queue at its door clears the
+ * edge on the far side of that tile, so the line past it is still touching the network and
+ * still unreachable. Every tile here is adjacent to the next, so a reachability walked by
+ * adjacency - which is what this tool used to do - calls the whole trunk reachable and the
+ * fragment does not exist. Only the game's `edges` say otherwise, and paths.ts reads them.
+ */
+function severedTrunkPark(): FakeGame {
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(9, 0);
+
+    for (let y = 1; y <= 18; y++) {
+        game.addPath(10, y);
+    }
+
+    game.severPath(10, 9, 10, 10);
+
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            game.own(x, y, x >= 10 && x <= 17 && ((y >= 4 && y <= 6) || (y >= 15 && y <= 17)));
+        }
+    }
+
+    return game;
+}
+
+test("a fragment cut off by the game's own edges counts as cut off here too", function () {
+    const game = severedTrunkPark();
+    const restore = game.install();
+
+    try {
+        const carriesPath = function (x: number, y: number): boolean {
+            return game.tile(x, y).elements.filter(function (e) { return e.type === "footpath"; }).length > 0;
+        };
+
+        // The two tiles either side of the cut are neighbours and both carry path, so
+        // adjacency cannot tell this park from an unbroken trunk. The game can.
+        assert.equal(carriesPath(10, 9), true);
+        assert.equal(carriesPath(10, 10), true);
+
+        const walkable = walkableFromParkEntrance();
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 9 }), true);
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 10 }), false, "the game's edges are what cut this line");
+
+        const sites = findBuildSites(0, 50, 0).sites || [];
+        const beyondTheCut = siteAt(sites, 13, 16);
+
+        assert.ok(beyondTheCut, "the site past the cut");
+
+        const stranded = optionForDoor(beyondTheCut, 10, 15);
+        assert.ok(stranded && stranded.door);
+
+        assert.equal(stranded.door.isExistingPath, true);
+        assert.equal(stranded.door.guestsCanReach, false, "adjacency would have called this door reachable");
+        assert.equal(stranded.pathDistance, 6, "(10,15) to (10,9), the last tile the gate reaches");
+        assert.deepEqual(stranded.door.island, { tiles: 9, fromX: 10, fromY: 10, toX: 10, toY: 18 },
+            "and the fragment is the nine tiles past the cut");
+    } finally {
+        restore();
+    }
+});
+
+test("queueCutsOff counts what stops being reachable, so a door nothing reaches is 0", function () {
+    // The figure answers "how many tiles stop being reachable", which is a question about
+    // tiles that are reachable now. Past the cut there are five more tiles of path beyond
+    // (10,15) and dead-ending it takes none of them from anybody: they were already gone.
+    // Walked by adjacency the same door came back 3, a loss the park had already taken.
+    const game = severedTrunkPark();
+    const restore = game.install();
+
+    try {
+        const sites = findBuildSites(0, 50, 0).sites || [];
+        const beyondTheCut = siteAt(sites, 13, 16);
+        const onTheTrunk = siteAt(sites, 13, 5);
+
+        assert.ok(beyondTheCut && onTheTrunk);
+
+        const stranded = optionForDoor(beyondTheCut, 10, 15);
+        const reachable = optionForDoor(onTheTrunk, 10, 5);
+
+        assert.ok(stranded && stranded.door && reachable && reachable.door);
+
+        assert.equal(stranded.queueCutsOff, 0, "nothing reachable stands past a door nothing reaches");
+        assert.equal(stranded.door.guestsCanReach, false, "which is the field that tells that 0 from the other one");
+
+        // The control: the same door position on the reachable half really does cost
+        // something, so the 0 above is the fragment and not severance switched off.
+        assert.equal(reachable.queueCutsOff, 4,
+            "an entrance at (10,5) dead-ends it, stranding (10,6) to (10,9) - and nothing past the cut, which is already lost");
+        assert.equal(reachable.door.guestsCanReach, true);
+    } finally {
+        restore();
+    }
+});
+
+test("a park whose only paving the gate cannot reach measures against none of it", function () {
+    // -1 means there was nothing to measure against. Paving guests cannot reach is nothing
+    // to measure against, and the alternative - falling back to it when the network is
+    // empty - is the same false 0 arriving by a quieter route.
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(9, 0);
+
+    for (let y = 14; y <= 18; y++) {
+        game.addPath(10, y);
+    }
+
+    // Narrow enough that the only 3x3 that fits has its doors on the fragment and nowhere
+    // else, so the numbers below are that door's and not some bare tile's further out.
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            game.own(x, y, x >= 10 && x <= 14 && y >= 15 && y <= 17);
+        }
+    }
+
+    const restore = game.install();
+
+    try {
+        const result = findBuildSites(0, 50, 0);
+        const sites = result.sites || [];
+
+        assert.equal(result.ok, true);
+        assert.ok(sites.length > 0, "a park with unreachable paving is still buildable, not unbuildable: " + String(result.note));
+
+        const site = siteAt(sites, 13, 16);
+        assert.ok(site);
+        assert.equal(site.pathDistance, -1, "there is no reachable footpath to measure against");
+
+        const stranded = optionForDoor(site, 10, 16);
+        assert.ok(stranded && stranded.door);
+        assert.equal(stranded.pathDistance, -1);
+        assert.equal(stranded.door.isExistingPath, true, "the tile is paved");
+        assert.equal(stranded.door.guestsCanReach, false, "and it is paving nobody can get to");
+        assert.equal(stranded.door.island && stranded.door.island.tiles, 5);
+    } finally {
+        restore();
+    }
+});
+
 test("a shop is served from the neighbour its rotation points at", function () {
     const deltas = [{ dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }];
 
@@ -580,7 +924,10 @@ test("live repro: a rotation-0 stall is served from -x, and that tile is offered
     // a path laid on the offered tile gave edges=1, no connection at all.
     const game = new FakeGame(64, 40);
     game.rideObjects = [{ index: 0, name: "Burger Bar", rideType: [28] }];
-    game.addParkEntrance(50, 20);
+    // Beside the footpath rather than across the map from it: every distance here is
+    // measured against the paving the gate reaches, so a gate that reaches none of it
+    // would make this a park with no measurable path in it at all.
+    game.addParkEntrance(50, 23);
     game.addPath(51, 24);
 
     for (let x = 0; x < 64; x++) {
@@ -617,7 +964,7 @@ test("a shop is searched at all four rotations, because rotation is which side s
     // - right for a ride, because rotation 2 is the same tiles - finds nothing here.
     const game = new FakeGame(24, 24);
     game.rideObjects = [{ index: 0, name: "Drink Stall", rideType: [30] }];
-    game.addParkEntrance(4, 4);
+    game.addParkEntrance(12, 14);
     game.addPath(12, 13);
 
     for (let x = 0; x < 24; x++) {
@@ -1094,6 +1441,10 @@ test("accessTotal counts every door position, not the ones that fit in the windo
 function oneDoorPark(): FakeGame {
     const game = new FakeGame(24, 24);
     game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    // The gate sits under the footpath these tests lay at (17,14), because a distance is
+    // measured to paving guests can reach and paving the gate reaches nothing of is not
+    // measured against at all.
+    game.addParkEntrance(17, 15);
 
     for (let x = 0; x < 24; x++) {
         for (let y = 0; y < 24; y++) {
@@ -1171,6 +1522,9 @@ test("needsClearing covers the door tile, not just the tile the building stands 
 function stallServedBy(queue: boolean): FakeGame {
     const game = new FakeGame(24, 24);
     game.rideObjects = [{ index: 0, name: "Burger Bar", rideType: [28] }];
+    // Joined to the gate, so the tile under test is paving guests reach rather than a
+    // stranded fragment, which is a different question and has its own tests.
+    game.addParkEntrance(8, 12);
 
     for (let x = 0; x < 24; x++) {
         for (let y = 0; y < 24; y++) {
@@ -1298,4 +1652,34 @@ test("find_build_sites says what actually severs a route, and not that a queue d
         "and the claim it was used to make about every positive number");
     assert.doesNotMatch(text, /matters most/,
         "no door is weighted: the ordering is distance to a path and the choice is the model's");
+});
+
+/**
+ * The description is read on every turn the tool is in play, and the sentence it used to
+ * carry - that a distance is to "the nearest footpath", -1 when "the park has no footpath at
+ * all" - is the defect written down: it says paving is paving, which is what made a door on
+ * a stranded fragment read as the best door in the park. The absence of that wording is
+ * pinned as hard as the presence of the new.
+ */
+test("find_build_sites says a distance is to paving guests can reach", function () {
+    const definitions = getMcpToolDefinitions(SiteTools).filter(function (definition) {
+        return definition.handlerName === "findBuildSites";
+    });
+
+    assert.equal(definitions.length, 1, "find_build_sites is registered once");
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /`guestsCanReach` says whether a guest can walk to that tile from the park gate/,
+        "the field that separates a door on the network from one on a fragment");
+    assert.match(text, /the nearest footpath the gate reaches/,
+        "and what pathDistance is counted against");
+    assert.match(text, /`island` then gives that fragment's tile count and corners/,
+        "the fragment a stranded door stands on, named rather than left to be inferred");
+    assert.match(text, /-1 when the gate reaches no footpath at all/,
+        "-1 is about the reachable network, not about paving anywhere");
+    assert.doesNotMatch(text, /-1 when the park has no footpath at all/,
+        "the old claim, which was false in a park whose paving the gate could not reach");
+    assert.doesNotMatch(text, /avoid|do not build|prefer a door/,
+        "what to do about a stranded door is the model's call, not the description's");
 });

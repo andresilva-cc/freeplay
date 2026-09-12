@@ -436,26 +436,72 @@ test("a severed park is counted and explained, not told what to do about it", fu
     });
 });
 
-test("ordinary path laid over a queue warns that the queue was unbound", function () {
+test("an ordinary path run that would land on a queue is refused, not apologised for", function () {
+    // The tool used to contradict its own refusal: that text promised "no route is taken
+    // across" a queue, and the router exempted the far end of every leg from the rule -
+    // for queue runs and ordinary ones alike. So a run ended on a bound queue, paved it,
+    // unbound the ride, and only then said so in a WARNING. One such call cost eleven
+    // turns and about seven minutes of remove_path, failed rebuilds and view_map.
     withGame(function (game) {
         parkWithGate(game);
         game.addPath(10, 6);
         game.addPath(10, 7, true, 0);
         game.addPath(10, 8, true, 0);
     }, function (game) {
-        const outcome = lay([{ x: 10, y: 7 }, { x: 10, y: 8 }]);
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 8 }]);
 
-        assert.equal(outcome.ok, true, outcome.detail);
-        assert.match(outcome.detail, /WARNING: 2 tiles replaced an existing queue line/);
-        assert.match(outcome.detail, /which unbinds it from its ride/,
-            "the unbinding is the fact the warning exists for: nothing else reveals it");
-        assert.doesNotMatch(outcome.detail, /Rebuild that queue/,
-            "the model may not even be able to, and what to do about it is its call either way");
-        assert.ok(!/no longer reachable/.test(outcome.detail), "nothing was cut off, so do not say so");
+        assert.equal(outcome.ok, false, outcome.detail);
+        assert.match(outcome.detail, /Point 1 of this run, 10,8, is carrying ride 0's queue/,
+            "the tile and the ride whose line it is have to be named, not the category");
+        assert.match(outcome.detail, /unbinds it from ride 0/,
+            "and what paving it would have done, which is damage nothing in the API shows");
+        assert.match(outcome.detail, /remove_path/, "a blocker with a remedy names the call that lifts it");
+        assert.doesNotMatch(outcome.detail, /WARNING/,
+            "a refusal before the fact, not an apology after it");
 
-        const path = footpathAt(game, 10, 7);
+        // The claim is about the world, so read the world: the queue is still a queue and
+        // still bound. A test that only read the message would pass on a tool that paved
+        // the tile and merely described the refusal.
+        const path = footpathAt(game, 10, 8);
         assert.ok(path);
-        assert.equal(path.isQueue, false, "the damage the warning is about is real");
+        assert.equal(path.isQueue, true, "the queue was paved over anyway");
+        assert.equal(path.ride, 0, "the queue was unbound from its ride anyway");
+        assert.equal(game.attempted.length, 0, "and not one tile was laid on the way to refusing");
+    });
+});
+
+test("the refusal that promises a queue is never crossed is the one the router keeps", function () {
+    // Same rule, the other end, and through the middle: a run that is not a queue takes no
+    // queue tile anywhere on it. Three separate exemptions used to exist - the start tile
+    // was never checked at all - and each is a different way to unbind a ride silently.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6, true, 3);
+        game.addPath(10, 7);
+        game.addPath(10, 8);
+    }, function (game) {
+        const fromTheQueue = lay([{ x: 10, y: 6 }, { x: 10, y: 8 }]);
+
+        assert.equal(fromTheQueue.ok, false, fromTheQueue.detail);
+        assert.match(fromTheQueue.detail, /Point 0 of this run, 10,6, is carrying ride 3's queue/,
+            "a run starting on a queue was routed and paved: the start tile skipped the queue check");
+        assert.equal(footpathAt(game, 10, 6)?.isQueue, true, "the queue at the start was paved over");
+    });
+
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+        for (let x = 8; x <= 12; x++) {
+            game.addPath(x, 8, true, 3);
+        }
+    }, function () {
+        const across = lay([{ x: 10, y: 6 }, { x: 10, y: 10 }]);
+
+        assert.equal(across.ok, true, across.detail);
+        across.route.forEach(function (tile) {
+            assert.ok(!(tile.y === 8 && tile.x >= 8 && tile.x <= 12),
+                "the route crossed a queue at " + String(tile.x) + "," + String(tile.y));
+        });
     });
 });
 
@@ -565,7 +611,12 @@ test("scenery in the way is routed around", function () {
     });
 });
 
-test("a run with no owned, level way through is refused outright", function () {
+test("a run blocked by unowned ground names that tile and buy_land", function () {
+    // 9 of 17 build_path calls in one run failed with one sentence between them, which
+    // named the four conditions as a set and no tile at all. The model could not see which
+    // had failed or where, so it guessed ownership, spent £270 on three buy_land calls and
+    // about eight turns, and never retried. Here ownership really is the cause - so the
+    // test bites on the tile being named, not on the word "owned" appearing.
     withGame(function (game) {
         parkWithGate(game);
         game.addPath(10, 6);
@@ -580,13 +631,175 @@ test("a run with no owned, level way through is refused outright", function () {
         assert.equal(outcome.tilesRouted, 0);
         assert.equal(outcome.tilesPlaced, 0);
         assert.equal(outcome.route.length, 0);
-        assert.match(outcome.detail, /No level, owned, unobstructed route between 10,6 and 10,10/,
-            "the leg that could not be routed has to be named");
-        assert.match(outcome.detail, /unbinds it from its ride/,
-            "a route avoids an existing queue because paving it unbinds the ride, which is the real reason");
+        assert.match(outcome.detail, /No route between 10,6 and 10,10/, "the leg that failed has to be named");
+        assert.match(outcome.detail, /10,8 - not land the park owns/,
+            "the blocking tile and its condition, not a list of conditions and no tile");
+        assert.match(outcome.detail, /buy_land/, "a blocker with a remedy names the call that lifts it");
+        assert.doesNotMatch(outcome.detail, /No level, owned, unobstructed route/,
+            "the sentence that named a category and nothing else must not come back");
+        assert.doesNotMatch(outcome.detail, /clear_scenery/,
+            "there is no scenery here: naming every remedy every time is naming none of them");
         assert.doesNotMatch(outcome.detail, /cannot walk through a queue/,
-            "and not because guests cannot walk through one, which the game does not do");
+            "guests do walk through a queue; what dead-ends is the tile a ride's entrance claims");
         assert.equal(game.attempted.length, 0, "nothing should be attempted when there is no route");
+    });
+});
+
+test("a run blocked by scenery names that tile and clear_scenery", function () {
+    // The actual blocker in the run above, visible as `*` in view_map the whole time: one
+    // tile of scenery on the tile the run started from. It was cleared eight turns later by
+    // accident, while clearing ground for a different ride, and the ride whose exit this
+    // run was for was never connected.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addScenery(10, 12);
+    }, function (game) {
+        const outcome = lay([{ x: 10, y: 12 }, { x: 10, y: 8 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /Point 0 of this run, 10,12, is carrying scenery/,
+            "the point at fault, by index and coordinate, and what is on it");
+        assert.match(outcome.detail, /clear_scenery/, "and the call that takes it off");
+        assert.match(outcome.detail, /fromX\/fromY\/toX\/toY/,
+            "clear_scenery has two argument forms and only one of them can express a strip");
+        assert.doesNotMatch(outcome.detail, /buy_land/, "the park owns this tile: do not offer to buy it");
+        assert.equal(game.attempted.length, 0);
+    });
+
+    // The same condition between the points rather than on one of them. The two need
+    // different answers - change the argument, or clear ground you could not see - so the
+    // message distinguishes them rather than reporting both as "somewhere on this run".
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+
+        for (let x = 0; x < 24; x++) {
+            game.addScenery(x, 8);
+        }
+    }, function () {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 10 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /what is between them cannot: 10,8 - carrying scenery/,
+            "ground between the points is named as ground between the points");
+        assert.doesNotMatch(outcome.detail, /Point \d of this run/,
+            "neither point is at fault, so blaming one sends the model to change the wrong thing");
+        assert.match(outcome.detail, /clear_scenery/);
+    });
+});
+
+test("a blocker with no remedy says so rather than implying one", function () {
+    // The failure mode this guards is a message that names a call for every blocker
+    // because every other blocker has one. Nothing in this bridge takes a ride's entrance
+    // building off a tile, and saying "clear_scenery" here would cost a call and a turn
+    // and change nothing.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+
+        for (let x = 0; x < 24; x++) {
+            game.addScenery(x, 8);
+        }
+
+        // One tile of the wall is a ride's entrance building instead, and it is the tile
+        // the straight way through would use.
+        game.tile(10, 8).elements.length = 1;
+        game.addRideEntrance(10, 8, 3, 1);
+    }, function () {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 10 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /10,8 - carrying entrance, which is not scenery a bulldozer removes/,
+            "what is standing there, by name");
+        assert.match(outcome.detail, /nothing in this bridge changes that/,
+            "a blocker with no remedy has to say so plainly");
+        assert.match(outcome.detail, /`waypoints`/,
+            "and name the one lever left, which is drawing the run round it");
+        assert.doesNotMatch(outcome.detail, /clear_scenery removes it, and takes two corners/,
+            "offering a call that cannot touch this tile is the defect, one remedy along");
+    });
+
+    // Ground at the wrong height is the other one: nothing here raises or lowers land.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+
+        for (let x = 0; x < 24; x++) {
+            game.tile(x, 8).elements[0].baseZ = 112;
+        }
+    }, function () {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 10 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /10,8 - at ground height 112 and this run is at height 96/,
+            "both heights, so the model can see which way the ground goes");
+        assert.match(outcome.detail, /nothing in this bridge changes that/);
+        assert.doesNotMatch(outcome.detail, /buy_land|clear_scenery|remove_path/,
+            "no call here levels ground, so naming one would send the model round a loop");
+    });
+});
+
+test("a barrier several tiles deep names every tile of the way through, capped", function () {
+    // Naming one blocker is enough to act on only when there is one. The router already
+    // goes round scenery, so a run that fails on scenery has hit a barrier with no gap in
+    // it: clearing the single tile named would fail again on the tile behind it, which is
+    // the eight-turn loop this whole message exists to end. What is reported is the
+    // cheapest way through - the fewest tiles that have to change - and all of it.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+
+        for (let x = 0; x < 24; x++) {
+            game.addScenery(x, 8);
+            game.addScenery(x, 9);
+        }
+    }, function () {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 12 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /10,8 10,9 - carrying scenery/,
+            "a two-deep wall is two tiles to clear, and naming one of them wastes the call");
+    });
+
+    // And a barrier deep enough that listing it whole would be the message. The count of
+    // what is not listed is what keeps it a window rather than a truncated list read as
+    // the whole truth.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+
+        for (let x = 0; x < 24; x++) {
+            for (let y = 8; y <= 18; y++) {
+                game.addScenery(x, y);
+            }
+        }
+    }, function () {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 20 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /10,8 10,9 10,10 10,11 10,12 10,13 and 5 more of them - carrying scenery/,
+            "six tiles and then a count: a long run must not spend a paragraph on its blockers");
+    });
+});
+
+test("two conditions in the way are two clauses with two remedies", function () {
+    // The one-sentence failure could not have said this at all. Reporting only the first
+    // blocker would be nearly as bad: the model buys the land, retries, and fails on the
+    // scenery behind it.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+
+        for (let x = 0; x < 24; x++) {
+            game.own(x, 8, false);
+            game.addScenery(x, 9);
+        }
+    }, function () {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 12 }]);
+
+        assert.equal(outcome.ok, false);
+        assert.match(outcome.detail, /10,8 - not land the park owns; buy_land/);
+        assert.match(outcome.detail, /10,9 - carrying scenery; clear_scenery/);
     });
 });
 
@@ -684,6 +897,95 @@ test("the route a claimed queue severs is severed on the map, not only in the se
         }
 
         assert.equal(footpathAt(game, 10, 7)?.isQueue, false, "the corridor north of the door is untouched");
+    });
+});
+
+test("a queue at the tile a ride claims is not reported as the end that is cut off", function () {
+    // The verdict is two membership tests against the walk out of the park gate, taken
+    // after the build - and the ride claims its queue inside that same call. The game
+    // dead-ends the tile the door opens onto, so a queue built exactly right drops out of
+    // the walk at precisely the tile a queue has to touch. One run read "neither end,
+    // 51,25 or 51,30, is connected" for a queue whose door end was working, tore it out,
+    // and spent four turns re-deriving it; an equivalent line later ran and was ridden.
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+
+        for (let y = 5; y <= 8; y++) {
+            game.addPath(10, y);
+        }
+
+        // The entrance building at 11,9, ride at 12,9, so its door opens onto 10,9.
+        game.addRideEntrance(11, 9, 0, 2);
+    }, function (game) {
+        const outcome = layAndLetTheRideClaimIt(game, [{ x: 10, y: 9 }, { x: 10, y: 12 }], function () {
+            game.severPath(10, 9, 10, 8);
+        });
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(footpathAt(game, 10, 9)?.ride, 0, "the door tile has to be the ride's queue for this to bite");
+
+        // The tail really is stranded here, and that is the end worth naming: a queue is
+        // entered at the end away from the door.
+        assert.match(outcome.detail, /its far end 10,12 is cut off/);
+        assert.doesNotMatch(outcome.detail, /neither end/,
+            "the door tile is not a second cut-off end, and calling it one hides the real one");
+        assert.match(outcome.detail, /10,9 carries ride 0's queue at the tile that ride's entrance opens onto/,
+            "the tile the game dead-ended has to be named as that, not left to be inferred");
+        assert.match(outcome.detail, /dead-ends the tile a ride claims/,
+            "and why, because the model cannot read the game's edge bits");
+        assert.match(outcome.detail, /leaves the ride with no line/,
+            "the advice above says to aim an end at ordinary path, which off this tile breaks the ride");
+    });
+});
+
+test("a door-tile queue whose tail reaches the park counts as connected", function () {
+    // The other half of the same defect, and the one that makes the field wrong rather
+    // than merely the sentence: this queue works, guests walk into it at 11,10, and the
+    // old verdict reported connectedToPark false because the door tile is not in the walk.
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+
+        for (let y = 5; y <= 10; y++) {
+            game.addPath(10, y);
+        }
+
+        // Entrance building at 12,6, ride at 13,6: its door opens onto 11,6.
+        game.addRideEntrance(12, 6, 0, 2);
+    }, function (game) {
+        const outcome = layAndLetTheRideClaimIt(game, [{ x: 11, y: 6 }, { x: 11, y: 10 }], function () {
+            game.severPath(11, 6, 11, 7);
+        });
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(footpathAt(game, 11, 6)?.ride, 0, "the door tile carries the ride's queue");
+        assert.equal(outcome.connectedToPark, true,
+            "guests reach this queue at 11,10 and walk up it: the door tile being dead-ended is the game's doing");
+        assert.doesNotMatch(outcome.detail, /does not reach the park entrance/,
+            "a working queue reported as unreachable is what got one torn out");
+    });
+});
+
+test("a run that reaches nothing is still reported as cut off, door tile or not", function () {
+    // The excuse above must not become a blanket one. Both ends of this run are the same
+    // claimed door tile, so excusing the door tile is the only thing standing between this
+    // run and a verdict of "connected" - and nothing of it is within ten tiles of the gate.
+    // A tool that reports success for work that did not happen teaches a false world, and a
+    // tool that reports a reachable park that is not is the same bug pointed at guests.
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+        // Entrance building at 3,20, ride at 4,20: its door opens onto 2,20.
+        game.addRideEntrance(3, 20, 0, 2);
+    }, function (game) {
+        const outcome = lay([{ x: 2, y: 20 }, { x: 2, y: 20 }], true);
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(footpathAt(game, 2, 20)?.ride, 0,
+            "the door tile has to carry the ride's queue or this test excuses nothing");
+        assert.equal(outcome.connectedToPark, false, "nothing of this run is anywhere near the park");
+        assert.match(outcome.detail, /does not reach the park entrance/);
+        assert.match(outcome.detail, /no tile of it is in the network guests can walk/,
+            "neither end is stranded in the ordinary way, so the run itself is what has to be named");
     });
 });
 
