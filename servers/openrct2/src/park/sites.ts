@@ -50,17 +50,29 @@ export interface AccessOption {
     /** Which side of the ride this sits on, as an axis: "+x", "-x", "+y" or "-y".
      *  Two options sharing a side put both doors on one face of the ride. */
     side: string;
+    /** What this option costs, in one sentence: the path to lay, the tile the queue takes
+     *  and what stands on it, and how much of the park's walking loses its route when a
+     *  ride claims a queue there. The same facts as `pathDistance`, `door` and
+     *  `queueCutsOff`, combined and said in words, because the three read separately are
+     *  three numbers the caller has to put together and one of them went unread every time.
+     *  A price, not a recommendation, and no option is ordered or marked by it. */
+    cost: string;
     /** The tile the door opens onto, where a queue goes. Absent for a shop, which is
      *  served from the `x`,`y` tile itself and has no door. */
     door?: DoorTile;
     /** Trees or scenery stand on this tile or its door; clear_scenery them first. */
     needsClearing: boolean;
-    /** Tiles from the door to the nearest footpath the park gate reaches. 0 means the door
-     *  already stands on that network. -1 when the gate reaches no footpath at all.
-     *  Measured against the reachable network rather than against paving anywhere, because
-     *  a stranded fragment is still paving: a door standing on one read 0 - the same number
-     *  as a door on the main walk, and the first place this list sorts to - while no guest
-     *  could ever arrive at it. */
+    /** Tiles from the door to the nearest footpath the park gate reaches AND the park could
+     *  lay path onto - paving on its own land, or paving touching its own land. 0 means the
+     *  door already stands on such a path. -1 when there is no such paving at all.
+     *  A straight tile count and so a lower bound: it does not check whether the ground
+     *  between is owned, level or clear.
+     *  Both filters are there because paving that fails either one priced a connection that
+     *  could not be made. A stranded fragment is still paving, and a door standing on one
+     *  read 0 - the same number as a door on the main walk - while no guest could arrive at
+     *  it. A scenario's entrance corridor is reachable paving on land the park neither owns
+     *  nor can buy, and a site beside it read two or three tiles for a connection nothing
+     *  could ever lay. */
     pathDistance: number;
     /** How many path tiles stop being reachable from the park entrance once an entrance
      *  here claims a queue on `door`. A ride claiming a queue dead-ends the one tile its
@@ -72,6 +84,70 @@ export interface AccessOption {
      *  other path and cuts nothing. A measurement of what would happen, not a ranking: the
      *  list is not reordered by it. */
     queueCutsOff: number;
+}
+
+/** ES5 target: no template strings, and "1 tiles" reads as a bug in the renderer. */
+function tiles(count: number): string {
+    return String(count) + (count === 1 ? " tile" : " tiles");
+}
+
+/**
+ * What this door costs, in one sentence, said where the model is already reading.
+ *
+ * `queueCutsOff` is correct and was never read. Measured over three runs of the model
+ * choosing a door: it wrote `pathDistance` 77 times in its own reasoning and `queueCutsOff`
+ * 3 times, and in the run that put a queue across the park's trunk path it enumerated all
+ * seven options, copying `door`, `pathDistance` and `needsClearing` for each, and
+ * `queueCutsOff` for none. It was not weighing the number and overriding it. It never saw
+ * it. A correct field nothing reads is a presentation defect, so the field stays and this
+ * says the same fact in the place the reading actually happens.
+ *
+ * It also settles the one inversion in the numbers. For a shop's serving tile
+ * `pathDistance` 0 means guests can already stand there, which is the best case there is.
+ * For a ride's door 0 means the opposite - the door needs a free tile, and 0 says the tile
+ * is not free, so the queue must take paving that is already carrying traffic. Same field,
+ * opposite meaning, nothing in the number to tell them apart. In words they cannot collide.
+ *
+ * It states a price and stops. No option is reordered, filtered, marked or recommended by
+ * it; whether the price is worth paying is the caller's call, and this is the same list in
+ * the same order it was before.
+ */
+function doorCost(door: DoorTile, pathDistance: number, queueCutsOff: number): string {
+    const lay = pathDistance === 0
+        ? "nothing to lay"
+        : (pathDistance < 0
+            ? "no paving the park could join is reachable, so there is nothing to price the walk against"
+            : "at least " + tiles(pathDistance) + " of path to lay");
+
+    const takes = door.hasUnboundQueue
+        ? "which already carries a queue belonging to no ride"
+        : (door.isExistingPath
+            ? (door.guestsCanReach
+                ? "which is path guests walk today"
+                : "which is paving no guest reaches from the gate")
+            : "which is bare ground");
+
+    const loses = queueCutsOff > 0
+        ? (queueCutsOff === 1
+            ? "and 1 tile of path loses its route to the park entrance"
+            : "and " + String(queueCutsOff) + " tiles of path lose their route to the park entrance")
+        : (door.guestsCanReach
+            ? "and no path loses its route to the park entrance"
+            : "and no route runs through it to lose");
+
+    return lay + "; the queue takes " + String(door.x) + "," + String(door.y)
+        + ", " + takes + ", " + loses + ".";
+}
+
+/** The same sentence for a shop, which has no door and claims no queue. */
+function shopCost(pathDistance: number): string {
+    const lay = pathDistance === 0
+        ? "nothing to lay: guests can already stand on this tile"
+        : (pathDistance < 0
+            ? "no paving the park could join is reachable, so there is nothing to price the walk against"
+            : "at least " + tiles(pathDistance) + " of path to lay to reach this tile");
+
+    return lay + "; a shop claims no queue, so nothing loses its route to the park entrance.";
 }
 
 export interface BuildSite {
@@ -96,8 +172,9 @@ export interface BuildSite {
     access: AccessOption[];
     /** How many positions exist in total, before this list was trimmed. */
     accessTotal: number;
-    /** Distance to the nearest footpath the park gate reaches: from the best door, or from
-     *  the shop's serving tile. -1 when the gate reaches no footpath at all. */
+    /** Distance to the nearest footpath the park gate reaches and the park could lay path
+     *  onto: from the best door, or from the shop's serving tile. -1 when there is no such
+     *  paving at all. */
     pathDistance: number;
     /** Tiles to the nearest existing ride. Small numbers mean no room for queues between them. */
     nearestRideDistance: number;
@@ -128,8 +205,9 @@ export interface CandidateExtent {
     toX: number;
     toY: number;
     /** The smallest and the largest `pathDistance` among every matching site, counted in
-     *  the same tiles a site's own `pathDistance` counts. Both -1 when the gate reaches no
-     *  footpath at all, which is every site's distance in such a park rather than some. */
+     *  the same tiles a site's own `pathDistance` counts. Both -1 when there is no paving
+     *  the gate reaches and the park could join onto, which is every site's distance in such
+     *  a park rather than some. */
     nearestPathDistance: number;
     furthestPathDistance: number;
 }
@@ -231,24 +309,57 @@ function collectRideTiles(): { x: number; y: number }[] {
     return tiles;
 }
 
+/** True when the park owns at least one tile orthogonally touching this one. */
+function touchesOwnedLand(grid: MapGrid, x: number, y: number): boolean {
+    for (let i = 0; i < NEIGHBOURS.length; i++) {
+        const cell = grid.at(x + NEIGHBOURS[i].dx, y + NEIGHBOURS[i].dy);
+
+        if (cell && cell.owned) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /**
- * The footpath tiles a guest can actually walk to from the gate, which is what every
- * distance here is measured against.
+ * The footpath tiles a guest can walk to from the gate AND the park could lay path onto,
+ * which together are what every distance here is measured against.
  *
- * This swept the whole grid for anything carrying a footpath. Paving the gate reaches
- * nothing of counted the same as the main walk, so a door standing on a stranded fragment
- * came back `pathDistance` 0 with `isExistingPath` true - the markers of the best door in
- * the park - and sorted to the top of a list the model takes the first entry of. Two rides
- * of one run went onto a five-tile island that park_status had named as stranded in the
- * turn before.
+ * Two filters, each put here by a run that went wrong.
+ *
+ * REACHABLE. This swept the whole grid for anything carrying a footpath. Paving the gate
+ * reaches nothing of counted the same as the main walk, so a door standing on a stranded
+ * fragment came back `pathDistance` 0 with `isExistingPath` true - the markers of the best
+ * door in the park - and sorted to the top of a list the model takes the first entry of.
+ * Two rides of one run went onto a five-tile island park_status had named as stranded in
+ * the turn before.
+ *
+ * JOINABLE. Reachable was still not enough. A scenario's entrance corridor is footpath on
+ * land the park does not own and cannot buy, and it is reachable by definition - guests
+ * arrive along it. A site beside it priced at two or three tiles for a connection that can
+ * never be laid, which is the same lie the old 0 told, one step further out. So a tile
+ * counts only when the park owns it, or owns a tile touching it: those are the tiles it can
+ * lay a footpath up to, and a footpath laid beside an existing one joins to it whoever owns
+ * the ground. A corridor running away across land the park owns nothing beside drops out,
+ * one tile at a time, exactly where it stops being connectable.
+ *
+ * The distance itself stays a straight tile count and so stays a lower bound: nothing here
+ * checks whether the ground in between is owned, level or clear. Routing it properly is a
+ * search per door over thousands of candidates, on the game's own thread.
  */
-function reachablePathTiles(grid: MapGrid, reachable: Record<string, boolean>): { x: number; y: number }[] {
+function connectablePathTiles(grid: MapGrid, reachable: Record<string, boolean>): { x: number; y: number }[] {
     const tiles: { x: number; y: number }[] = [];
 
     for (let y = 0; y < grid.height; y++) {
         for (let x = 0; x < grid.width; x++) {
             const cell = grid.at(x, y);
-            if (cell && cell.path && reachable[key(x, y)]) {
+
+            if (!cell || !cell.path || !reachable[key(x, y)]) {
+                continue;
+            }
+
+            if (cell.owned || touchesOwnedLand(grid, x, y)) {
                 tiles.push({ x: x, y: y });
             }
         }
@@ -624,8 +735,9 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
     const edges = readPathEdges(grid);
     const reachableNow = gate.length > 0 ? walkableFrom(edges, gate, null) : {};
     // Everything a distance is measured against, and everything it is not: paving the gate
-    // reaches, and the fragments it does not.
-    const paths = reachablePathTiles(grid, reachableNow);
+    // reaches and the park could lay path onto, as against stranded fragments and paving
+    // running away over ground the park owns nothing beside.
+    const paths = connectablePathTiles(grid, reachableNow);
     const islands = strandedIslands(grid, reachableNow);
 
     // The answer is a property of the footpath tile, not of the door, and thousands of
@@ -723,14 +835,16 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                     if (cell && cell.owned && cell.flat && cell.baseZ === area.z
                         && (cell.clearable || (cell.path && !cell.queue))) {
                         const facing = (turn + 2) % 4;
+                        const distance = pathDistanceOrNone(paths, serving.x, serving.y);
 
                         options.push({
                             x: serving.x,
                             y: serving.y,
                             direction: facing,
                             side: SIDE_NAMES[facing],
+                            cost: shopCost(distance),
                             needsClearing: !cell.clear && !cell.path,
-                            pathDistance: pathDistanceOrNone(paths, serving.x, serving.y),
+                            pathDistance: distance,
                             queueCutsOff: 0
                         });
                     }
@@ -777,22 +891,27 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                             continue;
                         }
 
+                        const doorTile: DoorTile = {
+                            x: door.x,
+                            y: door.y,
+                            isExistingPath: doorCell.path,
+                            guestsCanReach: reachableNow[key(door.x, door.y)] === true,
+                            hasUnboundQueue: doorCell.queue,
+                            island: islands[key(door.x, door.y)]
+                        };
+                        const distance = pathDistanceOrNone(paths, door.x, door.y);
+                        const cutsOff = queueCutsOffAt(door.x, door.y);
+
                         options.push({
                             x: tile.x,
                             y: tile.y,
                             direction: direction,
                             side: SIDE_NAMES[direction % 4],
+                            cost: doorCost(doorTile, distance, cutsOff),
                             needsClearing: !cell.clear || (!doorCell.clear && !doorCell.path),
-                            door: {
-                                x: door.x,
-                                y: door.y,
-                                isExistingPath: doorCell.path,
-                                guestsCanReach: reachableNow[key(door.x, door.y)] === true,
-                                hasUnboundQueue: doorCell.queue,
-                                island: islands[key(door.x, door.y)]
-                            },
-                            pathDistance: pathDistanceOrNone(paths, door.x, door.y),
-                            queueCutsOff: queueCutsOffAt(door.x, door.y)
+                            door: doorTile,
+                            pathDistance: distance,
+                            queueCutsOff: cutsOff
                         });
                     }
                 }
@@ -846,11 +965,11 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
                 // the serving tile is where the guest has to be able to stand.
                 const distanceToPath = shown[0].pathDistance;
 
-                // A park whose gate reaches no footpath at all - none laid yet, or every
-                // fragment of it stranded - leaves every distance unmeasurable, and dropping
-                // those sites would report such a park as unbuildable. `paths` is the
-                // reachable network, so a park with paving the gate cannot reach is that
-                // case too, and every site there comes back at -1 rather than vanishing.
+                // A park with no footpath the gate reaches and the park could join onto -
+                // none laid yet, every fragment of it stranded, or all of it running over
+                // ground the park owns nothing beside - leaves every distance unmeasurable,
+                // and dropping those sites would report such a park as unbuildable. Every
+                // site there comes back at -1 rather than vanishing.
                 if (distanceToPath < 0 && paths.length > 0) {
                     continue;
                 }

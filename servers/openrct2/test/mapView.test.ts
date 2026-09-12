@@ -286,7 +286,7 @@ test("the legend explains every character in the grid and no character that is a
         assert.ok(!explained["~"], "no water is in this window, so the legend must not offer one");
         assert.ok(explained.a, "ride track is in this window");
         assert.ok(explained["*"]);
-        assert.ok(view.legend.indexOf("G N X a-z # Q P % ? ~ - ^ * .") >= 0,
+        assert.ok(view.legend.indexOf("G N X a-z # Q : P = % ? ~ - ^ * .") >= 0,
             "the precedence a one-character cell runs on has to be stated, not assumed");
     });
 });
@@ -631,5 +631,109 @@ test("a busy window of the default size stays inside a thousand characters", fun
 
         assert.ok(wire < 1000, "a " + String(DEFAULT_VIEW_SIZE) + " square came to " + String(wire)
             + " characters; the budget for this is a few hundred tokens");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Ownership, which one character has to carry for paving because paving is the one
+// built thing the park lays, replaces and joins onto.
+// ---------------------------------------------------------------------------
+
+/**
+ * Forest Frontiers, in the shape that cost a run 2,400 pounds.
+ *
+ * The park's entrance corridor is footpath on land the park neither owns nor can buy, and
+ * it runs west out of the park to the gate. Inside the boundary the same line is the park's
+ * own trunk walk. Both drew as `P`, so the picture said the park's walk ran eight tiles
+ * further west than it does; the model bought land towards a path that was never the
+ * park's, said in its own words that a path on non-park land "doesn't make sense", and had
+ * nothing in the render it could use to settle it.
+ *
+ * The owned empty ground beside the corridor is the other half of the lie: `.` next to `P`
+ * reads as "pave from here to there", and here there is no there.
+ */
+function entranceCorridorPark(game: FakeGame): void {
+    for (let x = 0; x < 40; x++) {
+        for (let y = 0; y < 40; y++) {
+            game.own(x, y, x >= 12 && x <= 20 && y >= 8 && y <= 14);
+        }
+    }
+
+    for (let x = 4; x <= 11; x++) {
+        game.addPath(x, 11);          // the corridor: paving, and not the park's
+    }
+
+    for (let x = 12; x <= 18; x++) {
+        game.addPath(x, 11);          // the trunk: the park's own walk
+    }
+}
+
+test("a footpath on land the park does not own is a different character from one on its own", function () {
+    withGame(entranceCorridorPark, function () {
+        const view = drawn(renderMapView({ left: 4, top: 9, right: 21, bottom: 13 }));
+
+        assert.equal(cellAt(view, 8, 11), "=", "the entrance corridor is paving the park does not own");
+        assert.equal(cellAt(view, 15, 11), "P", "the trunk inside the boundary is the park's own walk");
+        assert.notEqual(cellAt(view, 8, 11), cellAt(view, 15, 11),
+            "one character has to tell these apart: before it did not, and the model bought land"
+            + " to reach a path that was never the park's");
+
+        // The exact geometry, so a render that is right in kind and wrong by two columns -
+        // which is what the model read - cannot pass.
+        assert.equal(countOf(view, "="), 8, "the corridor is x 4 to 11 at y 11 and nothing else");
+        assert.equal(countOf(view, "P"), 7, "the trunk is x 12 to 18 at y 11 and nothing else");
+
+        assert.equal(cellAt(view, 11, 11), "=", "the last corridor tile before the boundary");
+        assert.equal(cellAt(view, 12, 11), "P", "and the first tile of the park's own walk");
+
+        // The configuration that lied: unowned paving with the park's own empty ground
+        // beside it. Both facts have to survive into the picture.
+        assert.equal(cellAt(view, 12, 10), ".", "the park's ground, flat and empty, beside the corridor's end");
+        assert.equal(cellAt(view, 8, 10), "-", "and the ground beside the corridor itself is not the park's");
+        assert.equal(cellAt(view, 19, 11), ".", "past the trunk the park's ground is empty again");
+    });
+});
+
+test("the legend names the ownership of the paving that was actually drawn, and no other", function () {
+    withGame(entranceCorridorPark, function () {
+        const both = drawn(renderMapView({ left: 4, top: 9, right: 21, bottom: 13 }));
+
+        assert.ok(both.legend.indexOf("= path, not the park's land") >= 0,
+            "a character in the grid the legend does not explain is a character the model invents a meaning for");
+        assert.ok(both.legend.indexOf("P path on the park's land") >= 0,
+            "and `P` has to say it is the park's, or `P` alone still reads as `any path`");
+
+        // Generated from what rendered, not printed as a fixed list: a window holding only
+        // the park's own walk must not offer the model a `=` to find in it.
+        const trunkOnly = drawn(renderMapView({ left: 13, top: 9, right: 18, bottom: 13 }));
+        assert.equal(countOf(trunkOnly, "P"), 6, "this window is the trunk and nothing else");
+        assert.equal(countOf(trunkOnly, "="), 0);
+        assert.ok(trunkOnly.legend.indexOf("= path") < 0, "no unowned paving is in view, so none is explained");
+        assert.ok(trunkOnly.legend.indexOf("P path on the park's land") >= 0);
+
+        const corridorOnly = drawn(renderMapView({ left: 5, top: 9, right: 10, bottom: 13 }));
+        assert.equal(countOf(corridorOnly, "="), 6, "this window is the corridor and nothing else");
+        assert.equal(countOf(corridorOnly, "P"), 0,
+            "the corridor must not borrow the character that means the park's own walk");
+        assert.ok(corridorOnly.legend.indexOf("= path, not the park's land") >= 0);
+        assert.ok(corridorOnly.legend.indexOf("P path on the park's land") < 0);
+    });
+});
+
+test("a queue on land the park does not own is a different character from its own queue", function () {
+    withGame(function (game) {
+        game.addPath(10, 10, true);
+        game.own(12, 10, false);
+        game.addPath(12, 10, true);
+    }, function () {
+        const view = drawn(renderMapView({ left: 8, top: 8, right: 14, bottom: 12 }));
+
+        assert.equal(cellAt(view, 10, 10), "Q", "the park's own queue");
+        assert.equal(cellAt(view, 12, 10), ":", "a queue on ground the park does not own");
+        assert.notEqual(cellAt(view, 10, 10), cellAt(view, 12, 10));
+        assert.equal(countOf(view, "Q"), 1, "the unowned queue must not also count as the park's");
+        assert.equal(countOf(view, ":"), 1);
+        assert.ok(view.legend.indexOf(": queue, not the park's land") >= 0);
+        assert.ok(view.legend.indexOf("Q queue on the park's land") >= 0);
     });
 });

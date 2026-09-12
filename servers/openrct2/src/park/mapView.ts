@@ -18,6 +18,18 @@
  * applies to it, and a tree on sloped ground reads as sloped, because clearing it would not
  * make that tile buildable.
  *
+ * OWNERSHIP IS PART OF WHAT THE CHARACTER CARRIES. A footpath used to be `P` whether the
+ * park owned the ground or not, and in Forest Frontiers the whole entrance corridor is path
+ * on land the park neither owns nor can buy. A run read that corridor as ordinary paving and
+ * spent 2,400 pounds buying ground to reach a path that could never be reached, then said in
+ * its own words that a path on non-park land "doesn't make sense" - there was no way to tell
+ * from the picture, because the picture did not carry the difference. So the paving glyphs
+ * come in pairs: `P`/`=` for path and `Q`/`:` for queue, the park's land and not. The other
+ * built glyphs - the gate, a ride's doors, its track - do not split, because nothing the
+ * model can do about those tiles changes with ownership: they are occupied either way, and
+ * they are the park's own structures. The ground glyphs already split, `-` being ground the
+ * park does not own.
+ *
  * COORDINATE HEADERS ON BOTH AXES. The way a text map fails is a silent off-by-one: the
  * model reads the right shape at the wrong offset and builds one tile out. x runs down the
  * header rows, one digit place per row, and every row carries its own y.
@@ -47,7 +59,11 @@ const ON_RIDE_EXIT = "X";
 /** A ride whose id is past z. Nothing can name it in one character, so it says so. */
 const ON_RIDE_BEYOND_Z = "#";
 const ON_QUEUE = "Q";
+/** A queue on ground the park does not own: there, walked, and not the park's to touch. */
+const ON_QUEUE_UNOWNED = ":";
 const ON_PATH = "P";
+/** A footpath on ground the park does not own - a scenario's entrance corridor, typically. */
+const ON_PATH_UNOWNED = "=";
 /** Something is standing here that this renderer has no name for. */
 const ON_UNNAMED = "%";
 const GROUND_UNREADABLE = "?";
@@ -62,11 +78,13 @@ const RIDE_LETTERS = "abcdefghijklmnopqrstuvwxyz";
 /**
  * The precedence, highest first, exactly as the legend states it. Anything built comes
  * before anything about the ground, because you cannot build on a tile that is taken
- * whatever the ground is like; then the ground, hardest fact first.
+ * whatever the ground is like; then the ground, hardest fact first. Paving is the one built
+ * thing whose glyph also carries whose land it stands on, because that is the one built
+ * thing the park lays, replaces and joins onto.
  */
 const GLYPH_ORDER = ON_PARK_GATE + ON_RIDE_ENTRANCE + ON_RIDE_EXIT + "a" + ON_RIDE_BEYOND_Z
-    + ON_QUEUE + ON_PATH + ON_UNNAMED + GROUND_UNREADABLE + GROUND_WATER + GROUND_UNOWNED
-    + GROUND_SLOPED + GROUND_SCENERY + GROUND_CLEAR;
+    + ON_QUEUE + ON_QUEUE_UNOWNED + ON_PATH + ON_PATH_UNOWNED + ON_UNNAMED + GROUND_UNREADABLE
+    + GROUND_WATER + GROUND_UNOWNED + GROUND_SLOPED + GROUND_SCENERY + GROUND_CLEAR;
 
 /** What `clear_scenery` will take down, which is what `*` promises. Same set as map.ts. */
 const SCENERY_TYPES: Record<string, boolean> = {
@@ -87,18 +105,20 @@ const LEGEND_PHRASES: Record<string, string> = {
     "X": "X ride exit",
     "a": "a-z ride track (see rides)",
     "#": "# ride track past z",
-    "Q": "Q queue",
-    "P": "P path",
+    "Q": "Q queue on the park's land",
+    ":": ": queue, not the park's land",
+    "P": "P path on the park's land",
+    "=": "= path, not the park's land (no queue, no path, no buying it)",
     "%": "% unnamed thing on the tile",
     "?": "? unreadable",
     "~": "~ water",
-    "-": "- not owned",
+    "-": "- not the park's land",
     "^": "^ owned, sloped, nothing levels it",
     "*": "* owned, flat, scenery (clear_scenery clears it)",
     ".": ". owned, flat, empty"
 };
 
-const PRECEDENCE_NOTE = "1 char/tile, no gaps; first that applies: G N X a-z # Q P % ? ~ - ^ * .";
+const PRECEDENCE_NOTE = "1 char/tile, no gaps; first that applies: G N X a-z # Q : P = % ? ~ - ^ * .";
 
 export interface MapViewRect {
     fromX: number;
@@ -264,12 +284,17 @@ function readTile(grid: MapGrid, x: number, y: number): TileReading {
         };
     }
 
+    // Paving is drawn before the ground it sits on, and carries the ground's one fact that
+    // still changes what can be done here. A path the park does not own is walked by guests
+    // and is not the park's to queue, to pave up to, or in most scenarios to buy.
+    const owned = !!cell && cell.owned;
+
     if (queue) {
-        return { glyph: ON_QUEUE, ride: -1 };
+        return { glyph: owned ? ON_QUEUE : ON_QUEUE_UNOWNED, ride: -1 };
     }
 
     if (path) {
-        return { glyph: ON_PATH, ride: -1 };
+        return { glyph: owned ? ON_PATH : ON_PATH_UNOWNED, ride: -1 };
     }
 
     if (unnamed) {
