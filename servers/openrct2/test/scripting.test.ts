@@ -149,6 +149,59 @@ test("a tool's own list is never trimmed a second time", function () {
         "a tool's result must carry no omission marker, or its own count contradicts its own list: " + serialized.substring(0, 200));
 });
 
+/** The shape build_path's `detail` has: explanation first, then the warning, last. */
+function detailWithWarningLast(explanationLength: number): string {
+    const warning = " WARNING: 5 path tiles are no longer reachable from the park entrance."
+        + " A queue on its own is walked like any other path; what dead-ends is the one tile a"
+        + " ride's entrance claims, and the route to those tiles ran through such a tile.";
+    const explanation = "Laid 12 tiles from 50,25 to 50,37. " + new Array(explanationLength).join("e");
+
+    return explanation + warning;
+}
+
+test("a warning at the end of a tool's detail survives the cut", function () {
+    // Both queue-building results in one run ended mid-word at "WARN", so the model was
+    // told it had severed its park's trunk path and then un-told, twice, and spent the next
+    // fifteen turns reasoning about why guests could not reach a ride.
+    const detail = detailWithWarningLast(9000);
+    const result = sanitizeToolResult({ ok: true, detail: detail }) as { detail: string };
+
+    assert.notEqual(result.detail, detail, "a 9000-character detail has to be cut somewhere, or this proves nothing");
+    assert.match(result.detail, /5 path tiles are no longer reachable from the park entrance/,
+        "the warning is appended last and must survive the cut, which a head-only cap ate: " + result.detail.slice(-120));
+    assert.match(result.detail, /ran through such a tile\.$/,
+        "and it must survive whole, down to the last sentence of it");
+    assert.match(result.detail, /^Laid 12 tiles from 50,25 to 50,37\./,
+        "the beginning has to be kept too - a fix that only kept the end would lose what the call did");
+});
+
+test("a tool's detail that fits is handed over untouched", function () {
+    // The over-limit side is the easy half to test and the half a previous cap test only
+    // ever exercised: a "fix" that cut every string would pass that one and mangle every
+    // ordinary message in the park.
+    const detail = detailWithWarningLast(3000);
+
+    assert.ok(detail.length > 3000 && detail.length < 4000,
+        "this case has to sit just under the cap to test the boundary, and is " + String(detail.length));
+
+    const result = sanitizeToolResult({ ok: true, detail: detail }) as { detail: string };
+
+    assert.equal(result.detail, detail, "a string inside the cap must come back byte for byte");
+    assert.equal(result.detail.indexOf("<truncated"), -1, "and must not be labelled as cut");
+});
+
+test("an enormous string is still bounded and still says it was cut", function () {
+    // The cap is there to stop one runaway result flooding a 64k context, and keeping the
+    // end of a string must not become a way of keeping all of it.
+    const huge = new Array(200001).join("x");
+    const capped = String((sanitizeToolResult({ detail: huge }) as { detail: string }).detail);
+
+    assert.ok(capped.length < 4200,
+        "a 200,000-character string must still come back bounded, and came back " + String(capped.length) + " long");
+    assert.match(capped, /<truncated: 196000 characters cut from the middle/,
+        "and the model has to be able to tell that it is reading a cut string, and how much went: " + capped.slice(0, 80));
+});
+
 test("evaluate still caps depth and array length", function () {
     // The counterpart to the two above: a tool's result gets its own, looser limits.
     // Loosening evaluate's instead would let one careless script flood the context.

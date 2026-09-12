@@ -294,6 +294,59 @@ function doorLabel(field: string, tile: { x: number; y: number }): string {
     return field + "X/" + field + "Y " + String(tile.x) + "," + String(tile.y);
 }
 
+/**
+ * The access option whose `door` is this tile, or null.
+ *
+ * An option's own `x`,`y` is where the building goes; its `door` is the tile behind it,
+ * one step further from the ride, where the queue runs to. Sending the `door` is the one
+ * mistake this refusal could not previously tell apart from a coordinate that was simply
+ * wrong: one run sent four different door tiles in eleven calls and got the same 492
+ * characters back every time, which is a message that cannot be acted on however true it is.
+ *
+ * A door tile is always exactly one step out from its option, so the option can only be one
+ * of this tile's four neighbours, and `accessAt` is what decides whether it really is one.
+ * Nothing is named on a guess: an option that would itself be refused is no answer, and a
+ * neighbour that is not an option at all leaves the general message in place.
+ */
+function optionWhoseDoorIs(
+    grid: MapGrid,
+    cx: number,
+    cy: number,
+    offsets: { dx: number; dy: number }[],
+    z: number,
+    tile: { x: number; y: number }
+): { x: number; y: number } | null {
+    for (let d = 0; d < DIRECTION_VECTORS.length; d++) {
+        const candidate = { x: tile.x + DIRECTION_VECTORS[d].dx, y: tile.y + DIRECTION_VECTORS[d].dy };
+        const attempt = accessAt(grid, cx, cy, offsets, z, candidate);
+
+        if (!attempt.access) {
+            continue;
+        }
+
+        const door = apronTile(attempt.access);
+
+        if (door.x === tile.x && door.y === tile.y) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
+/** The refusal for a coordinate that is an option's `door` rather than the option itself. */
+function doorConfusion(field: string, sent: { x: number; y: number }, option: { x: number; y: number }): string {
+    return doorLabel(field, sent) + " is the `door` of the `access` option at "
+        + String(option.x) + "," + String(option.y) + ", not that option's own `x`,`y`."
+        + " Send " + field + "X " + String(option.x) + ", " + field + "Y " + String(option.y);
+}
+
+/** Said once however many of the two coordinates were doors, because it is the same fact. */
+const WHAT_A_DOOR_IS = " A `door` is the tile behind the building, one step further from the ride, which is"
+    + " why it does not touch the footprint: the queue runs to it and the building stands between it and"
+    + " the ride. Every `access` option carries both tiles - its `x`,`y` is what these four arguments take,"
+    + " and its `door` is the tile that option's queue would run to.";
+
 export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: BuildOutcome) => void): void {
     const steps: BuildStep[] = [];
     const finish = function (state: FinishState): void {
@@ -408,13 +461,28 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
 
         if (!entranceAttempt.access || !exitAttempt.access) {
             const faults: string[] = [];
+            // Counted rather than inferred from the text: when every coordinate that failed
+            // is an option's door, the option the model picked was right and "pick a
+            // different one" is the sentence that sent it round the loop.
+            let doorsSent = 0;
+            const fault = function (field: string, sent: { x: number; y: number }, reason: unknown): void {
+                const option = optionWhoseDoorIs(grid, request.x, request.y, offsets, centre.baseZ, sent);
+
+                if (option !== null) {
+                    doorsSent++;
+                    faults.push(doorConfusion(field, sent, option));
+                    return;
+                }
+
+                faults.push(doorLabel(field, sent) + " " + String(reason));
+            };
 
             if (!entranceAttempt.access) {
-                faults.push(doorLabel("entrance", request.entrance) + " " + String(entranceAttempt.reason));
+                fault("entrance", request.entrance, entranceAttempt.reason);
             }
 
             if (!exitAttempt.access) {
-                faults.push(doorLabel("exit", request.exit) + " " + String(exitAttempt.reason));
+                fault("exit", request.exit, exitAttempt.reason);
             }
 
             let intact = "";
@@ -437,14 +505,20 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                 step: "site",
                 ok: false,
                 detail: faults.join(". ") + "." + intact
-                    + (stale
-                        ? " find_build_sites never offers a tile like that, so these coordinates either did not come"
-                            + " from its `access` list or that list is now out of date: the ground changes as you"
-                            + " build, and a build that fails leaves its track behind. Call find_build_sites for this"
-                            + " ride again and take a fresh `access` pair from the result. Do not re-send these"
-                            + " coordinates and do not guess new ones."
-                        : " Pick a different option from this site's `access` list: every option in it is a clear,"
-                            + " level, owned tile touching this footprint, with somewhere for its queue behind it.")
+                    + (doorsSent > 0 ? WHAT_A_DOOR_IS : "")
+                    // Every coordinate that failed was a door, so the options the model
+                    // picked were the right ones and only the field was wrong: sending it to
+                    // a different option here is what it did eleven times.
+                    + (doorsSent === faults.length
+                        ? ""
+                        : stale
+                            ? " find_build_sites never offers a tile like that, so these coordinates either did not come"
+                                + " from its `access` list or that list is now out of date: the ground changes as you"
+                                + " build, and a build that fails leaves its track behind. Call find_build_sites for this"
+                                + " ride again and take a fresh `access` pair from the result. Do not re-send these"
+                                + " coordinates and do not guess new ones."
+                            : " Pick a different option from this site's `access` list: every option in it is a clear,"
+                                + " level, owned tile touching this footprint, with somewhere for its queue behind it.")
             });
             return refuse();
         }

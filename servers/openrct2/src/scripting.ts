@@ -14,6 +14,19 @@ const MAX_NODES = 2000;
 const MAX_RESULT_CHARS = 16000;
 
 /**
+ * How much of an over-long string is kept from its end.
+ *
+ * A cut string loses its middle, not its tail, because a composed message puts its most
+ * consequential sentence last: build_path appends "WARNING: 5 path tiles are no longer
+ * reachable from the park entrance" after the explanation, and a head-only cut ate exactly
+ * that - twice in one run, while the model spent fifteen turns wondering why guests could
+ * not reach a ride it had just cut off. A share of the cap rather than a field name or a
+ * bigger number, so it holds for the next long message nobody has written yet: whatever
+ * the string's length, the last characters of it survive.
+ */
+const STRING_TAIL_SHARE = 0.4;
+
+/**
  * Limits for results a tool composed itself. These are already shaped deliberately, so
  * the sanitiser is here only to catch native objects, cycles and throwing getters - not
  * to trim them. A tight depth limit here silently empties nested fields the tool
@@ -23,6 +36,15 @@ const TOOL_MAX_DEPTH = 12;
 const TOOL_MAX_NODES = 40000;
 const TOOL_MAX_ARRAY_ITEMS = 500;
 const TOOL_MAX_OBJECT_KEYS = 200;
+/**
+ * A tool's own prose gets four times evaluate's room before it is cut at all. The strings
+ * here are sentences a tool wrote on purpose - build_path's `detail` runs past 1000
+ * characters whenever a run is cut off and warned about - whereas an over-long string out
+ * of `evaluate` is a script that asked for too much. Still a cap and not an exemption: the
+ * ceiling is what stops one runaway result filling the context, and it now bounds the
+ * middle of a string rather than its end.
+ */
+const TOOL_MAX_STRING_LENGTH = 4000;
 
 /** One invariant that moved while a script ran, with no game action to account for it. */
 export interface StateChange {
@@ -57,6 +79,7 @@ interface Limits {
     depth: number;
     arrayItems: number;
     objectKeys: number;
+    stringLength: number;
     /** Render a nested `undefined` as a marker rather than as `null`. */
     markUndefined: boolean;
 }
@@ -65,6 +88,7 @@ const EVALUATE_LIMITS: Limits = {
     depth: MAX_DEPTH,
     arrayItems: MAX_ARRAY_ITEMS,
     objectKeys: MAX_OBJECT_KEYS,
+    stringLength: MAX_STRING_LENGTH,
     markUndefined: true
 };
 
@@ -72,6 +96,7 @@ const TOOL_LIMITS: Limits = {
     depth: TOOL_MAX_DEPTH,
     arrayItems: TOOL_MAX_ARRAY_ITEMS,
     objectKeys: TOOL_MAX_OBJECT_KEYS,
+    stringLength: TOOL_MAX_STRING_LENGTH,
     markUndefined: false
 };
 
@@ -130,6 +155,30 @@ function collectKeys(value: object): string[] {
     return keys;
 }
 
+/**
+ * Cut an over-long string in the middle, keeping its beginning and its end, and say how
+ * much went and that what follows is the end of it.
+ *
+ * The end is kept because that is where a message puts the thing it most needs read: every
+ * warning this codebase appends is appended last. Cutting the middle costs the part of a
+ * long message that is most often ordinary explanation, and - unlike raising the cap -
+ * holds for a string of any length, because both ends survive however far apart they are.
+ * The output is still bounded: the cap plus the marker, whatever came in.
+ */
+function capString(text: string, cap: number): string {
+    if (text.length <= cap) {
+        return text;
+    }
+
+    const tail = Math.floor(cap * STRING_TAIL_SHARE);
+    const head = cap - tail;
+
+    return text.substring(0, head)
+        + " ... <truncated: " + String(text.length - cap) + " characters cut from the middle,"
+        + " the end of the string follows> ... "
+        + text.substring(text.length - tail);
+}
+
 export function sanitizeValue(value: unknown): unknown {
     return sanitize(value, 0, [], { nodes: MAX_NODES }, EVALUATE_LIMITS);
 }
@@ -169,10 +218,7 @@ function sanitize(value: unknown, depth: number, stack: object[], budget: Budget
     }
 
     if (type === "string") {
-        const text = value as string;
-        return text.length > MAX_STRING_LENGTH
-            ? text.substring(0, MAX_STRING_LENGTH) + "... <truncated>"
-            : text;
+        return capString(value as string, limits.stringLength);
     }
 
     if (type === "function") {

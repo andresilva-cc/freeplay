@@ -246,6 +246,92 @@ test("each ground condition a door tile fails is named as itself", function () {
     });
 });
 
+/**
+ * The 3x3 ride these tests build sits at 14,10 and covers x 13-15, y 9-11, so 12,10 is an
+ * `access` option and 11,10 is that option's `door` - the tile behind the building, where
+ * the queue goes.
+ */
+test("a coordinate that is an option's door says so, and names the option's own x,y", function () {
+    // Eleven calls in one run, one byte-identical 492-character refusal every time: the
+    // model had sent the `door` of an option rather than the option's own `x`,`y`, and
+    // permuted the y coordinate - 51,25 / 51,26 / 51,27 / 51,28 - instead of re-reading,
+    // because nothing in the message ever changed. It escaped by reading the raw JSON.
+    const { game, restore } = park();
+
+    try {
+        const outcome = build({ entrance: { x: 11, y: 10 } });
+        const detail = step(outcome, "site");
+
+        assert.equal(outcome.ok, false);
+        assert.match(detail, /entranceX\/entranceY 11,10/, "the coordinate that was sent is not named");
+        assert.match(detail, /is the `door` of the `access` option at 12,10/,
+            "the confusion itself is not named, which is the whole defect: " + detail);
+        assert.match(detail, /Send entranceX 12, entranceY 10/,
+            "the value that fixes the call is not given: " + detail);
+        assert.match(detail, /exitX\/exitY 16,10 is fine/, "the door that was fine is not cleared");
+        assert.ok(!/Pick a different option/.test(detail),
+            "the option it picked was right and only the field was wrong, so this must not send it to another option");
+        assert.equal(game.rides.length, 0, "nothing is created when the site is rejected");
+    } finally {
+        restore();
+    }
+});
+
+test("the exit gets the same reading of its own door tile", function () {
+    const { game, restore } = park();
+
+    try {
+        const detail = step(build({ exit: { x: 17, y: 10 } }), "site");
+
+        assert.match(detail, /exitX\/exitY 17,10 is the `door` of the `access` option at 16,10/,
+            "the exit is read the same way as the entrance: " + detail);
+        assert.match(detail, /Send exitX 16, exitY 10/, "and it names the exit's own fix, not the entrance's");
+        assert.equal(game.rides.length, 0, "nothing is created when the site is rejected");
+    } finally {
+        restore();
+    }
+});
+
+test("a coordinate that is nobody's door still gets the message it always got", function () {
+    // The other half of the pair, and the one that keeps the new sentence from being a
+    // guess: 12,14 is neither an option nor an option's door, and a message that named one
+    // anyway would be worse than the general one it replaced.
+    const { restore } = park();
+
+    try {
+        const detail = step(build({ entrance: { x: 12, y: 14 } }), "site");
+
+        assert.match(detail, /entranceX\/entranceY 12,14 does not touch the ride's footprint/,
+            "the condition it failed is no longer named: " + detail);
+        assert.match(detail, /Pick a different option from this site's `access` list/,
+            "the coordinate really is wrong here, so the general message has to stand: " + detail);
+        assert.ok(!/`door` of the `access` option/.test(detail), "nothing is an option's door here: " + detail);
+    } finally {
+        restore();
+    }
+});
+
+test("an option that would itself be refused is never named as the fix", function () {
+    // 11,10 is only 12,10's door while 12,10 is a door position at all. With that tile
+    // unowned there is no option to point at, and inventing one would cost the turn that
+    // sent the model to a tile this same refusal would reject.
+    const { game, restore } = park();
+    game.own(12, 10, false);
+
+    try {
+        const detail = step(build({ entrance: { x: 11, y: 10 } }), "site");
+
+        assert.ok(!/is the `door` of the `access` option/.test(detail),
+            "12,10 is not a usable option, so 11,10 must not be reported as its door: " + detail);
+        assert.ok(!/Send entranceX 12/.test(detail), "and the tile it would send the model to is refused too");
+        assert.match(detail, /entranceX\/entranceY 11,10 does not touch the ride's footprint/,
+            "it falls back to the condition that actually failed: " + detail);
+        assert.equal(game.rides.length, 0, "nothing is created when the site is rejected");
+    } finally {
+        restore();
+    }
+});
+
 test("a door tile with a structure on it says the site data is stale, not to pick another option", function () {
     // The three worst recoveries in the logs: the coordinates HAD come from a fresh
     // `access` list, and a build that failed moments earlier had left track on one of the
