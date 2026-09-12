@@ -127,6 +127,12 @@ by a written summary, and the summaries are additive: each carries the last one'
 forward and has no way to say that one of them has stopped being true. A ride demolished and
 rebuilt elsewhere still reads at its first coordinates there, and a step written down as in
 progress stays in progress after it is finished. Nothing in a summary was read from the park.
+A tool result is not summarised at all but dropped whole, so a `view_map` grid read five
+times over a run is gone from the turn after it, with nothing in its place. The tools re-read
+the park on every call and a recollection of one does not, so a tile named with no grid in
+context is recalled rather than seen — one run recalled a path tile as empty ground and a
+ride's track three tiles from where it stood, and every route it weighed after that was
+blocked by an obstacle that was not there.
 
 `park_status` also carries the scenario objective and how far along it is, and `messages`,
 the game naming problems in its own words. `guest_feedback` reports what guests think, once

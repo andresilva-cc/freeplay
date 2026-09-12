@@ -78,7 +78,9 @@ const FACTS: { fact: string; why: string }[] = [
     { fact: "When the context fills it is replaced by a written summary", why: "the model has no other way to know its own memory is not the transcript; measured in session 01a092cd, three consecutive summaries kept a demolished ride at its dead coordinates" },
     { fact: "the summaries are additive: each carries the last one's facts forward and has no way to say that one of them has stopped being true", why: "why a stale coordinate is never corrected rather than merely late - pi's own update prompt says PRESERVE all existing information from the previous summary" },
     { fact: "A ride demolished and rebuilt elsewhere still reads at its first coordinates there", why: "the exact measured failure: a Pirate Ship built at (56,26), demolished, rebuilt at (54,31), still summarised at (56,26)" },
-    { fact: "Nothing in a summary was read from the park", why: "the fact that settles which text is evidence, with no procedure attached to it" }
+    { fact: "Nothing in a summary was read from the park", why: "the fact that settles which text is evidence, with no procedure attached to it" },
+    { fact: "A tool result is not summarised at all but dropped whole", why: "the other half of what a summary does, and the silent half: the additive-staleness rule above describes facts that are carried and wrong, this one describes readings that are simply gone. Five `view_map` results were dropped by one compaction while seventeen routine turns were kept" },
+    { fact: "a tile named with no grid in context is recalled rather than seen", why: "what the model was doing on the turn after that compaction - it invented a path tile as empty and a ride's track three tiles off, walled off its own only fix, and spent the whole output budget with zero tool calls. States which text is an observation; the decision to go and look is left to it" }
 ];
 
 /**
