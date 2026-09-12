@@ -54,7 +54,7 @@ plugin API, and it is not exposed over MCP.
 
 ## What Freeplay adds
 
-Fourteen tools, and the three inherited ones are gone. Upstream's `getDate`, `getParkInfo`
+Sixteen tools, and the three inherited ones are gone. Upstream's `getDate`, `getParkInfo`
 and `showError` are still in the tree but are no longer registered in `src/tools/index.ts`:
 `park_status` covers both reads, and every tool in the list is re-read by the model on
 every turn, so a redundant one costs context and invites it to pick the weaker option.
@@ -67,15 +67,17 @@ what each one does is in its own description, which is what the model reads.
 | `guest_feedback` | Guest thoughts, counted over a sample |
 | `list_ride_objects` | What can be built, with footprints |
 | `describe_placement` | What one ride at one tile at one rotation would be: the ground it would stand on, whether that ground takes it, and every door position it would have. It searches for nothing |
+| `view_map` | Draw a window of the park as a text grid, one character per tile, with a legend for every character that window used. It is the only picture of the park there is, and what it costs scales with the window asked for |
 | `clear_scenery` | Strip a rectangle of ground, or a square centred on a tile |
 | `build_flat_ride` | Create, place, entrance, exit, price, open |
-| `build_path` | A path or queue, along given waypoints or between two tiles |
+| `build_path` | Pave the tiles it is given, as ordinary path or as a queue. It routes nothing, fills in nothing between them and adds no tile of its own |
 | `remove_path` | Take the footpath or queue off a run of tiles, and report what guests can still reach and which rides lost their queue |
 | `operate_ride` | Open, close, reprice, reschedule inspections for or demolish a ride that already exists |
 | `open_park` | Open or close the park to guests, and set admission |
 | `hire_staff` | Hire and place staff |
 | `buy_land` | Buy the land rights to a rectangle of tiles, and report what the scenario would not sell |
 | `set_game_speed` | Set the speed setting, and pause or unpause |
+| `wait` | Let the game run without touching the park, then report what moved: the dates either side, the game days between them, and the change in guests, cash, rating and messages |
 | `evaluate` | Arbitrary JavaScript against the plugin API |
 
 `open_park` is the smallest, and it is there for a reason worth stating: opening the park
@@ -89,12 +91,15 @@ whatever it is asked for.
 
 `set_game_speed` is the same story about the clock, and `remove_path` and `buy_land` are
 the two most recent. `remove_path` closed a gap rather than an ergonomic problem: nothing
-could delete a footpath at all, while `build_path` could lay a path over a queue (which
-unbinds it from its ride) or run a queue up to a door whose entrance then claims it (which
-dead-ends that tile and cuts off whatever lay past it). It takes `build_path`'s own addressing, so that call's
-`route` passed back as `waypoints` lifts exactly what it laid, and it reports how much of
-the network is still reachable from the gate and any ride whose bound queue went with the
-path. `buy_land` wraps `landbuyrights`, which is the only lever a plugin has over park
+could delete a footpath at all, while `build_path` leaves damage that only removal undoes.
+A queue laid onto another ride's queue chains the two lines into one and rebinds them,
+leaving the first ride with a door and no line; a queue run up to a door whose entrance then
+claims it dead-ends that tile and cuts off whatever lay past it. It takes `build_path`'s own
+addressing under the same field name, so that call's `tiles` passed straight back lifts
+exactly what it laid, and it reports how much of the network is still reachable from the
+gate and any ride whose bound queue went with the path.
+
+`buy_land` wraps `landbuyrights`, which is the only lever a plugin has over park
 boundaries during a scenario: its sibling `landsetrights` carries the game's `EditorOnly`
 flag, so there is no selling land back and no making an unlisted tile buyable, and ground
 height (`landsetheight`, `landraise`, `landlower`) is not reachable through any tool here.
@@ -291,9 +296,9 @@ a later-tick failure comes back as that call's error. If a game build will not l
 be wrapped, the wrap is abandoned and the watchdog remains the fallback — a slow answer is
 worse than a real one, but it is much better than taking the bridge down mid-tick.
 
-Nine of the fourteen tools are deferred: `build_flat_ride`, `build_path`, `remove_path`,
-`clear_scenery`, `operate_ride`, `open_park`, `hire_staff`, `buy_land` and
-`set_game_speed`, which is every tool that acts.
+Ten of the sixteen tools are deferred: `build_flat_ride`, `build_path`, `remove_path`,
+`clear_scenery`, `operate_ride`, `open_park`, `hire_staff`, `buy_land`, `set_game_speed` and
+`wait`. The first nine are every tool that acts.
 `build_flat_ride` is the longest, running up to six actions in sequence — `ridecreate`,
 `trackplace`, an entrance, an exit, `ridesetprice`, `ridesetstatus` — and reading the world
 back between them. It reports which step failed, and demolishes the ride it created when
@@ -302,6 +307,13 @@ nothing lands on the ground, so a failed build does not leave an empty ride hold
 action, read the park back a tick later, and if it did not take, try once through the plugin
 API's own setters — the route every run took by hand — before reporting whatever the second
 read says.
+
+`wait` is the tenth and is deferred for the other reason the mechanism exists: it fires no
+game action at all, it spends real time. The cap is 20 seconds, set where it is so the
+longest wait still answers inside the same 30-second watchdog, and it refuses outright on a
+paused game rather than spending that budget on a stopped clock. Its result is denominated
+in game time — the dates either side, the days between them, and what moved in guests, cash
+and rating — because real seconds are only the half that had to be capped.
 
 ## Adding a tool
 

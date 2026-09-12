@@ -22,7 +22,7 @@ nor OpenRCT2 is baked into the design.
 ```
 
 The model sees the park through tools that report what a player reads off the screen,
-and changes it through tools that carry out a decision it has already made. Fourteen of
+and changes it through tools that carry out a decision it has already made. Sixteen of
 them, because every tool is re-read by the model on every turn and a small model handles
 a handful far better than dozens. That includes the game's own clock: a person playing
 controls the speed and the pause key, so the model does too. Where that line sits — and

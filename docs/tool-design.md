@@ -55,7 +55,7 @@ path does not.
 | `describe_placement` | For the one origin and rotation it was asked about: the ground the ride would stand on, what stops it, how far each door is from a path, and what an entrance at that door would dead-end | Where to put the ride, which way round, which doors, whether to build at all |
 | `clear_scenery` | Removing scenery from a named patch of ground | Whether felling it is worth the money and the rating |
 | `build_flat_ride` | The create/place/entrance/exit sequence, with correct arguments | What, where, which way round, which doors, what price, whether to open |
-| `build_path` | Placement and routing around obstacles | Where paths go, and whether a run is a queue |
+| `build_path` | Paving the tiles it was handed, and naming every tile of the run that will not take a path, what is on it, and the call that lifts it | Which tiles carry a path, what shape the line is, and whether a run is a queue |
 | `remove_path` | Taking the footpath or queue off named tiles, and what that cost: how much of the network guests can still reach, and any ride whose bound queue went with it | Which tiles to take up, and whether to lay anything back |
 | `operate_ride` | The open, close, reprice, inspect and demolish actions, and what the ride is doing afterwards | Whether a ride should be open, what it should cost, how often it needs inspecting, whether to tear it down |
 | `open_park` | The two actions that admit guests and set admission | When to open, and what to charge |
@@ -65,7 +65,7 @@ path does not.
 | `evaluate` | The whole plugin API, unrestricted | Everything else |
 
 Note what none of them do: none rank options by "best", none choose where a ride goes,
-none decide a price, and none lay a path the model did not ask for. `describe_placement`
+none decide a price, and none pave a tile the model did not name. `describe_placement`
 answers about a tile the model named and looks at no other; its `access` list is every door
 position that placement has, in the order the tiles ring the footprint, so there is nothing
 in it that was ordered or left out.
@@ -76,16 +76,36 @@ the path for it is park design, which is the interesting part of the game.
 
 ## Where the line genuinely blurs
 
-`build_path` is the honest hard case. Routing around a tree is perception — the model
-cannot see the trees, and dumping a tile map into its context to fix that costs more than
-it is worth. But the *shape* of the line between two points is park layout, which is one
-of the few creative decisions in the game. Both live in one call.
+`build_path` was the honest hard case, and the first resolution of it was wrong. Routing
+around a tree is perception — the model cannot see the trees, and dumping a tile map into
+its context to fix that costs more than it is worth. But the *shape* of the line between
+two points is park layout, which is one of the few creative decisions in the game. Both
+lived in one call.
 
-It shipped routing both, and the parks it produced showed it: braided dirt swathes that
-no player would draw. The resolution is to separate them rather than to route more
-prettily. The caller passes `waypoints` — the corners it wants — and the tool lays
-straight runs between them, handling only the tiles. Two bare endpoints still work, and
-the description says plainly that the tool is then choosing the layout.
+It shipped routing both, and the parks it produced showed it: braided dirt swathes that no
+player would draw. The first resolution was to separate them rather than to route more
+prettily: the caller passed `waypoints` — the corners it wanted — and the tool laid the
+legs between them, with two bare endpoints still accepted and the description saying
+plainly that the tool was then choosing the layout.
+
+That did not hold, and why is in "The line was ours too" below. Each leg between corners
+went through the same search, with the same turn cost and the same obstacle avoidance, so
+the corners were hints and every tile between them was still the tool's. `build_path` now
+takes `tiles`: the literal list, every one of which is paved and no other tile touched,
+with nothing routed, nothing filled in between them and nothing reordered.
+
+The perception half did not go with the routing. What the router was actually buying — the
+model cannot see trees — comes back as a refusal: every tile of the run that will not carry
+a path, named at once, with what stands on each and the `clear_scenery`, `buy_land` or
+`remove_path` call that lifts it, and nothing built. That is more than the router ever gave
+back. It detoured round the same tree silently, so the model never learned the ground was
+blocked and never got the chance to fell it.
+
+Nor does the tool decide what shape a run is. Tiles that do not touch are laid as given and
+reported as separate runs, because two stubs or a queue standing on its own are legitimate
+things to build, and refusing one would be the tool ruling on the layout it has just handed
+over. The gap is reported rather than refused, since whether the tiles just drawn join up is
+exactly the thing the caller cannot read back.
 
 Routing better would have hidden the problem. A tool that makes a decision *well* is
 still making it.
@@ -106,13 +126,12 @@ and that is not a rule the game has; how it got written down, and what believing
 is further down this page. The gap stands either way: a park that has been cut, however it
 was cut, needs a way to take the path back up.
 
-`remove_path` takes the same addressing as `build_path` — `fromX`/`fromY`/`toX`/`toY` or
-`waypoints` — so a `build_path` result's own `route` handed back as `waypoints` lifts
-exactly the tiles that call laid. It routes around nothing, deliberately: a tile either
-carries a footpath or it does not, so there is nothing to route *around*, and the run is
-the literal line, turning once along x and then along y. The two halves of `build_path`'s
-hard case therefore do not both recur here — only the layout half does, and it is the
-caller's line.
+`remove_path` takes the same addressing as `build_path`, which is now a single field
+rather than a family of them: `tiles`, the literal list, so a `build_path` result's own
+`tiles` handed straight back lifts exactly what that call laid. Neither half of
+`build_path`'s hard case recurs here. There is nothing to route *around*, because a tile
+either carries a footpath or it does not; and there is no line left to choose, because the
+caller names the tiles at both ends.
 
 What it reports is what removal costs: `tilesRemoved` counted by re-reading each tile,
 how much of the path network is still reachable from the park entrance, and
@@ -126,7 +145,9 @@ by name rather than reporting a short removal the model has no way to explain.
 The first version of `build_flat_ride` routed its own paths to the nearest footpath.
 It worked, and it was wrong: path layout is one of the few genuinely creative decisions
 in a park builder, and the tool was making it badly and invisibly. Splitting `build_path`
-out gave the decision back and made the tool smaller at the same time.
+out made the tool smaller and looked like it gave the decision back. It gave back less than
+it looked: the routing moved rather than went, and `build_path` went on choosing the line
+for two more versions before it took tiles.
 
 The tell to watch for: if a tool's arguments stop describing *what the player wants* and
 start describing *nothing at all* — `build_me_a_good_park()` — it has crossed over.
@@ -218,10 +239,11 @@ they ship.
   like any other path; what severs a route is a ride *claiming* a tile, and it dead-ends
   exactly the one its door opens onto. So a door on bare ground is 0, and only a door
   already carrying a footpath or an unclaimed queue can be above 0. That is a count of what
-  would happen, and the list is deliberately *not* reordered by it; the ordering stays
-  distance to a path, and which door to accept the cost at is the model's. The field is
-  right and has always been the right thing to report; the reason it was first added was
-  false, which is the subject of the section on it below.
+  would happen, and the list is deliberately *not* reordered by it — nor by anything else:
+  the options come back in the order the tiles ring the footprint, and which door to accept
+  the cost at is the model's. The field is right and has always been the right thing to
+  report. Two things about it were not: the reason it was first added was false, and for
+  three runs nothing read it. Both are below.
 - ~~`find_build_sites` tries a ride at rotations 0 and 1 when none is given, because 2 and 3
   cover exactly the same tiles with the ride facing the other way. A shop is tried at all
   four, because a stall's rotation decides which single neighbour guests are served from.~~
@@ -244,7 +266,7 @@ they ship.
   `operate_ride`'s `price` said "compare against the ride's `value`". A description is the
   one piece of text the model reads every single turn, so a recommendation sitting in one
   is not a hint, it is the tool playing — and the queue advice was the tool choosing the
-  door, which is the decision `find_build_sites` exists to hand over. Those three went
+  door, which is the decision that tool existed to hand over. Those three went
   first. The measurements they were wrapped around stayed: the sites still report `side`,
   the rides still report `value`, and an open ride guests cannot reach still costs rating.
 - Advice comes back, so that is a running total and not a closed list. Eight more sentences
@@ -262,16 +284,18 @@ they ship.
   reads. Each time the fact the instruction was wrapped around stayed and only the
   imperative went: the access step still says there is no queue and the exit is not
   connected, the stall steps still say which one tile is the counter and that a path on the
-  other three sides serves nobody, and the warning still says an ordinary path laid over a
-  queue unbinds it from its ride. Stating the world is the tool doing its job; naming the
+  other three sides serves nobody, and the fact that warning carried — an ordinary path laid
+  over a queue unbinds it from its ride — is now the reason `build_path` gives for refusing
+  to lay one there. Stating the world is the tool doing its job; naming the
   model's next move is the tool taking the turn.
 - `hire_staff` clamped a `count` outside 1 to 10 into range and then reported the clamped
   number as `requested`. Asking for 30 and being told 10 were requested is a small lie of
   exactly the kind the next section is about. The schema now refuses it by name.
 
-**Known and deliberate:** the unstated line of a two-point `build_path`. See above; the
-model can take it with `waypoints`, and the description says who is choosing when it
-does not.
+**Known and deliberate:** ~~the unstated line of a two-point `build_path`, which the model
+can take with `waypoints`.~~ Struck out with both forms: `build_path` takes the tiles and
+draws no line at all. `waypoints` was the two-point form wearing a different hat, which is
+"The line was ours too" below.
 
 ### The measurement was honest and it still chose
 
@@ -308,6 +332,83 @@ and the tool offers no second option anywhere. If the model is going to choose s
 the first thing it needs is for nothing else to have chosen.
 
 This is an experiment and it may not survive contact with a run. Reverting it is one commit.
+
+### The line was ours too
+
+The same finding, one tool along, and this one had been written down. `build_path` took two
+tiles and routed between them, and `src/tools/path.ts` said so in its own description:
+convenient, but it means it is choosing your layout. Saying it did not stop it being true,
+and `waypoints` did not either — each leg between corners went through the same search with
+the same turn cost and the same avoidance, so the corners were hints and every tile between
+them was the tool's. A `waypoints` of two points is the two-point form wearing a different
+hat.
+
+What made the cost visible was a run that could not wire one ride. Wiring a ride is two runs
+that must not collide: a queue from the tile the entrance door opens onto, and ordinary path
+from the tile the exit door opens onto. Ordinary path laid over a queue unbinds it from its
+ride, so the two lines cannot share a tile. The router picked each line independently, they
+overlapped, the queue went over part of the exit's path, and the exit was orphaned. The
+model could see what had happened and could not say *these tiles, not those*, because the
+tool did not take tiles.
+
+So it takes tiles, and both routed forms went rather than one. Leaving either in means the
+tile list is never exercised, because this model takes whichever option is easiest — which
+is the same measurement as site #1 in 11 of 12 builds, read off a different tool.
+
+What survived the change is worth more than the change. The router was buying one real
+thing, which is that the model cannot see trees, and that is perception, which this document
+says to keep. It is kept, in the shape a refusal takes: every blocked tile of the run named
+at once, with what stands on each and the call that lifts it, and nothing laid. The router
+held exactly the same knowledge and spent it on a detour, so a run that went round a tree
+taught the model nothing about the tree. Handing the fact over instead of acting on it is
+the whole rule in one field.
+
+### Correct, honest, measured, and still choosing
+
+Neither of the tools this section has replaced was lying, hinting or recommending. Both were
+right. `find_build_sites` sorted by a distance it measured correctly and said how many
+candidates it had found; `build_path`'s router found a real path around a real tree and
+reported the tiles it had actually laid. Each would pass a review for accuracy, and each was
+making the decision anyway.
+
+That is a sharper failure than a tool that lies, and harder to catch for the same reason:
+every test written about either one passed, and there was nothing wrong in the output to
+point at. What was wrong was that the result arrived with the choice already made.
+
+A field can do it without even being used. `queueCutsOff` was computed exactly right,
+reported plainly, and deliberately not used to reorder or mark anything — and over three
+runs of the model choosing a door it wrote `pathDistance` 77 times in its own reasoning and
+`queueCutsOff` 3 times. In the run that laid a queue across the park's trunk path it
+enumerated all seven options, copying `door`, `pathDistance` and `needsClearing` for each
+and `queueCutsOff` for none. It was not weighing the number and overriding it. It never saw
+it. A correct field nothing reads is a presentation defect, and "the model decides" is only
+true if the model has read the thing it is deciding with.
+
+`pathDistance` is the same defect from the other end: a real cost, measured honestly, that
+inverts on a ride's door. 0 on a shop's serving tile means guests can already stand there,
+which is the best case there is. 0 on a ride's door means the opposite — the door needs a
+free tile, and 0 says the tile is not free, so the queue has to take paving that is already
+carrying traffic. Same field, opposite sense, and nothing in the number to tell them apart.
+
+Neither was answered by ranking. Every access option now carries a `cost` sentence saying
+the three figures together, in words, in the place the reading actually happens: the path to
+lay, the tile the queue takes and what stands on it, and what loses its route to the gate.
+It states a price and stops — nothing is reordered, filtered, marked or recommended by it,
+and the list is the same list in the same order it was before.
+
+So the rule at the top of this page needs a third clause beside advice and ranking. A tool
+can be entirely accurate and still hold the decision: by having already made it, or by
+putting the fact the decision needs somewhere nobody looks. Being right is not the test.
+Whether the choice is still open when the result is read is the test.
+
+### What this is expected to cost
+
+Both changes may produce worse parks, and that is not a disclaimer. A worse site, a clumsier
+line and a door that strands a corner of the park, all chosen by the model, are the
+experiment. A better park chosen by a comparator in `src/park/sites.ts` and a router in
+`src/park/pathbuild.ts` is not evidence about the model at all, which is the only thing
+these runs exist to produce. Nothing here has been measured as an improvement in play and
+nothing here claims to be one.
 
 ## Corollary: tools must not lie
 
@@ -527,7 +628,8 @@ The rule was that guests cannot walk through a queue — a queue reaches a ride 
 there, so laying one across a route guests use splits the park in two. Nobody measured it.
 It was written down once and then read back out of six places that had each taken it from
 one of the others: the reachability flood in `src/park/paths.ts`, `build_path`'s severance
-warnings, `queueCutsOff` in `find_build_sites`, four tool descriptions, the prompt, and a
+warnings, `queueCutsOff` in what was then `find_build_sites`, four tool descriptions, the
+prompt, and a
 test written to hold it honest. Six things in step with each other, one source between
 them, and the game disagreeing with all six.
 

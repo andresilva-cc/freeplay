@@ -54,18 +54,20 @@ session state, and the connected client's session id becomes unknown.
 | `guest_feedback` | `tools/status.ts` | Guest thoughts, counted |
 | `list_ride_objects` | `tools/status.ts` | What can be built, with footprints |
 | `describe_placement` | `tools/sites.ts` | One ride at one tile at one rotation: the ground it would stand on, what stops it, and every door position |
+| `view_map` | `tools/mapView.ts` | Draw a window of the park as a text grid, one character per tile, with a legend for the characters that window used |
 | `clear_scenery` | `tools/clear.ts` | Strip a rectangle of ground, or a square centred on a tile |
 | `build_flat_ride` | `tools/build.ts` | Create, place, entrance, exit, price, open |
-| `build_path` | `tools/path.ts` | A path or queue, optionally along given waypoints |
-| `remove_path` | `tools/pathRemove.ts` | Take the footpath or queue off a run of tiles, addressed the way `build_path` addresses one |
+| `build_path` | `tools/path.ts` | Pave the tiles named, as ordinary path or as a queue. Nothing is routed and no tile is added |
+| `remove_path` | `tools/pathRemove.ts` | Take the footpath or queue off the tiles named, under the same `tiles` field `build_path` lays them with |
 | `operate_ride` | `tools/operate.ts` | Open, close, reprice, reschedule inspections for or demolish a ride that exists |
 | `open_park` | `tools/openPark.ts` | Open or close the park to guests, and set admission |
 | `hire_staff` | `tools/staff.ts` | Hire and place staff |
 | `buy_land` | `tools/land.ts` | Buy the land rights to a rectangle of tiles the scenario is selling |
 | `set_game_speed` | `tools/gameSpeed.ts` | Set the speed setting, and pause or unpause |
+| `wait` | `tools/wait.ts` | Let the game run without touching the park, and report the game time that passed and what moved in it |
 | `evaluate` | `tools/eval.ts` | Arbitrary JavaScript against the plugin API |
 
-Fourteen tools. Upstream's `DateTools`, `ParkTools` and `UiTools` remain in the tree but are
+Sixteen tools. Upstream's `DateTools`, `ParkTools` and `UiTools` remain in the tree but are
 deliberately not registered in `tools/index.ts`: `park_status` covers both reads, and
 every tool in the list is re-read by the model on every turn, so a redundant one costs
 context and invites the model to pick the weaker option.
@@ -154,11 +156,14 @@ timer. While deferred calls are in flight the game's timer is wrapped so that a 
 later tick comes back as that call's error result rather than escaping into the tick loop
 and leaving the caller to wait out the full 30 seconds.
 
-Nine of the fourteen tools are deferred — `build_flat_ride`, `build_path`, `remove_path`,
-`clear_scenery`, `operate_ride`, `open_park`, `hire_staff`, `buy_land` and `set_game_speed`,
-which is every tool that acts. `build_flat_ride`
-is the longest: up to six actions (`ridecreate`, `trackplace`, entrance, exit,
-`ridesetprice`, `ridesetstatus`), reading the world back between them, and demolishing the
+Ten of the sixteen tools are deferred — `build_flat_ride`, `build_path`, `remove_path`,
+`clear_scenery`, `operate_ride`, `open_park`, `hire_staff`, `buy_land`, `set_game_speed` and
+`wait`. The first nine are every tool that acts; `wait` fires no action at all and is
+deferred because it spends real time, capped at 20 seconds so that the longest one answers
+inside the same 30-second watchdog, and refuses outright on a paused game rather than
+spending that budget on a stopped clock. `build_flat_ride` is the longest: up to six
+actions (`ridecreate`, `trackplace`, entrance, exit, `ridesetprice`, `ridesetstatus`),
+reading the world back between them, and demolishing the
 ride it made if nothing lands on the ground. `open_park` is the shortest, and shows the
 pattern bare: send the action, read the park back, and if it did not take, try once through
 the plugin API's own setters before reporting what the second read says. `set_game_speed`
