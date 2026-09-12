@@ -187,34 +187,34 @@ test("an unknown argument is rejected where the schema forbids it, and tolerated
     });
 });
 
-test("a single waypoint is an argument error, not a routing failure", function () {
+test("an empty tile list is an argument error, not a failure to pave", function () {
     withSession(function (session) {
-        const body = structured(callTool(session, "build_path", { waypoints: [{ x: 10, y: 12 }] }));
+        const body = structured(callTool(session, "build_path", { tiles: [] }));
 
         assert.equal(body.ok, false);
-        assert.match(String(body.error), /waypoints/, "the argument at fault has to be named");
-        assert.match(String(body.error), /at least two points/);
+        assert.match(String(body.error), /names no tiles/, "the argument at fault has to be named");
+        assert.match(String(body.error), /one tile is a run/);
         assert.equal(session.game.attempted.length, 0, "and no tile was paved while working that out");
     });
 });
 
-test("a malformed waypoint is refused rather than coerced", function () {
+test("a malformed tile is refused rather than coerced", function () {
     withSession(function (session) {
-        // A missing y coerced to -1 would pave a line starting off the map.
+        // A missing y coerced to -1 would pave a tile off the map.
         const missing = structured(callTool(session, "build_path", {
-            waypoints: [{ x: 10 }, { x: 12, y: 10 }]
+            tiles: [{ x: 10 }, { x: 12, y: 10 }]
         }));
 
         assert.equal(missing.ok, false);
-        assert.match(String(missing.error), /waypoints\[0\]/, "the bad point is identified by position");
+        assert.match(String(missing.error), /tiles\[0\]/, "the bad tile is identified by position");
         assert.match(String(missing.error), /numeric x and y/);
 
         const text = structured(callTool(session, "build_path", {
-            waypoints: [{ x: 10, y: 12 }, { x: "14", y: 12 }]
+            tiles: [{ x: 10, y: 12 }, { x: "14", y: 12 }]
         }));
 
         assert.equal(text.ok, false, "a string coordinate is not a coordinate");
-        assert.match(String(text.error), /waypoints\[1\]/);
+        assert.match(String(text.error), /tiles\[1\]/);
         assert.equal(session.game.attempted.length, 0, "neither call laid any path");
     });
 });

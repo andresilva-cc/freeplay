@@ -73,10 +73,14 @@ entrance and one for the exit; a stall needs none.
    option's own `x`,`y`, never its `door`. `rideObject`, `x`, `y`, `rotation`, `price` and
    `open` are all required: a call missing any of them is refused by the schema before it
    reaches the game.
-4. `build_path` with `queue: true` from the entrance's door tile, then `queue: false` from
-   the exit's door. The build result names both door tiles, so there is nothing to look up.
-   That result's `route` is the tiles the call laid, and handed back to `remove_path` as its
-   `waypoints` it lifts exactly those, so a run laid wrong is not permanent.
+4. `build_path` for each door. It paves the tiles listed in `tiles` and no others: no line is
+   filled in between them, nothing is added to reach anything, and the order is left alone,
+   so a run is named tile by tile. The entrance's door tile needs a run with `queue: true`
+   and the exit's door tile needs one with `queue: false`, and those two runs cannot share a
+   tile — ordinary path laid over a queue unbinds that queue from its ride, so a tile in both
+   runs breaks one of them. The build result names both door tiles, so there is nothing to
+   look up. That result's `tiles` is what the call laid, and handed back to `remove_path` as
+   its own `tiles` it lifts exactly those, so a run laid wrong is not permanent.
 
 `ok: true` means the ride is STANDING, nothing more. `doorsAttached`, `open` and
 `reachable` come back separately, and any of them false is a ride you ALREADY OWN.
@@ -92,8 +96,9 @@ coordinate you send should be one a tool just reported:
 - a placement's `footprint` `fromX`/`fromY`/`toX`/`toY` → `clear_scenery`'s four of the same name
 - the `x`, `y` and `rotation` you asked `describe_placement` about → the same three to `build_flat_ride`
 - an `access` option's `x`,`y` → `entranceX`/`entranceY` or `exitX`/`exitY`
-- that option's `door`, or `park_status`'s `entranceDoor`/`exitDoor` → `build_path`
-- a run's end, a junction or a dead end from `paths` → the other end of that path
+- that option's `door`, or `park_status`'s `entranceDoor`/`exitDoor` → a tile in `build_path`'s `tiles`
+- a `build_path` result's `tiles` → `remove_path`'s `tiles`, which lifts exactly that run
+- a tile covered by a run in `paths.runs` → the tile a new run joins the network at
 
 Without a value, call the tool that reports it. A coordinate you derived, adjusted or
 remembered is the commonest way a run is wasted — and a tile carrying a path is still
@@ -120,7 +125,11 @@ not a reachable one unless a run in `paths.runs` covers it.
   dead-ends the one tile that door opens onto, and each access option's `queueCutsOff`
   measures that before you build — 0 for a door on bare ground, counted for a door already
   carrying an unbound queue. An ordinary path laid back over a queue unbinds it from its
-  ride, and `remove_path` takes the footpath or queue off the tiles it names.
+  ride, so `build_path` refuses a tile already carrying a queue to a run that is not one and
+  names the ride whose line it is. A queue laid onto another ride's queue is not refused: the
+  game chains the two lines into one and binds them to a single entrance, which leaves the
+  other ride with a door and no line, and `build_path` reports that as
+  `ridesLeftWithoutQueue`. `remove_path` takes the footpath or queue off the tiles it names.
 - A placement's `nearestRideDistance` is measured from its origin tile and counts the park
   gate and every ride door as a ride, so in an empty park it is the distance to the gate.
 - Nothing goes on ground the park does not own, and `buy_land` buys only the tiles a

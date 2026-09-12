@@ -2,8 +2,6 @@ import { mcpTool, mcpToolController } from "./decorators.js";
 import { buildPath, pathRefusal, DEFAULT_PATH_OBJECT, DEFAULT_QUEUE_OBJECT } from "../park/pathbuild.js";
 import type { DeferredMcpResult } from "./types.js";
 
-const END_FIELDS = ["fromX", "fromY", "toX", "toY"];
-
 /** An argument refusal in the same shape buildPath answers with, so there is one shape. */
 function refuse(detail: string): DeferredMcpResult {
     return {
@@ -19,41 +17,50 @@ export class PathTools {
     @mcpTool({
         name: "Build a path",
         description: [
-            "Lay a footpath or a queue line. Coordinates are tile coordinates, and every tile you name is paved.",
-            "Give `waypoints` to draw the line yourself — a list of corners, laid as straight runs between them.",
-            "That is how you control the shape of your park. With only `fromX/fromY` and `toX/toY` the tool picks",
-            "the line for you, which means it is choosing your layout.",
-            "Give either all four of `fromX`, `fromY`, `toX`, `toY`, or `waypoints`; nothing is defaulted.",
-            "Either way it routes around trees, because you cannot see them from here.",
-            "Set `queue: true` to build a queue line: a ride's entrance needs a queue tile touching its door,",
-            "or guests crowd around the building and never board. Ordinary paths are how guests get anywhere else.",
-            "Aim at the tile a door opens onto, never at the entrance or exit building itself — park_status gives",
+            "Pave the tiles you name. `tiles` is the whole of it: every tile in that list is paved and no",
+            "other tile is touched. Nothing is routed, nothing is filled in between them, nothing is",
+            "reordered, and no tile is added to reach anything — the line is yours to draw, tile by tile,",
+            "and this lays it and says what happened. One tile is a run.",
+            "Set `queue: true` to build a queue line: a ride's entrance needs a queue tile on the tile its",
+            "door opens onto, or guests crowd around the building and never board. A ride's exit needs",
+            "ordinary path — `queue: false` — on the tile its door opens onto, or guests board and cannot",
+            "get off. Those are two runs and they cannot share a tile: ordinary path laid over a queue",
+            "unbinds that queue from its ride, which is why a tile already carrying a queue is refused to a",
+            "run that is not one.",
+            "Name the tile a door opens onto, never the entrance or exit building itself — park_status gives",
             "those tiles as `entranceDoor` and `exitDoor`. A path cannot be laid on a building.",
-            "`connectedToPark: false` means one end is an island: the tiles guests can really walk to are",
-            "the ones park_status covers with `paths.runs`, and a tile being paved does not make it one of",
-            "them. Each run carries a `kind`, so which of those tiles are queue and which are ordinary path",
-            "is something you read rather than guess.",
-            "Every result has the same shape — `ok`, `tilesPlaced`, `tilesRouted`, `route`, `connectedToPark`",
-            "and `detail` — including refusals, where `detail` says what was wrong.",
-            "Where paths go is your decision — this only handles the placement."
+            "A tile that will not take a path is refused by name with what is on it and the call that lifts",
+            "it, and nothing at all is built: the whole run goes down or none of it does. A run has to be",
+            "owned, flat, and carrying nothing a footpath cannot share. Each tile is laid at its own ground",
+            "height, so tiles at different heights are all laid and simply do not join up.",
+            "Tiles that do not touch each other are laid as given and reported as separate runs; a gap is",
+            "not an error here.",
+            "`connectedToPark: false` means some tile of the run is an island: the tiles guests can really",
+            "walk to are the ones park_status covers with `paths.runs`, and a tile being paved does not make",
+            "it one of them. Each run carries a `kind`, so which of those tiles are queue and which are",
+            "ordinary path is something you read rather than guess.",
+            "`ridesLeftWithoutQueue` names any ride that had a queue bound to it before this call and has",
+            "none after — a queue laid onto another ride's queue chains the two lines into one, and nothing",
+            "in the game's API shows the first ride lost its line.",
+            "Every result has the same shape — `ok`, `tilesPlaced`, `tilesTargeted`, `tiles`,",
+            "`connectedToPark`, `ridesLeftWithoutQueue` and `detail` — including refusals, where `detail`",
+            "says what was wrong. `tiles` is what this call paved, and handed to `remove_path` as its own",
+            "`tiles` it lifts exactly those.",
+            "Where paths go is your decision — this only handles the paving."
         ].join(" "),
         inputSchema: {
             type: "object",
             properties: {
-                fromX: { type: "integer", minimum: 0, description: "Tile x of one end. Required with fromY, toX and toY unless you give waypoints." },
-                fromY: { type: "integer", minimum: 0, description: "Tile y of one end." },
-                toX: { type: "integer", minimum: 0, description: "Tile x of the other end." },
-                toY: { type: "integer", minimum: 0, description: "Tile y of the other end." },
-                waypoints: {
+                tiles: {
                     type: "array",
-                    description: "Corners of the path, in order, each an object with integer `x` and `y`. Use this to choose the shape yourself. At least two.",
-                    minItems: 2,
+                    description: "Every tile to pave, each an object with integer `x` and `y`. This is the literal list of tiles that will carry a path — not corners, not endpoints, and nothing is filled in between them. At least one.",
+                    minItems: 1,
                     items: {
                         type: "object",
-                        description: "One corner, in tile coordinates.",
+                        description: "One tile to pave, in tile coordinates.",
                         properties: {
-                            x: { type: "integer", minimum: 0, description: "Tile x of this corner." },
-                            y: { type: "integer", minimum: 0, description: "Tile y of this corner." }
+                            x: { type: "integer", minimum: 0, description: "Tile x." },
+                            y: { type: "integer", minimum: 0, description: "Tile y." }
                         },
                         required: ["x", "y"],
                         additionalProperties: false
@@ -63,7 +70,7 @@ export class PathTools {
                 surfaceObject: { type: "integer", minimum: 0, description: "Footpath surface style, from context.getAllObjects(\"footpath_surface\"). Queue styles are separate objects. Defaults to a plain path, or a blue queue." },
                 railingsObject: { type: "integer", minimum: 0, description: "Railing style, from `footpath_railings` the same way. Default 0." }
             },
-            required: [],
+            required: ["tiles"],
             additionalProperties: false
         },
         annotations: {
@@ -75,54 +82,29 @@ export class PathTools {
     })
     public buildPath(args: Record<string, unknown>): DeferredMcpResult {
         const queue = args.queue === true;
-        const waypoints: { x: number; y: number }[] = [];
+        const tiles: { x: number; y: number }[] = [];
 
-        if (Array.isArray(args.waypoints)) {
-            const given = args.waypoints as { x?: unknown; y?: unknown }[];
-
-            for (let i = 0; i < given.length; i++) {
-                const point = given[i];
-
-                // Coercing a malformed point to -1 would quietly route from off the map.
-                if (!point || typeof point.x !== "number" || typeof point.y !== "number") {
-                    return refuse("waypoints[" + String(i) + "] needs a numeric x and y.");
-                }
-
-                waypoints.push({ x: Math.floor(point.x), y: Math.floor(point.y) });
-            }
+        if (!Array.isArray(args.tiles)) {
+            return refuse("`tiles` is missing. build_path paves the tiles you name and nothing else, so"
+                + " it needs the list: `tiles` is an array of objects with integer `x` and `y`, and one"
+                + " tile is a run. Nothing was built.");
         }
 
-        if (waypoints.length === 1) {
-            return refuse("waypoints needs at least two points: where the path starts and ends.");
-        }
+        const given = args.tiles as { x?: unknown; y?: unknown }[];
 
-        if (waypoints.length === 0) {
-            // A missing end was floored to -1 and routed from off the map, which came back
-            // as "no level, owned, unobstructed route" - a routing failure standing in for
-            // an argument that was never given.
-            const missing: string[] = [];
+        for (let i = 0; i < given.length; i++) {
+            const tile = given[i];
 
-            for (let i = 0; i < END_FIELDS.length; i++) {
-                if (typeof args[END_FIELDS[i]] !== "number") {
-                    missing.push(END_FIELDS[i]);
-                }
+            // Coercing a malformed tile to -1 would quietly pave from off the map.
+            if (!tile || typeof tile.x !== "number" || typeof tile.y !== "number") {
+                return refuse("tiles[" + String(i) + "] needs a numeric x and y.");
             }
 
-            if (missing.length > 0) {
-                return refuse(missing.join(", ") + (missing.length === 1 ? " is missing" : " are missing")
-                    + ". build_path needs both ends of the run: give fromX, fromY, toX and toY together,"
-                    + " or give `waypoints` instead and leave all four out. Nothing was built.");
-            }
+            tiles.push({ x: Math.floor(tile.x), y: Math.floor(tile.y) });
         }
-
-        const floor = function (value: unknown): number {
-            return Math.floor(value as number);
-        };
 
         const request = {
-            points: waypoints.length >= 2
-                ? waypoints
-                : [{ x: floor(args.fromX), y: floor(args.fromY) }, { x: floor(args.toX), y: floor(args.toY) }],
+            tiles: tiles,
             queue: queue,
             surfaceObject: typeof args.surfaceObject === "number"
                 ? Math.floor(args.surfaceObject)

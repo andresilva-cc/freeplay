@@ -1,4 +1,4 @@
-import { DIRECTION_VECTORS, toWorld, unitStep } from "./map.js";
+import { DIRECTION_VECTORS, toWorld } from "./map.js";
 import { PARK_ENTRANCE, queuePathServes, RIDE_ENTRANCE, RIDE_EXIT, walkableFromParkEntrance } from "./paths.js";
 import type { Tile } from "./paths.js";
 
@@ -34,8 +34,13 @@ function actionError(result: GameActionResult): string {
 }
 
 export interface RemovePathRequest {
-    /** Corners of the run, in order. Two points means "you pick the corner". */
-    points: Tile[];
+    /**
+     * Exactly the tiles to take the footpath off, in the order given.
+     *
+     * The same field `build_path` takes and the same field it hands back, so a run laid
+     * wrong is undone by passing that call's own `tiles` straight here.
+     */
+    tiles: Tile[];
 }
 
 /** A ride whose entrance had a queue bound to it before this call and has none now. */
@@ -49,9 +54,10 @@ export interface RemovePathOutcome {
     ok: boolean;
     /** Tiles that carried a footpath and no longer do, counted by re-reading the map. */
     tilesRemoved: number;
-    /** Every tile the run covered, whether or not anything was on it. */
+    /** Every tile the run named, once each, whether or not anything was on it. */
     tilesTargeted: number;
-    route: Tile[];
+    /** The tiles this call named, in the order given: `build_path`'s own field name. */
+    tiles: Tile[];
     removed: Tile[];
     /**
      * Path tiles guests can still walk to from the park entrance, counted afterwards.
@@ -77,7 +83,7 @@ export function removePathRefusal(detail: string): RemovePathOutcome {
         ok: false,
         tilesRemoved: 0,
         tilesTargeted: 0,
-        route: [],
+        tiles: [],
         removed: [],
         reachableFromEntrance: null,
         ridesLeftWithoutQueue: [],
@@ -108,51 +114,26 @@ function nameTiles(tiles: Tile[]): string {
 }
 
 /**
- * The tiles a run covers: straight legs between the points, x first and then y.
+ * The tiles as given, with any tile named twice kept once.
  *
- * `build_path` routes around obstructions because a path cannot be laid on a tree.
- * Removal has nothing to route around — a tile either carries a footpath or it does
- * not — so the run is the literal line, and a leg whose ends share neither row nor
- * column turns once, along x and then along y. Passing `build_path`'s own `route`
- * back as `waypoints` therefore takes out exactly the tiles it laid.
+ * There is no line to fill in and nothing to route around: a tile either carries a
+ * footpath or it does not, and the caller named the tiles. `build_path` reports the tiles
+ * it laid under the same name, so handing that list straight back lifts exactly them.
  */
-export function straightRun(points: Tile[]): Tile[] {
-    const tiles: Tile[] = [];
+export function uniqueTiles(tiles: Tile[]): Tile[] {
     const seen: Record<string, boolean> = {};
+    const kept: Tile[] = [];
 
-    const add = function (tile: Tile): void {
-        const key = tileName(tile);
+    for (let i = 0; i < tiles.length; i++) {
+        const key = tileName(tiles[i]);
 
         if (!seen[key]) {
             seen[key] = true;
-            tiles.push(tile);
-        }
-    };
-
-    add({ x: points[0].x, y: points[0].y });
-
-    for (let i = 0; i + 1 < points.length; i++) {
-        const to = points[i + 1];
-        let x = points[i].x;
-        let y = points[i].y;
-        // The step is taken once, not recomputed. `unitStep` of a difference that is not a
-        // number is 0, and a loop that adds 0 while waiting to arrive never ends - inside
-        // the game process that is a hung OpenRCT2, not a failed call.
-        const stepX = unitStep(to.x - x);
-        const stepY = unitStep(to.y - y);
-
-        while (stepX !== 0 && x !== to.x) {
-            x += stepX;
-            add({ x: x, y: y });
-        }
-
-        while (stepY !== 0 && y !== to.y) {
-            y += stepY;
-            add({ x: x, y: y });
+            kept.push({ x: tiles[i].x, y: tiles[i].y });
         }
     }
 
-    return tiles;
+    return kept;
 }
 
 /** Whether this tile carries a footpath, whether it is a queue, and the height it sits at. */
@@ -234,7 +215,7 @@ function structureOnRun(tiles: Tile[]): string | null {
 }
 
 /** The tile a ride's entrance door opens onto: one step out from the building. */
-function entranceDoorOf(ride: Ride): Tile | null {
+export function entranceDoorOf(ride: Ride): Tile | null {
     const station = ride.stations.length > 0 ? ride.stations[0] : undefined;
     const entrance = station && station.entrance ? station.entrance : null;
 
@@ -255,7 +236,7 @@ function entranceDoorOf(ride: Ride): Tile | null {
  * building, so the one tile that decides it is the tile that door opens onto. A queue
  * elsewhere on the map, however long, serves nobody.
  */
-function ridesServedByQueue(): Record<number, boolean> {
+export function ridesServedByQueue(): Record<number, boolean> {
     const served: Record<number, boolean> = {};
     const rides = map.rides;
 
@@ -269,29 +250,68 @@ function ridesServedByQueue(): Record<number, boolean> {
 }
 
 /**
+ * The rides that had a queue bound to them before a call and have none after.
+ *
+ * Shared with `build_path`, which can take a ride's line away without removing a single
+ * tile: a queue laid onto another ride's queue chains the two into one line, and the game
+ * then binds the whole chain to one entrance. Nothing in the API reports that, so both
+ * calls measure it the same way - read the chain out of every ride's entrance twice.
+ */
+export function ridesThatLostTheirQueue(
+    before: Record<number, boolean>, after: Record<number, boolean>
+): RideWithoutQueue[] {
+    const rides = map.rides;
+    const lost: RideWithoutQueue[] = [];
+
+    for (let i = 0; i < rides.length; i++) {
+        if (!before[rides[i].id] || after[rides[i].id]) {
+            continue;
+        }
+
+        const door = entranceDoorOf(rides[i]);
+
+        lost.push({
+            id: rides[i].id,
+            name: rides[i].name,
+            entranceDoor: door || { x: -1, y: -1 }
+        });
+    }
+
+    return lost;
+}
+
+/**
  * Take the footpath off a run of tiles.
  *
- * Nothing else in this bridge removes a path. `build_path` can lay a path over a queue or
- * a queue over a path, and both of those are mistakes with no other remedy: an ordinary
- * path laid over a queue unbinds it from its ride, and a ride's entrance claiming a queue -
- * not the queue itself - dead-ends the tile its door opens onto, cutting off whatever lay past it.
+ * Nothing else in this bridge removes a path. `build_path` refuses an ordinary path over a
+ * queue, because that unbinds it from its ride invisibly, but it will lay a queue over a
+ * path and a queue onto another ride's queue, and a ride's entrance claiming a queue - not
+ * the queue itself - dead-ends the tile its door opens onto, cutting off whatever lay past
+ * it. Those are mistakes with no other remedy than taking the paving back up.
  *
  * Every count here comes from reading the map back a tick later, including whether a ride
  * still has the queue that served it, which is the damage that is otherwise invisible.
  */
 export function removePath(request: RemovePathRequest, done: (outcome: RemovePathOutcome) => void): void {
-    for (let i = 0; i < request.points.length; i++) {
-        const point = request.points[i];
+    for (let i = 0; i < request.tiles.length; i++) {
+        const tile = request.tiles[i];
 
-        if (!isFinite(point.x) || !isFinite(point.y)
-            || Math.floor(point.x) !== point.x || Math.floor(point.y) !== point.y) {
-            return done(removePathRefusal("Point " + String(i) + " of this run is "
-                + String(point.x) + "," + String(point.y) + ", which is not a pair of whole tile"
+        if (!isFinite(tile.x) || !isFinite(tile.y)
+            || Math.floor(tile.x) !== tile.x || Math.floor(tile.y) !== tile.y) {
+            return done(removePathRefusal("Tile " + String(i) + " of this run is "
+                + String(tile.x) + "," + String(tile.y) + ", which is not a pair of whole tile"
                 + " coordinates. Nothing was removed."));
         }
     }
 
-    const tiles = straightRun(request.points);
+    const tiles = uniqueTiles(request.tiles);
+
+    if (tiles.length === 0) {
+        return done(removePathRefusal("This run names no tiles. `tiles` is the list of tiles to take"
+            + " the footpath off, so one tile is a run and there is no shorter one."
+            + " Nothing was removed."));
+    }
+
     const blocked = structureOnRun(tiles);
 
     if (blocked !== null) {
@@ -349,24 +369,7 @@ export function removePath(request: RemovePathRequest, done: (outcome: RemovePat
         }
 
         const walkable = walkableFromParkEntrance();
-        const servedAfter = ridesServedByQueue();
-        const rides = map.rides;
-        const lostQueue: RideWithoutQueue[] = [];
-
-        for (let i = 0; i < rides.length; i++) {
-            if (!servedBefore[rides[i].id] || servedAfter[rides[i].id]) {
-                continue;
-            }
-
-            const door = entranceDoorOf(rides[i]);
-
-            lostQueue.push({
-                id: rides[i].id,
-                name: rides[i].name,
-                entranceDoor: door || { x: -1, y: -1 }
-            });
-        }
-
+        const lostQueue = ridesThatLostTheirQueue(servedBefore, ridesServedByQueue());
         const wasRemoved: Record<string, boolean> = {};
 
         for (let i = 0; i < removed.length; i++) {
@@ -462,7 +465,7 @@ export function removePath(request: RemovePathRequest, done: (outcome: RemovePat
             ok: stayed.length === 0,
             tilesRemoved: removed.length,
             tilesTargeted: tiles.length,
-            route: tiles,
+            tiles: tiles,
             removed: removed,
             reachableFromEntrance: reachableNow,
             ridesLeftWithoutQueue: lostQueue,

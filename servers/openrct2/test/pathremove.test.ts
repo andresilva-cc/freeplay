@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { FakeGame } from "./fakeGame.ts";
 import type { FakeElement, FakeRide } from "./fakeGame.ts";
 import { buildPath, DEFAULT_PATH_OBJECT, DEFAULT_QUEUE_OBJECT } from "../src/park/pathbuild.ts";
-import { removePath, straightRun } from "../src/park/pathremove.ts";
+import { removePath } from "../src/park/pathremove.ts";
 import type { RemovePathOutcome } from "../src/park/pathremove.ts";
 import type { Tile } from "../src/park/paths.ts";
 import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
@@ -27,10 +27,10 @@ function withGame(build: (game: FakeGame) => void, run: (game: FakeGame) => void
 }
 
 /** `context.setTimeout` applies the queued actions, so the outcome is ready on return. */
-function take(points: Tile[]): RemovePathOutcome {
+function take(tiles: Tile[]): RemovePathOutcome {
     let outcome: RemovePathOutcome | null = null;
 
-    removePath({ points: points }, function (result) { outcome = result; });
+    removePath({ tiles: tiles }, function (result) { outcome = result; });
 
     assert.ok(outcome, "removePath never called back");
     return outcome as unknown as RemovePathOutcome;
@@ -46,6 +46,30 @@ function callTool(args: Record<string, unknown>): RemovePathOutcome {
 
     assert.ok(outcome, "remove_path never answered");
     return outcome as unknown as RemovePathOutcome;
+}
+
+/**
+ * Every tile of a straight run, so a fixture can name a line without spelling it out.
+ *
+ * This is in the test and not in the tool on purpose: filling a line in between two ends
+ * is the thing both path tools stopped doing, so a fixture that wants one says so itself.
+ */
+function line(from: Tile, to: Tile): Tile[] {
+    const tiles: Tile[] = [{ x: from.x, y: from.y }];
+    let x = from.x;
+    let y = from.y;
+
+    while (x !== to.x) {
+        x += Math.sign(to.x - x);
+        tiles.push({ x: x, y: y });
+    }
+
+    while (y !== to.y) {
+        y += Math.sign(to.y - y);
+        tiles.push({ x: x, y: y });
+    }
+
+    return tiles;
 }
 
 function footpathAt(game: FakeGame, x: number, y: number): FakeElement | undefined {
@@ -105,7 +129,7 @@ function layQueue(game: FakeGame, x: number, y: number): void {
 
 test("a run of tiles loses its footpath, tile by tile, and its neighbours keep theirs", function () {
     withGame(parkWithSpine, function (game) {
-        take([{ x: 10, y: 7 }, { x: 10, y: 9 }]);
+        take(line({ x: 10, y: 7 }, { x: 10, y: 9 }));
 
         for (let y = 7; y <= 9; y++) {
             assert.equal(footpathAt(game, 10, y), undefined,
@@ -117,9 +141,30 @@ test("a run of tiles loses its footpath, tile by tile, and its neighbours keep t
     });
 });
 
+/**
+ * The mirror of build_path's tile list: what is named comes up and what is not stays.
+ *
+ * Both tools used to take two ends and work out the tiles between them - build_path by
+ * routing, remove_path by drawing the literal line - so a removal could take up paving the
+ * caller never named. Two named tiles with a paved tile between them is the case that tells
+ * the two apart.
+ */
+test("a tile between two named tiles keeps its path", function () {
+    withGame(parkWithSpine, function (game) {
+        const outcome = take([{ x: 10, y: 6 }, { x: 10, y: 8 }]);
+
+        assert.equal(outcome.tilesTargeted, 2, "the tile between them is not part of the run");
+        assert.equal(outcome.tilesRemoved, 2);
+        assert.deepEqual(outcome.tiles, [{ x: 10, y: 6 }, { x: 10, y: 8 }]);
+        assert.equal(footpathAt(game, 10, 6), undefined, "10,6 was named and is still paved");
+        assert.equal(footpathAt(game, 10, 8), undefined, "10,8 was named and is still paved");
+        assert.ok(footpathAt(game, 10, 7), "10,7 was never named and this call took it up anyway");
+    });
+});
+
 test("a run the game never applied is reported as nothing removed", function () {
     withGame(parkWithSpine, function (game) {
-        const outcome = take([{ x: 10, y: 7 }, { x: 10, y: 9 }]);
+        const outcome = take(line({ x: 10, y: 7 }, { x: 10, y: 9 }));
 
         assert.equal(outcome.ok, false, "the paths are all still there, so this is not ok");
         assert.equal(outcome.tilesRemoved, 0);
@@ -139,7 +184,7 @@ test("taking up the queue at a ride's door leaves the ride without one, and says
         assert.equal(queueBefore?.isQueue, true, "the fixture has to start with a queue at the door");
         assert.equal(queueBefore?.ride, 0, "and it has to be bound to the ride");
 
-        const outcome = take([{ x: 10, y: 9 }, { x: 10, y: 9 }]);
+        const outcome = take([{ x: 10, y: 9 }]);
 
         assert.equal(footpathAt(game, 10, 9), undefined, "the queue tile is still on the map");
         assert.equal(outcome.ridesLeftWithoutQueue.length, 1,
@@ -158,7 +203,7 @@ test("a ride that never had a queue is not reported as having lost one", functio
         assert.equal(footpathAt(game, 10, 9)?.isQueue, false,
             "the fixture puts an ordinary path at the door, not a queue");
 
-        const outcome = take([{ x: 10, y: 9 }, { x: 10, y: 9 }]);
+        const outcome = take([{ x: 10, y: 9 }]);
 
         assert.deepEqual(outcome.ridesLeftWithoutQueue, [],
             "nothing was bound to the ride before the call, so nothing was lost by it");
@@ -170,7 +215,7 @@ test("a run across a ride entrance building is refused by name and removes nothi
         parkWithSpine(game, 12);
         rideWithQueueAt(game, { x: 10, y: 9 });
     }, function (game) {
-        const outcome = take([{ x: 10, y: 6 }, { x: 10, y: 10 }]);
+        const outcome = take(line({ x: 10, y: 6 }, { x: 10, y: 10 }));
 
         assert.equal(outcome.ok, false);
         assert.match(String(outcome.error), /10,8/, "the refusal has to name the tile that stopped it");
@@ -190,7 +235,7 @@ test("a run across a ride entrance building is refused by name and removes nothi
 
 test("a run across the park gate is refused and the gate is left alone", function () {
     withGame(parkWithSpine, function (game) {
-        const outcome = take([{ x: 11, y: 4 }, { x: 11, y: 4 }]);
+        const outcome = take([{ x: 11, y: 4 }]);
 
         assert.equal(outcome.ok, false);
         assert.match(String(outcome.error), /park entrance BUILDING/);
@@ -204,7 +249,7 @@ test("the tile this call took up is not counted as a tile it cut off", function 
         game.addPath(10, 5);
         game.addPath(10, 6);
     }, function (game) {
-        const outcome = take([{ x: 10, y: 6 }, { x: 10, y: 6 }]);
+        const outcome = take([{ x: 10, y: 6 }]);
 
         assert.equal(footpathAt(game, 10, 6), undefined);
         assert.equal(outcome.reachableFromEntrance, 1, "10,5 is all that is left of the network");
@@ -215,7 +260,7 @@ test("the tile this call took up is not counted as a tile it cut off", function 
 
 test("severing the park is reported as tiles cut off", function () {
     withGame(parkWithSpine, function () {
-        const outcome = take([{ x: 10, y: 8 }, { x: 10, y: 8 }]);
+        const outcome = take([{ x: 10, y: 8 }]);
 
         // 10,5 10,6 10,7 remain walkable; 10,9 through 10,12 are stranded.
         assert.equal(outcome.reachableFromEntrance, 3);
@@ -225,7 +270,7 @@ test("severing the park is reported as tiles cut off", function () {
 
 test("a run over ground with no path removes nothing and says so", function () {
     withGame(parkWithSpine, function () {
-        const outcome = take([{ x: 15, y: 15 }, { x: 15, y: 17 }]);
+        const outcome = take(line({ x: 15, y: 15 }, { x: 15, y: 17 }));
 
         assert.equal(outcome.ok, true, "there is no footpath left on those tiles, which is what was asked");
         assert.equal(outcome.tilesRemoved, 0);
@@ -233,37 +278,41 @@ test("a run over ground with no path removes nothing and says so", function () {
     });
 });
 
-test("a build_path route handed back as waypoints takes up exactly what it laid", function () {
+test("a build_path result's tiles handed straight back take up exactly what it laid", function () {
+    // The two tools share one field name for one reason: the undo is a copy, not a
+    // reconstruction. A model that has to re-derive the run it just laid re-derives it
+    // wrong, and the tiles it misses are the ones it cannot see.
     withGame(function (game) {
         game.addParkEntrance(10, 4);
         game.addPath(10, 5);
     }, function (game) {
-        let built: { route: Tile[] } | null = null;
+        const drawn = [
+            { x: 10, y: 6 }, { x: 11, y: 6 }, { x: 11, y: 7 }, { x: 12, y: 7 },
+            { x: 12, y: 8 }, { x: 14, y: 9 }
+        ];
+        let built: { tiles: Tile[] } | null = null;
 
         buildPath({
-            points: [{ x: 10, y: 6 }, { x: 14, y: 9 }],
+            tiles: drawn,
             queue: false,
             surfaceObject: DEFAULT_PATH_OBJECT,
             railingsObject: 0
         }, function (result) { built = result; });
 
-        const route = (built as unknown as { route: Tile[] }).route;
-        assert.ok(route.length > 4, "the fixture needs a route with a corner in it");
+        const tiles = (built as unknown as { tiles: Tile[] }).tiles;
+        assert.deepEqual(tiles, drawn, "the fixture rests on build_path reporting what it laid");
 
-        callTool({ waypoints: route });
+        callTool({ tiles: tiles });
 
-        for (let i = 0; i < route.length; i++) {
-            assert.equal(footpathAt(game, route[i].x, route[i].y), undefined,
-                "build_path laid " + String(route[i].x) + "," + String(route[i].y) + " and it is still there");
+        for (let i = 0; i < tiles.length; i++) {
+            assert.equal(footpathAt(game, tiles[i].x, tiles[i].y), undefined,
+                "build_path laid " + String(tiles[i].x) + "," + String(tiles[i].y) + " and it is still there");
         }
-    });
-});
 
-test("a diagonal run turns once, along x and then along y", function () {
-    // The one layout decision this tool makes, pinned so it cannot drift into routing.
-    assert.deepEqual(straightRun([{ x: 2, y: 2 }, { x: 4, y: 4 }]), [
-        { x: 2, y: 2 }, { x: 3, y: 2 }, { x: 4, y: 2 }, { x: 4, y: 3 }, { x: 4, y: 4 }
-    ]);
+        // Including the tile nothing touches: a run that filled in the line between the
+        // tiles named would have missed 14,9 or taken 13,9 with it.
+        assert.equal(footpathAt(game, 13, 9), undefined, "13,9 was never laid, so it must not be reported either");
+    });
 });
 
 test("a queue tile is taken up as readily as a path tile", function () {
@@ -271,29 +320,50 @@ test("a queue tile is taken up as readily as a path tile", function () {
         parkWithSpine(game, 12);
         game.addPath(12, 6, true);
     }, function (game) {
-        take([{ x: 12, y: 6 }, { x: 12, y: 6 }]);
+        take([{ x: 12, y: 6 }]);
 
         assert.equal(footpathAt(game, 12, 6), undefined, "a queue is a footpath and must come up too");
     });
 });
 
-test("remove_path refuses a run with only one end, naming what is missing", function () {
+test("remove_path refuses a call with no tile list, naming what is missing", function () {
     withGame(parkWithSpine, function (game) {
-        const outcome = callTool({ fromX: 10, fromY: 7 });
+        const outcome = callTool({});
 
         assert.equal(outcome.ok, false);
-        assert.match(String(outcome.error), /toX, toY are missing/);
+        assert.match(String(outcome.error), /`tiles` is missing/);
+        assert.match(String(outcome.error), /build_path result's own `tiles` can be passed here whole/,
+            "the undo is a copy, and the call that is missing its list is where that has to be said");
         assert.ok(footpathAt(game, 10, 7), "a refused call must not have touched the map");
     });
 });
 
-test("remove_path refuses a single waypoint rather than guessing the other end", function () {
+test("remove_path refuses a malformed tile rather than coercing it", function () {
     withGame(parkWithSpine, function (game) {
-        const outcome = callTool({ waypoints: [{ x: 10, y: 7 }] });
+        // A missing y coerced to -1 would run the removal off the map.
+        const outcome = callTool({ tiles: [{ x: 10, y: 7 }, { x: 10 }] });
 
         assert.equal(outcome.ok, false);
-        assert.match(String(outcome.error), /at least two points/);
+        assert.match(String(outcome.error), /tiles\[1\]/, "the bad tile is identified by position");
+        assert.match(String(outcome.error), /numeric x and y/);
         assert.ok(footpathAt(game, 10, 7));
+    });
+});
+
+test("a single tile is a run, so removing one queue tile needs no second coordinate", function () {
+    // The old shape needed both ends of a line and a one-tile removal was written as the
+    // same point twice. A queue at a door is one tile, and it is the commonest thing here
+    // that gets taken up.
+    withGame(function (game) {
+        parkWithSpine(game, 12);
+        layQueue(game, 12, 6);
+    }, function (game) {
+        const outcome = take([{ x: 12, y: 6 }]);
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(outcome.tilesTargeted, 1);
+        assert.equal(outcome.tilesRemoved, 1);
+        assert.equal(footpathAt(game, 12, 6), undefined, "the one tile named still carries a queue");
     });
 });
 
@@ -316,10 +386,9 @@ test("remove_path is registered as a deferred tool called remove_path", function
     assert.equal(definitions.length, 1);
     assert.equal(definitions[0].name, "remove_path");
     assert.equal(definitions[0].inputSchema.additionalProperties, false);
-    assert.deepEqual(Object.keys(definitions[0].inputSchema.properties || {}).sort(),
-        ["fromX", "fromY", "toX", "toY", "waypoints"]);
-    assert.deepEqual(definitions[0].inputSchema.required, [],
-        "the two forms are alternatives, so neither set can be required");
+    assert.deepEqual(Object.keys(definitions[0].inputSchema.properties || {}).sort(), ["tiles"]);
+    assert.deepEqual(definitions[0].inputSchema.required, ["tiles"],
+        "the tile list is the call, and it is build_path's own field under the same name");
 
     const registered = getMcpTools().filter(function (tool) { return tool.name === "remove_path"; });
     assert.equal(registered.length, 1, "the tool has to be in the registry or the model never sees it");
@@ -343,7 +412,7 @@ test("a queue laid over a path, then taken up, leaves the ride bound to nothing"
         rideWithQueueAt(game, { x: 10, y: 9 });
     }, function (game) {
         buildPath({
-            points: [{ x: 10, y: 9 }, { x: 10, y: 11 }],
+            tiles: [{ x: 10, y: 9 }, { x: 10, y: 10 }, { x: 10, y: 11 }],
             queue: true,
             surfaceObject: DEFAULT_QUEUE_OBJECT,
             railingsObject: 0
@@ -372,7 +441,7 @@ test("the park gate is named as the park gate, in a park with no rides in it at 
     withGame(parkWithSpine, function (game) {
         assert.equal(game.rides.length, 0, "the case that exposed this had no rides at all");
 
-        const outcome = take([{ x: 11, y: 4 }, { x: 11, y: 4 }]);
+        const outcome = take([{ x: 11, y: 4 }]);
         const message = String(outcome.error);
 
         assert.equal(outcome.ok, false);
@@ -399,7 +468,7 @@ test("a gate tile is still the gate when a ride 0 exists to be confused with it"
     }, function (game) {
         assert.equal(game.rides[0].id, 0, "the fixture needs a ride 0 for the old message to have named");
 
-        const outcome = take([{ x: 11, y: 4 }, { x: 11, y: 4 }]);
+        const outcome = take([{ x: 11, y: 4 }]);
 
         assert.match(String(outcome.error), /park entrance BUILDING/);
         assert.doesNotMatch(String(outcome.error), /ride 0/,
@@ -416,9 +485,9 @@ test("a ride door is still named with its ride, and its exit told apart from its
         rideWithQueueAt(game, { x: 10, y: 9 });
         game.addRideEntrance(12, 6, 0, 3, true);
     }, function () {
-        assert.match(String(take([{ x: 10, y: 8 }, { x: 10, y: 8 }]).error),
+        assert.match(String(take([{ x: 10, y: 8 }]).error),
             /entrance BUILDING of ride 0[\s\S]*operate_ride `demolish`/);
-        assert.match(String(take([{ x: 12, y: 6 }, { x: 12, y: 6 }]).error),
+        assert.match(String(take([{ x: 12, y: 6 }]).error),
             /exit BUILDING of ride 0/);
     });
 });
@@ -430,7 +499,7 @@ test("an entrance kind this build does not know is refused without inheriting th
     withGame(parkWithSpine, function (game) {
         game.tile(12, 8).elements.push({ type: "entrance", baseZ: 96, object: 7, sequence: 0, ride: 0 });
 
-        const outcome = take([{ x: 12, y: 8 }, { x: 12, y: 8 }]);
+        const outcome = take([{ x: 12, y: 8 }]);
 
         assert.equal(outcome.ok, false);
         assert.match(String(outcome.error), /12,8/);
@@ -444,18 +513,18 @@ test("a refusal reports no reachable count at all, rather than a zero that reads
     // `reachableFromEntrance: 0` on a refusal is a measurement that was never taken, in the
     // one message the model reads when it is already off track.
     withGame(parkWithSpine, function () {
-        const refused = take([{ x: 11, y: 4 }, { x: 11, y: 4 }]);
+        const refused = take([{ x: 11, y: 4 }]);
 
         assert.equal(refused.ok, false);
         assert.equal(refused.reachableFromEntrance, null,
             "nothing was walked, so there is no figure to report");
 
-        const argumentError = callTool({ fromX: 10, fromY: 7 });
+        const argumentError = callTool({});
         assert.equal(argumentError.reachableFromEntrance, null,
             "an argument refusal never reaches the map either");
 
         // And the field still carries the real count when the call did the work.
-        const done = take([{ x: 10, y: 12 }, { x: 10, y: 12 }]);
+        const done = take([{ x: 10, y: 12 }]);
         assert.equal(done.ok, true);
         assert.equal(done.reachableFromEntrance, 7, "10,5 through 10,11 are what is left");
     });
@@ -491,7 +560,7 @@ test("a paused removal reports the game's own refusal, not just a count", functi
         parkWithSpine(game);
         game.gameValues.paused = true;
     }, function (game) {
-        const outcome = take([{ x: 10, y: 7 }, { x: 10, y: 9 }]);
+        const outcome = take(line({ x: 10, y: 7 }, { x: 10, y: 9 }));
 
         assert.equal(outcome.ok, false, "a paused removal takes nothing up, so it is not a success");
         assert.equal(outcome.tilesRemoved, 0);
@@ -514,7 +583,7 @@ test("a removal refused for another reason is quoted, and gains no pause clause"
         parkWithSpine(game);
         game.refuse.footpathremove = true;
     }, function (game) {
-        const outcome = take([{ x: 10, y: 7 }, { x: 10, y: 9 }]);
+        const outcome = take(line({ x: 10, y: 7 }, { x: 10, y: 9 }));
 
         assert.equal(game.gameValues.paused, false, "the fixture has to be a running game");
         assert.equal(outcome.tilesRemoved, 0);
@@ -528,7 +597,7 @@ test("a removal refused for another reason is quoted, and gains no pause clause"
 
 test("tiles that stay put with no refusal read say that, rather than borrowing a reason", function () {
     withGame(parkWithSpine, function (game) {
-        const outcome = take([{ x: 10, y: 7 }, { x: 10, y: 9 }]);
+        const outcome = take(line({ x: 10, y: 7 }, { x: 10, y: 9 }));
 
         assert.equal(game.attempted.length, 3, "the removals were sent; only the read-back shows they did nothing");
         assert.match(outcome.detail, /The game gave no refusal for 3 of them/,

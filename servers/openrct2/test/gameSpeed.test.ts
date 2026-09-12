@@ -294,7 +294,7 @@ test("while paused the game refuses a map change and lets a ride setting through
         assert.equal(game.gameValues.paused, true, "the fixture has to actually be paused");
 
         let removed: RemovePathOutcome | null = null;
-        removePath({ points: [{ x: 2, y: 2 }, { x: 2, y: 2 }] }, function (result) { removed = result; });
+        removePath({ tiles: [{ x: 2, y: 2 }] }, function (result) { removed = result; });
 
         const outcome = removed as unknown as RemovePathOutcome;
         assert.equal(outcome.tilesRemoved, 0, "footpathremove has no AllowWhilePaused flag");
@@ -370,7 +370,7 @@ test("a paused build_path and a paused remove_path both come back with the game'
 
         let laid: BuildPathOutcome | null = null;
         buildPath({
-            points: [{ x: 2, y: 4 }, { x: 2, y: 5 }], queue: false,
+            tiles: [{ x: 2, y: 4 }, { x: 2, y: 5 }], queue: false,
             surfaceObject: DEFAULT_PATH_OBJECT, railingsObject: 0
         }, function (result) { laid = result; });
 
@@ -380,7 +380,7 @@ test("a paused build_path and a paused remove_path both come back with the game'
             "build_path has to report the game's refusal, which is what the description promises");
 
         let taken: RemovePathOutcome | null = null;
-        removePath({ points: [{ x: 2, y: 2 }, { x: 2, y: 3 }] }, function (result) { taken = result; });
+        removePath({ tiles: [{ x: 2, y: 2 }, { x: 2, y: 3 }] }, function (result) { taken = result; });
 
         const removed = taken as unknown as RemovePathOutcome;
         assert.equal(removed.tilesRemoved, 0, "footpathremove has no AllowWhilePaused flag either");
