@@ -103,6 +103,37 @@ export interface BuildSite {
     nearestRideDistance: number;
 }
 
+/**
+ * Where the sites a search matched are, and what connecting them would cost, measured
+ * over every one of them.
+ *
+ * Reported beside `totalFound`, and for the same reason it is: that count says the list
+ * is a window without saying anything about what lies outside it, so 1,284 sites spanning
+ * the whole park and 1,284 sites packed into one corner read identically, and taking the
+ * first of three is the same move in both. These are the dimensions of the set the window
+ * was cut from.
+ *
+ * A measurement of where the matches are, the way `totalFound` is a measurement of how
+ * many. Nothing here marks a site as good, and the ordering is untouched: the returned
+ * sites are still the nearest of the set, which is exactly why the nearer end of the
+ * distance range below is theirs.
+ */
+export interface CandidateExtent {
+    /** The two inclusive corners the ground of every matching site spans together: each
+     *  site's own `fromX`..`toY` rectangle, unioned. Read against a returned site's own
+     *  four corners rather than its `x`,`y`, which is a build origin sitting inside the
+     *  footprint rather than a corner of it. */
+    fromX: number;
+    fromY: number;
+    toX: number;
+    toY: number;
+    /** The smallest and the largest `pathDistance` among every matching site, counted in
+     *  the same tiles a site's own `pathDistance` counts. Both -1 when the gate reaches no
+     *  footpath at all, which is every site's distance in such a park rather than some. */
+    nearestPathDistance: number;
+    furthestPathDistance: number;
+}
+
 export interface SiteSearchResult {
     ok: boolean;
     /** What was searched for. `width` and `depth` are the ride's size for reference only:
@@ -112,6 +143,9 @@ export interface SiteSearchResult {
     sites?: BuildSite[];
     /** How many sites matched before the list was cut to `limit`. */
     totalFound?: number;
+    /** Where those `totalFound` sites are and what they would cost to connect, measured
+     *  across all of them rather than across the trimmed list. Absent when none matched. */
+    candidateExtent?: CandidateExtent;
     /** What `access` means for this ride, or - when `sites` is empty - which constraint
      *  nothing satisfied, so the caller knows what to change. */
     note?: string;
@@ -495,6 +529,61 @@ function whyNothingFound(shape: FlatRideShape, footprintFits: number, accessFits
         + " measured against a footpath.";
 }
 
+/**
+ * The extent of the whole matched set, taken from every site found rather than from the
+ * few kept.
+ *
+ * The kept list is by construction the nearest corner of the set - sorted by distance,
+ * then cut - so an extent measured after the cut would report the window's own dimensions
+ * and say nothing whatever about what the window was cut out of. That is the one bug this
+ * field can have, and it is invisible in any park small enough to look at by hand.
+ *
+ * Six comparisons per site over an array already in memory, which is nothing beside the
+ * work that built it: `pathDistanceOrNone` alone walks every reachable footpath tile once
+ * per door of every candidate.
+ */
+function candidateExtentOf(sites: BuildSite[]): CandidateExtent | undefined {
+    if (sites.length === 0) {
+        return undefined;
+    }
+
+    const extent: CandidateExtent = {
+        fromX: sites[0].fromX,
+        fromY: sites[0].fromY,
+        toX: sites[0].toX,
+        toY: sites[0].toY,
+        nearestPathDistance: -1,
+        furthestPathDistance: -1
+    };
+
+    for (let i = 0; i < sites.length; i++) {
+        extent.fromX = Math.min(extent.fromX, sites[i].fromX);
+        extent.fromY = Math.min(extent.fromY, sites[i].fromY);
+        extent.toX = Math.max(extent.toX, sites[i].toX);
+        extent.toY = Math.max(extent.toY, sites[i].toY);
+
+        // -1 is "there was nothing to measure against", not a short distance, so it stays
+        // out of the range rather than being reported as the nearest end of it. Every site
+        // of one search agrees on this today - no reachable paving gives -1 to all of them,
+        // any gives it to none - and this is the arm that stays right if that ever splits.
+        const distance = sites[i].pathDistance;
+
+        if (distance < 0) {
+            continue;
+        }
+
+        if (extent.nearestPathDistance < 0 || distance < extent.nearestPathDistance) {
+            extent.nearestPathDistance = distance;
+        }
+
+        if (distance > extent.furthestPathDistance) {
+            extent.furthestPathDistance = distance;
+        }
+    }
+
+    return extent;
+}
+
 export function findBuildSites(rideObjectIndex: number, limit: number, rotation?: number): SiteSearchResult {
     const objects = context.getAllObjects("ride");
     // Indexed by `.index`, not by position: `list_ride_objects` reports `.index`, and the
@@ -808,6 +897,11 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
         return rank(left.pathDistance) - rank(right.pathDistance);
     });
 
+    // Measured here, over every site that matched, and deliberately above the trim rather
+    // than below it: what comes out of the trim is the nearest few of this set, so an
+    // extent taken from those would describe the window instead of the set.
+    const extent = candidateExtentOf(found);
+
     // Returning the top N by path distance hands back the same spot N times, which reads
     // as N options and is not. Keep them a footprint apart so the choice is a real one.
     const spread = Math.max(shape.width, shape.depth) + 2;
@@ -842,6 +936,7 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
         ride: { name: rideObject.name, rideType: rideType, width: shape.width, depth: shape.depth, isShop: shape.isShop },
         sites: chosen,
         totalFound: found.length,
+        candidateExtent: extent,
         note: note
     };
 }

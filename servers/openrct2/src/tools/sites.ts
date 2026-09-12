@@ -64,6 +64,8 @@ export class SiteTools {
             "side plus two tiles of one already in the list is skipped, so the list is distinct places rather",
             "than the same place listed over and over. `totalFound` counts every site found, before both the",
             "skip and the cut, so raising `limit` returns more of them but never all `totalFound`.",
+            "`candidateExtent` measures that same whole set rather than the returned list: the two inclusive",
+            "corners every site found spans together, and the smallest and largest `pathDistance` among them.",
             "When nothing is found, `note` says which constraint nothing got past."
         ].join(" "),
         inputSchema: {

@@ -1683,3 +1683,193 @@ test("find_build_sites says a distance is to paving guests can reach", function 
     assert.doesNotMatch(text, /avoid|do not build|prefer a door/,
         "what to do about a stranded door is the model's call, not the description's");
 });
+
+/**
+ * A 40x40 park, entirely owned and flat, with the gate and a three-tile path stub in one
+ * corner and nothing anywhere else.
+ *
+ * Every 3x3 block of it is a site, so the matched set covers the whole map, while the
+ * sites returned are forced into the corner the stub is in - which is the shape the real
+ * park has and the shape no small hand-built fixture reproduces. A test that only ever
+ * looks at parks where the window and the set coincide cannot tell the two apart, which
+ * is the entire bug this field can have.
+ */
+function sprawlingPark(): { game: FakeGame; restore: () => void } {
+    const game = new FakeGame(40, 40);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(2, 0);
+
+    for (let y = 1; y <= 3; y++) {
+        game.addPath(2, y);
+    }
+
+    return { game: game, restore: game.install() };
+}
+
+test("candidateExtent spans every site found, not the corner the returned ones sit in", function () {
+    const { restore } = sprawlingPark();
+
+    try {
+        const result = findBuildSites(0, 3);
+        const sites = result.sites || [];
+        const extent = result.candidateExtent;
+
+        assert.equal(sites.length, 3);
+        assert.equal(result.totalFound, 1430, "every 3x3 block of a 40x40 park is a site");
+        assert.ok(extent, "a search that found sites reports where they are");
+
+        // The three handed back are packed against the path stub: nothing beyond (12,12).
+        // This is the premise the rest of the test rests on, so it is asserted rather than
+        // assumed - without it the two boxes could coincide and the comparison prove nothing.
+        sites.forEach(function (site) {
+            assert.ok(site.toX <= 12 && site.toY <= 12,
+                "site " + String(site.x) + "," + String(site.y) + " is not in the corner the stub is in");
+        });
+
+        // And the set they were cut from reaches all four edges of the map. Computing the
+        // extent from the trimmed list instead of from everything found gives at most
+        // 0,0-12,12 here: every one of these four fails, and the failure names itself.
+        assert.equal(extent?.fromX, 0, "the matched set starts at the near edge of the map");
+        assert.equal(extent?.fromY, 0);
+        assert.equal(extent?.toX, 39, "and runs to the far edge, 27 tiles past the furthest site returned");
+        assert.equal(extent?.toY, 39);
+    } finally {
+        restore();
+    }
+});
+
+test("candidateExtent's distance range is the whole set's, not the three returned", function () {
+    const { restore } = sprawlingPark();
+
+    try {
+        const result = findBuildSites(0, 3);
+        const sites = result.sites || [];
+        const extent = result.candidateExtent;
+
+        assert.ok(extent);
+
+        // The near end is the site already at the top of the list: the sort puts the global
+        // nearest first, so this end of the range costs nothing to act on and is not news.
+        assert.equal(extent?.nearestPathDistance, 0, "the nearest site stands on the path");
+        assert.equal(extent?.nearestPathDistance, sites[0].pathDistance,
+            "which is the first site's own distance, because that is what the sort means");
+
+        // The far end is the far corner of a 40-tile park measured back to a stub in the
+        // near one. No returned site is above 3, so a range taken after the trim reads
+        // 0..3 and this assertion fails - which is what makes it worth asserting.
+        const furthestReturned = sites.reduce(function (worst, site) {
+            return Math.max(worst, site.pathDistance);
+        }, 0);
+
+        assert.equal(furthestReturned, 3, "the returned sites are all but on the path");
+        assert.equal(extent?.furthestPathDistance, 67,
+            "while connecting the furthest site found is 67 tiles of paving");
+    } finally {
+        restore();
+    }
+});
+
+test("candidateExtent is the ground the sites stand on, not their build origins", function () {
+    // A 3x3 is centred on its origin, so the two are three tiles apart in every direction
+    // and a site's own corners are the ones already reported. Accumulating `x`,`y` instead
+    // gives 11,11-11,11 here - a park-wide extent one footprint too small on every side,
+    // and one that says a ride fits on a single tile.
+    const game = oneDoorPark();
+    game.addPath(17, 14);
+
+    const restore = game.install();
+
+    try {
+        const result = findBuildSites(0, 50);
+        const sites = result.sites || [];
+
+        assert.equal(sites.length, 1, "the park is built to hold exactly one site");
+        assert.equal(sites[0].x, 11, "whose origin is one tile");
+        assert.equal(sites[0].y, 11);
+
+        assert.deepEqual(result.candidateExtent, {
+            fromX: 10,
+            fromY: 10,
+            toX: 12,
+            toY: 12,
+            nearestPathDistance: 5,
+            furthestPathDistance: 5
+        }, "one site's extent is that site's own rectangle and its own distance, twice over");
+    } finally {
+        restore();
+    }
+});
+
+test("a park with nothing to measure against reports -1 at both ends of the range", function () {
+    // -1 means there was nothing to measure against, and it has to survive into the range
+    // as itself. Infinity is what the arithmetic wants to produce and JSON turns it into
+    // null; a counter left at 0 would report the whole park as already on a path.
+    const { restore } = gameWith(33);
+
+    try {
+        const result = findBuildSites(0, 3);
+        const extent = result.candidateExtent;
+
+        assert.ok(extent, "a park with no path still found sites, so it still has an extent");
+        assert.equal(extent?.fromX, 0, "which covers the park");
+        assert.equal(extent?.toX, 23);
+
+        assert.equal(extent?.nearestPathDistance, -1);
+        assert.equal(extent?.furthestPathDistance, -1);
+        (result.sites || []).forEach(function (site) {
+            assert.equal(site.pathDistance, -1, "and every site agrees, which is why the range can say it");
+        });
+    } finally {
+        restore();
+    }
+});
+
+test("a search that found nothing reports no extent rather than an empty one", function () {
+    // Zeroed corners would put the whole matched set on tile 0,0 - a claim about a park
+    // where nothing matched at all. Absent is the only honest shape, and it is the shape
+    // `ride` and `note` already use.
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Dodgems", rideType: [25] }];
+
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            game.own(x, y, x >= 10 && x <= 11 && y >= 10 && y <= 11);
+        }
+    }
+
+    const restore = game.install();
+
+    try {
+        const result = findBuildSites(0, 3);
+
+        assert.equal(result.totalFound, 0);
+        assert.equal(result.candidateExtent, undefined, "nothing found spans nothing");
+    } finally {
+        restore();
+    }
+});
+
+test("find_build_sites says candidateExtent measures the whole set, not the list", function () {
+    const definitions = getMcpToolDefinitions(SiteTools).filter(function (definition) {
+        return definition.handlerName === "findBuildSites";
+    });
+
+    assert.equal(definitions.length, 1, "find_build_sites is registered once");
+
+    const text = String(definitions[0].description);
+
+    // Which set it measures is the whole content of the field. A description that named it
+    // without saying that leaves it indistinguishable from a summary of the three returned,
+    // which is the reading it exists to prevent.
+    assert.match(text, /`candidateExtent` measures that same whole set rather than the returned list/,
+        "the fact that does the work: it is the set the window was cut from");
+    assert.match(text, /smallest and largest `pathDistance` among them/,
+        "and the cost range, in the unit each site already reports");
+
+    // docs/tool-design.md: the description states what the world is and never what to do
+    // about it. A spread of candidates is a measurement; building further out is a choice.
+    assert.doesNotMatch(text, /further out|spread out|more variety|vary the|consider a site|elsewhere in the park/,
+        "where to build is the model's call, not the description's");
+    assert.doesNotMatch(text, /best|better site|recommend|should pick/,
+        "and no site is marked as good: the ordering is distance and the choice is the model's");
+});
