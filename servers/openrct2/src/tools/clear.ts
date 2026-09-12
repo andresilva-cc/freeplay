@@ -52,7 +52,8 @@ function areaFromArgs(args: Record<string, unknown>): TileRect | ArgumentFailure
             ok: false,
             error: "clear_scenery needs one of its two forms and was given neither. For ordinary ground,"
                 + " `x`, `y` and `size`: a square of `size` tiles centred on x,y. For a ride's ground,"
-                + " `fromX`, `fromY`, `toX` and `toY`, copied straight off a site from find_build_sites."
+                + " `fromX`, `fromY`, `toX` and `toY`, copied straight off a placement's `footprint` from"
+                + " describe_placement."
         };
     }
 
@@ -66,7 +67,7 @@ function areaFromArgs(args: Record<string, unknown>): TileRect | ArgumentFailure
                 ok: false,
                 error: "A rectangle needs all four of `fromX`, `fromY`, `toX` and `toY`; `"
                     + missing.join("`, `") + "` " + (missing.length === 1 ? "was" : "were")
-                    + " left out. A site from find_build_sites carries all four under those names."
+                    + " left out. A placement's `footprint` from describe_placement carries all four under those names."
             };
         }
 
@@ -101,9 +102,10 @@ export class ClearTools {
             "Remove trees, scenery, walls and banners from a patch of ground, so you can build there.",
             "There are two forms, they share no arguments, and a call uses exactly one of them.",
             "TO CLEAR A RIDE'S GROUND, pass `fromX`, `fromY`, `toX` and `toY` copied straight off the",
-            "site from `find_build_sites`, which reports them under those four names. It clears that",
-            "rectangle of tiles, both corners included. Take them from the site: do not work them out",
-            "from the ride's size and do not use the site's `x`,`y`, which `find_build_sites` explains.",
+            "`footprint` of a placement from `describe_placement`, which reports them under those four",
+            "names. It clears that rectangle of tiles, both corners included. Take them from the",
+            "footprint: do not work them out from the ride's size and do not use the placement's `x`,`y`,",
+            "which is a build origin inside the ride's ground rather than a corner of it.",
             "TO CLEAR ORDINARY GROUND, such as room for a path, pass `x`, `y` and `size`: a square of",
             "`size` tiles centred on `x`,`y`.",
             "Rides, paths and park structures are never touched and are reported as still blocking.",

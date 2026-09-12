@@ -52,7 +52,7 @@ path does not.
 | `park_status` | What the game shows on screen: money, rating, guests, every ride, and which tiles a door actually opens onto | What any of it means, and what to do |
 | `guest_feedback` | What guests are complaining about | Which complaint is worth acting on |
 | `list_ride_objects` | What exists, its footprint, whether it builds in one action | What is worth building |
-| `find_build_sites` | Where a ride fits, the ground it stands on, how far each door is from a path, and what an entrance at that door would dead-end | Which site, which doors, whether to build at all |
+| `describe_placement` | For the one origin and rotation it was asked about: the ground the ride would stand on, what stops it, how far each door is from a path, and what an entrance at that door would dead-end | Where to put the ride, which way round, which doors, whether to build at all |
 | `clear_scenery` | Removing scenery from a named patch of ground | Whether felling it is worth the money and the rating |
 | `build_flat_ride` | The create/place/entrance/exit sequence, with correct arguments | What, where, which way round, which doors, what price, whether to open |
 | `build_path` | Placement and routing around obstacles | Where paths go, and whether a run is a queue |
@@ -64,10 +64,11 @@ path does not.
 | `set_game_speed` | The speed setting and the pause toggle, neither of whose argument shapes is discoverable, and what the game reads back as afterwards | When to run fast, when to run slow, and when to pause |
 | `evaluate` | The whole plugin API, unrestricted | Everything else |
 
-Note what none of them do: none rank options by "best", none choose a site, none decide
-a price, and none lay a path the model did not ask for. `find_build_sites` sorts by
-distance to a footpath because that is a measurement, and reports `totalFound` so the
-model knows the list is a window rather than the whole truth.
+Note what none of them do: none rank options by "best", none choose where a ride goes,
+none decide a price, and none lay a path the model did not ask for. `describe_placement`
+answers about a tile the model named and looks at no other; its `access` list is every door
+position that placement has, in the order the tiles ring the footprint, so there is nothing
+in it that was ordered or left out.
 
 `build_flat_ride` reports whether guests can actually reach the finished ride. It does
 not fix it. Telling the model its ride is unreachable is information; silently laying
@@ -163,8 +164,8 @@ scenery nobody meant to lose. Both report success.
 
 The fix is not a better default or a cleverer `size`. It is a second form that can say the
 true thing: `fromX`, `fromY`, `toX`, `toY`, two inclusive corners, copied field for field
-off a `find_build_sites` site, which reports the ride's real footprint rectangle under
-exactly those four names. Nothing is computed on the way across, so there is nothing to get
+off a `describe_placement` footprint, which reports the ride's real ground under exactly
+those four names. Nothing is computed on the way across, so there is nothing to get
 wrong. The square form stays, because ordinary ground really is a square centred on a tile.
 The two forms share no argument at all, so which one a call means is never a judgement, and
 half a form is refused rather than completed with a default — a `toX` with no `toY` quietly
@@ -172,9 +173,9 @@ squared off would clear different ground from the ground that was named, and cle
 destructive and costs money.
 
 That form is now the one `buy_land` takes as well, for the same reason rather than for
-consistency's sake: the ground a purchase is about is a rectangle, a `find_build_sites` site
-reports its bounds under exactly `fromX`, `fromY`, `toX` and `toY`, and all four are
-required, so buying the ground a site stands on computes nothing on the way across. Buying
+consistency's sake: the ground a purchase is about is a rectangle, a `describe_placement`
+footprint reports its corners under exactly `fromX`, `fromY`, `toX` and `toY`, and all four
+are required, so buying the ground a ride would stand on computes nothing on the way across. Buying
 resolves exactly one situation — a tile the park does not own — and the description says so,
 because the neighbouring problems look identical from the model's side and are not reachable
 at all: `landsetrights`, which unowns land or puts it up for sale, carries the game's
@@ -196,11 +197,12 @@ they ship.
 
 **Justified, because they are measurements or samples:**
 
-- `find_build_sites` orders sites by distance to a footpath and reports `totalFound`, so
-  the model can see it is being shown a window rather than everything.
-- Sites are kept at least the ride's longest side plus two tiles apart. Returning the
+- ~~`find_build_sites` orders sites by distance to a footpath and reports `totalFound`, so
+  the model can see it is being shown a window rather than everything.~~
+- ~~Sites are kept at least the ride's longest side plus two tiles apart. Returning the
   three nearest tiles to a path returns one location three times, which reads as a choice
-  and is not.
+  and is not.~~ Both struck out: the measurement was honest and the decision was still
+  being made by it. See "The measurement was honest and it still chose" below.
 - `guest_feedback` samples 100 guests, and says so; `park_status` reports the last dozen
   park messages. Its `paths` samples nothing: it carries the whole reachable network as
   runs — straight lines of one kind of path, each with its ends, its tile count, a queue's
@@ -220,17 +222,20 @@ they ship.
   distance to a path, and which door to accept the cost at is the model's. The field is
   right and has always been the right thing to report; the reason it was first added was
   false, which is the subject of the section on it below.
-- `find_build_sites` tries a ride at rotations 0 and 1 when none is given, because 2 and 3
+- ~~`find_build_sites` tries a ride at rotations 0 and 1 when none is given, because 2 and 3
   cover exactly the same tiles with the ride facing the other way. A shop is tried at all
-  four, because a stall's rotation decides which single neighbour guests are served from.
-  That is the game's geometry, not a preference.
+  four, because a stall's rotation decides which single neighbour guests are served from.~~
+  Struck out with the search: `describe_placement` requires a rotation and fills in none.
+  The geometry it rested on is still true and is now in the argument's own description.
 
 **Fixed on audit, because they were choices in disguise:**
 
 - Door positions were trimmed to the six nearest a path, which could hide an entire side
   of a ride — and with it the option of putting both doors on one face. The best option
-  on every side is taken first, then the list is filled by distance to a cap of eight,
-  and `accessTotal` reports how many existed before the trim.
+  on every side was taken first, then the list filled by distance to a cap of eight, with
+  `accessTotal` reporting how many existed before the trim. That was the fix at the time;
+  the trim is gone altogether now that one placement is described instead of three, and
+  every door position comes back.
 - `price` defaulted to 10. A ticket price is an economic decision, and defaulting it
   meant one was being made quietly. It is now required.
 - Three tool descriptions had drifted into advice. `find_build_sites` said putting both
@@ -267,6 +272,42 @@ they ship.
 **Known and deliberate:** the unstated line of a two-point `build_path`. See above; the
 model can take it with `waypoints`, and the description says who is choosing when it
 does not.
+
+### The measurement was honest and it still chose
+
+`find_build_sites` swept the park for every place a ride fitted, filtered them, sorted them
+by distance to the nearest footpath the gate reached, dropped any within a footprint of one
+already kept, and returned the first three. Every step of that was defensible on its own and
+each is argued for above. Measured across every run: the model took site #1 in 11 of 12
+builds and access option #1 in 12 of 12, from sets of more than 1,200 candidates. It never
+compared two.
+
+So the sort was the decision. Where every ride in every run went was chosen by a comparator
+in `src/park/sites.ts`, and no line of the model's reasoning ever weighed one site against
+another, because by the time it read anything the weighing had been done. A tool that makes
+a decision *well* is still making it — the same finding as `build_path`'s routing, one level
+further up, and harder to see because nothing in the result was a recommendation.
+
+The replacement is `describe_placement`. It takes a ride object, an origin and a rotation,
+and reports that placement: the footprint rectangle, whether the ground takes it and what
+stops it tile by tile, and every door position with what each would cost. It looks at no
+other tile. The model picks the spot from `view_map`, `park_status`'s ground census and its
+path network, and asks what would happen there.
+
+What stayed is everything the model cannot derive, because deleting a correct measurement to
+remove a ranking would be a bad trade. A ride's footprint offsets are not a formula — a 4x4
+runs 0..3 from its origin, a 1x4 runs −2..+1, only a 3x3 is centred — and that was a live
+bug once. So are the door rules, `queueCutsOff`, the reachability-aware distances, and the
+per-option `cost` sentence. What went is the search, the sort, the spread rule and the
+`limit`: `findBuildSites` in `src/park/sites.ts`, replaced in place by `describePlacement`,
+with the per-placement half kept where it stood.
+
+There is no hidden default left in it. `rotation` is required rather than searched or
+defaulted to 0, the origin is the caller's, the `access` list is neither sorted nor trimmed,
+and the tool offers no second option anywhere. If the model is going to choose spatially,
+the first thing it needs is for nothing else to have chosen.
+
+This is an experiment and it may not survive contact with a run. Reverting it is one commit.
 
 ## Corollary: tools must not lie
 

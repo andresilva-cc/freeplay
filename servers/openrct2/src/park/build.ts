@@ -163,7 +163,7 @@ interface AccessAttempt {
     /** The one condition this tile failed, as a clause that follows the coordinates. */
     reason?: string;
     /**
-     * True when the tile carries something find_build_sites would never have offered.
+     * True when the tile carries something describe_placement would never have offered.
      * The caller's `access` list is therefore older than the ground, and re-reading it
      * is the fix - which is the opposite of "pick another option from the list you have".
      */
@@ -215,8 +215,8 @@ function accessAt(
         };
     }
 
-    // `clearable`, not `clear`: find_build_sites offers tiles with scenery on them and
-    // flags needsClearing. Demanding bare ground here rejected the tool's own advice.
+    // `clearable`, not `clear`: describe_placement offers tiles with scenery on them and
+    // flags needsClearing. Demanding bare ground here rejected the tool's own reading.
     if (!cell.clearable) {
         const blockers = immovableElementsOn(tile.x, tile.y);
 
@@ -227,7 +227,7 @@ function accessAt(
         };
     }
 
-    // Touching the footprint is necessary and not sufficient. find_build_sites checks the
+    // Touching the footprint is necessary and not sufficient. describe_placement checks the
     // tile the door will open onto as well, and a build that skipped it accepted a door
     // nothing could ever queue to - and then reported success, which is the worst shape a
     // failure takes here.
@@ -435,7 +435,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                 step: "site",
                 ok: false,
                 detail: rideObject.name + " is not a shop, so it needs a door on each side: pass entranceX,"
-                    + " entranceY, exitX and exitY. Take entranceX/entranceY from one option in this site's"
+                    + " entranceY, exitX and exitY. Take entranceX/entranceY from one option in this placement's"
                     + " `access` list and exitX/exitY from another. Only shops and stalls go up without them."
             });
             return refuse();
@@ -450,7 +450,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                 detail: "entranceX/entranceY and exitX/exitY are the same tile, "
                     + String(request.entrance.x) + "," + String(request.entrance.y) + "."
                     + " A tile holds one door, so the exit would replace the entrance and the ride would end up"
-                    + " with neither. Change exitX/exitY to a different option from this site's `access` list:"
+                    + " with neither. Change exitX/exitY to a different option from this placement's `access` list:"
                     + " two options with different `side` values put the doors on different faces of the ride."
             });
             return refuse();
@@ -496,7 +496,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
             // Two failures that read alike and need opposite answers. A tile that simply is
             // not a door position is fixed from the `access` list already in hand; a tile with
             // a structure on it was never in one, so the list itself is out of date and the
-            // model has to go back to find_build_sites. Six thrashing sessions came from
+            // model has to go back to describe_placement. Six thrashing sessions came from
             // telling it to re-use an `access` list that no longer described the ground.
             const stale = (!entranceAttempt.access && entranceAttempt.stale === true)
                 || (!exitAttempt.access && exitAttempt.stale === true);
@@ -512,12 +512,12 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                     + (doorsSent === faults.length
                         ? ""
                         : stale
-                            ? " find_build_sites never offers a tile like that, so these coordinates either did not come"
+                            ? " describe_placement never offers a tile like that, so these coordinates either did not come"
                                 + " from its `access` list or that list is now out of date: the ground changes as you"
-                                + " build, and a build that fails leaves its track behind. Call find_build_sites for this"
-                                + " ride again and take a fresh `access` pair from the result. Do not re-send these"
-                                + " coordinates and do not guess new ones."
-                            : " Pick a different option from this site's `access` list: every option in it is a clear,"
+                                + " build, and a build that fails leaves its track behind. Call describe_placement for this"
+                                + " ride again, at this same x, y and rotation, and take a fresh `access` pair from the"
+                                + " result. Do not re-send these coordinates and do not guess new ones."
+                            : " Pick a different option from this placement's `access` list: every option in it is a clear,"
                                 + " level, owned tile touching this footprint, with somewhere for its queue behind it.")
             });
             return refuse();
@@ -703,8 +703,8 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                                 + " place the missing " + (entranceOn || exitOn ? "door" : "doors")
                                 + " with evaluate, using a rideentranceexitplace action on"
                                 + " ride " + String(created) + "; or remove this ride with operate_ride {ride: "
-                                + String(created) + ", demolish: true} and build it again on a site from a fresh"
-                                + " find_build_sites."
+                                + String(created) + ", demolish: true} and build it again on a placement a fresh"
+                                + " describe_placement has read."
                                 + (pausedNow
                                     ? " The game is paused, and rideentranceexitplace and ridedemolish are both"
                                         + " actions a paused game refuses, so neither of those two ways out goes"
@@ -740,8 +740,8 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                         ok: true,
                         detail: (request.entrance || request.exit)
                             ? overTheCounter + " entranceX/entranceY and exitX/exitY were ignored - "
-                                + rideObject.name + " has nowhere to put them, which is why find_build_sites"
-                                + " returns no `access` list for a stall."
+                                + rideObject.name + " has nowhere to put them, which is why describe_placement"
+                                + " reports a stall's serving tile and no doors."
                             : overTheCounter
                     });
                 }

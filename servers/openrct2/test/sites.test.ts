@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { FakeGame } from "./fakeGame.ts";
-import { MAX_ACCESS_OPTIONS, findBuildSites } from "../src/park/sites.ts";
-import type { AccessOption, BuildSite } from "../src/park/sites.ts";
+import { describePlacement } from "../src/park/sites.ts";
+import type { AccessOption, PlacementResult } from "../src/park/sites.ts";
 import { tileIsWalkable, walkableFromParkEntrance } from "../src/park/paths.ts";
 import { SiteTools } from "../src/tools/sites.ts";
 import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
@@ -20,11 +20,50 @@ function gameWith(rideType: number, build?: (game: FakeGame) => void): { game: F
     return { game: game, restore: game.install() };
 }
 
+/** A 24x24 park the park owns all of, with the gate at the head of a path column at x=10. */
+function openPark(rideType: number, size = 24): { game: FakeGame; restore: () => void } {
+    const game = new FakeGame(size, size);
+    game.rideObjects = [{ index: 0, name: "Test Ride", rideType: [rideType] }];
+    game.addParkEntrance(10, 0);
+
+    for (let y = 1; y <= size - 4; y++) {
+        game.addPath(10, y);
+    }
+
+    return { game: game, restore: game.install() };
+}
+
+function access(result: PlacementResult): AccessOption[] {
+    return result.access || [];
+}
+
+function optionForDoor(result: PlacementResult, x: number, y: number): AccessOption | undefined {
+    return access(result).filter(function (option) {
+        return option.door && option.door.x === x && option.door.y === y;
+    })[0];
+}
+
+function doorKeys(result: PlacementResult): string[] {
+    return access(result).filter(function (option) {
+        return typeof option.door !== "undefined";
+    }).map(function (option) {
+        return String(option.door?.x) + "," + String(option.door?.y);
+    });
+}
+
+function blockerAt(result: PlacementResult, x: number, y: number): string | undefined {
+    return (result.blockers || []).filter(function (blocker) {
+        return blocker.x === x && blocker.y === y;
+    }).map(function (blocker) {
+        return blocker.reason;
+    })[0];
+}
+
 test("a tracked ride is refused, with a reason", function () {
     const { restore } = gameWith(0);
 
     try {
-        const result = findBuildSites(0, 3);
+        const result = describePlacement(0, 10, 10, 0);
         assert.equal(result.ok, false);
         assert.match(String(result.error), /built from track/);
     } finally {
@@ -32,141 +71,106 @@ test("a tracked ride is refused, with a reason", function () {
     }
 });
 
-test("every side of the footprint is offered, not just those nearest a path", function () {
-    const { restore } = gameWith(37, function (game) {
-        // The gate is at the head of the path column, so the column is paving guests reach
-        // and the distances this trim sorts on are real ones. A gate across the map would
-        // leave every option at -1, where sorting by distance cannot be told from not
-        // sorting at all.
-        game.addParkEntrance(1, 0);
-        for (let y = 1; y <= 20; y++) {
-            game.addPath(2, y);
-        }
-    });
-
-    try {
-        const result = findBuildSites(0, 1);
-        assert.equal(result.ok, true);
-
-        const sites = findBuildSites(0, 50).sites || [];
-        assert.ok(sites.length > 0);
-
-        // A 1x4 in open ground has all four sides available. Trimming purely by distance
-        // to the path used to hide the far one, and with it the same-side layout.
-        const withAllSides = sites.filter(function (site) {
-            const sides: Record<string, boolean> = {};
-            site.access.forEach(function (option) { sides[option.side] = true; });
-            return Object.keys(sides).length === 4;
-        });
-
-        assert.ok(withAllSides.length > 0, "no site offered all four sides");
-    } finally {
-        restore();
-    }
-});
-
-test("sites are spread apart, so three results are three places", function () {
-    const { restore } = gameWith(33, function (game) {
-        game.addParkEntrance(10, 0);
-        for (let y = 1; y <= 20; y++) {
-            game.addPath(10, y);
-        }
-    });
-
-    try {
-        const sites = findBuildSites(0, 3).sites || [];
-        assert.equal(sites.length, 3);
-
-        for (let i = 0; i < sites.length; i++) {
-            for (let j = i + 1; j < sites.length; j++) {
-                const apart = Math.abs(sites[i].x - sites[j].x) + Math.abs(sites[i].y - sites[j].y);
-                assert.ok(apart >= 5, "sites " + String(i) + " and " + String(j) + " are " + String(apart) + " apart");
-            }
-        }
-    } finally {
-        restore();
-    }
-});
-
-test("scenery does not disqualify a site, it is counted", function () {
-    // Own only a small patch, all of it treed, so no clear alternative can outrank it.
-    const { restore } = gameWith(33, function (game) {
-        for (let x = 0; x < 24; x++) {
-            for (let y = 0; y < 24; y++) {
-                game.own(x, y, false);
-            }
-        }
-
-        for (let x = 8; x <= 14; x++) {
-            for (let y = 8; y <= 14; y++) {
-                game.own(x, y, true);
-                game.addScenery(x, y);
-            }
-        }
-    });
-
-    try {
-        const sites = findBuildSites(0, 10).sites || [];
-
-        assert.ok(sites.length > 0, "a forest is buildable once cleared, not unbuildable");
-        sites.forEach(function (site) {
-            assert.ok(site.sceneryToClear > 0, "and the trees in the way are counted");
-        });
-    } finally {
-        restore();
-    }
-});
-
-test("unowned land is never offered", function () {
-    const { restore } = gameWith(33, function (game) {
-        game.addParkEntrance(10, 0);
-        for (let y = 1; y <= 20; y++) {
-            game.addPath(10, y);
-        }
-
-        for (let x = 0; x < 24; x++) {
-            for (let y = 14; y < 24; y++) {
-                game.own(x, y, false);
-            }
-        }
-    });
-
-    try {
-        const sites = findBuildSites(0, 50).sites || [];
-        sites.forEach(function (site) {
-            assert.ok(site.y < 13, "site at y=" + String(site.y) + " is on unowned land");
-        });
-    } finally {
-        restore();
-    }
-});
-
-test("a park with no footpath still reports its sites", function () {
+test("an index that does not exist names the call that lists the ones that do", function () {
     const { restore } = gameWith(33);
 
     try {
-        const result = findBuildSites(0, 3);
-        assert.equal(result.ok, true);
-
-        const sites = result.sites || [];
-        assert.ok(sites.length > 0, "an empty park is buildable, not unbuildable");
-        assert.equal(sites[0].pathDistance, -1, "-1 says there is no path to measure against");
+        const result = describePlacement(9, 10, 10, 0);
+        assert.equal(result.ok, false);
+        assert.match(String(result.error), /index 9/);
+        assert.match(String(result.error), /list_ride_objects/);
     } finally {
         restore();
     }
 });
 
-test("a shop needs no entrance and exit", function () {
-    const { restore } = gameWith(28, function (game) {
-        game.addParkEntrance(10, 0);
-        game.addPath(10, 1);
-    });
+test("a ride object is found by its index, not by where it sits in the list", function () {
+    // The loaded object list has gaps, and `list_ride_objects` reports `.index`. Reading
+    // `rideObject` as a position instead describes a placement for one ride and lets
+    // build_flat_ride build a different one, with every step of both reporting success.
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [
+        { index: 5, name: "Merry-Go-Round", rideType: [33] },
+        { index: 9, name: "Ferris Wheel", rideType: [37] }
+    ];
+    game.addParkEntrance(10, 0);
+
+    for (let y = 1; y <= 20; y++) {
+        game.addPath(10, y);
+    }
+
+    const restore = game.install();
 
     try {
-        const result = findBuildSites(0, 3);
-        assert.equal(result.ok, true);
-        assert.equal((result.ride || { isShop: false }).isShop, true);
-        assert.ok((result.sites || []).length > 0);
+        const byIndex = describePlacement(9, 16, 16, 0);
+        assert.equal(byIndex.ok, true);
+        assert.equal((byIndex.ride || { name: "" }).name, "Ferris Wheel");
+        assert.deepEqual([(byIndex.ride || { width: 0 }).width, (byIndex.ride || { depth: 0 }).depth], [1, 4]);
+
+        const other = describePlacement(5, 16, 16, 0);
+        assert.equal((other.ride || { name: "" }).name, "Merry-Go-Round");
+
+        // Position 1 is the ferris wheel. Asking for 1 must not find it, or the two tools
+        // disagree about which ride the model asked for.
+        const byPosition = describePlacement(1, 16, 16, 0);
+        assert.equal(byPosition.ok, false, "index 1 is not loaded; only 5 and 9 are");
+        assert.match(String(byPosition.error), /not the same/);
+
+        assert.equal(describePlacement(0, 16, 16, 0).ok, false, "and neither is index 0");
+    } finally {
+        restore();
+    }
+});
+
+test("a tile off the map is refused with the map's own bounds, not described as unbuildable", function () {
+    // The difference matters: `fits: false` says a real tile will not take the ride, and a
+    // coordinate outside the map is a question that cannot be asked at all. Reporting the
+    // second as the first sends the model looking for what is standing on a tile that does
+    // not exist.
+    const { restore } = gameWith(33);
+
+    try {
+        const offMap = describePlacement(0, 40, 4, 0);
+
+        assert.equal(offMap.ok, false);
+        assert.match(String(offMap.error), /no tile at 40,4/);
+        assert.match(String(offMap.error), /0 to 23 across/, "the bounds have to be in the message");
+
+        assert.equal(describePlacement(0, 10, 10, 0).ok, true, "and a tile on the map is still described");
+    } finally {
+        restore();
+    }
+});
+
+/**
+ * No rotation is chosen for the caller, at either layer.
+ *
+ * The tool this replaced searched every rotation and returned the ones that fit, so which
+ * way round a ride stood was decided by a sort. A default here would be the same decision
+ * in a smaller place: 0 for every ride, forever, with nothing in the result to say a choice
+ * had been made.
+ */
+test("a rotation is required and never filled in, wrapped or clamped", function () {
+    const { restore } = openPark(33);
+
+    try {
+        const tools = new SiteTools();
+
+        const missing = tools.describePlacement({ rideObject: 0, x: 16, y: 16 });
+        assert.equal(missing.ok, false, "an absent rotation is refused, not defaulted to 0");
+        assert.match(String(missing.error), /`rotation` is 0, 1, 2 or 3/);
+
+        const wrapped = describePlacement(0, 16, 16, 4);
+        assert.equal(wrapped.ok, false, "4 is refused rather than read as 0");
+        assert.match(String(wrapped.error), /not wrapped/);
+
+        assert.equal(describePlacement(0, 16, 16, -1).ok, false);
+
+        for (let rotation = 0; rotation < 4; rotation++) {
+            const result = tools.describePlacement({ rideObject: 0, x: 16, y: 16, rotation: rotation });
+            assert.equal(result.ok, true, "rotation " + String(rotation) + " is a question with an answer");
+            assert.equal(result.rotation, rotation, "and the answer says which rotation it answered for");
+        }
     } finally {
         restore();
     }
@@ -205,17 +209,100 @@ function realFootprint(size: number, trackType: number, x: number, y: number, ro
     return tiles;
 }
 
-function openPark(rideType: number, size = 24): { game: FakeGame; restore: () => void } {
-    const game = new FakeGame(size, size);
-    game.rideObjects = [{ index: 0, name: "Test Ride", rideType: [rideType] }];
-    game.addParkEntrance(10, 0);
+/** The rides whose footprint offsets are not a formula, which is all of them. */
+const RIDES = [
+    { type: 33, trackType: 266, label: "3x3 merry-go-round" },
+    { type: 37, trackType: 265, label: "1x4 ferris wheel" },
+    { type: 27, trackType: 263, label: "1x4 swinging inverter ship" },
+    { type: 25, trackType: 259, label: "4x4 dodgems" },
+    { type: 26, trackType: 261, label: "1x5 pirate ship" },
+    { type: 38, trackType: 258, label: "2x2 motion simulator" }
+];
 
-    for (let y = 1; y <= size - 4; y++) {
-        game.addPath(10, y);
+test("the footprint reported is exactly the ground the ride stands on, at every rotation", function () {
+    // The rectangle a model hands to clear_scenery, and the reason this tool still exists at
+    // all: a footprint is not a formula. Checked against a real trackplace, not against the
+    // code that produced it - a square centred on the origin clears 4 of the 16 tiles a 4x4
+    // needs, and 25 tiles to place a 1x5, and it is right only for a 3x3.
+    let checked = 0;
+
+    RIDES.forEach(function (ride) {
+        for (let rotation = 0; rotation < 4; rotation++) {
+            const { restore } = openPark(ride.type);
+            let result: PlacementResult;
+
+            try {
+                result = describePlacement(0, 16, 16, rotation);
+            } finally {
+                restore();
+            }
+
+            const where = ride.label + " rotation " + String(rotation) + " origin 16,16";
+            const footprint = result.footprint;
+
+            assert.equal(result.ok, true, where + ": " + String(result.error));
+            assert.ok(footprint, where + " reported no footprint");
+            assert.equal(result.fits, true, where + " does not fit in open ground: " + String(result.ground));
+
+            const laid = realFootprint(24, ride.trackType, 16, 16, rotation);
+            const inside: Record<string, boolean> = {};
+            laid.forEach(function (tile) { inside[tile] = true; });
+
+            assert.ok(laid.length > 0, where + " laid no track");
+            assert.equal(footprint.tiles, laid.length, where + " counts " + String(footprint.tiles)
+                + " tiles and the game lays " + String(laid.length));
+            assert.ok(footprint.fromX <= footprint.toX && footprint.fromY <= footprint.toY,
+                where + " has its corners the wrong way round");
+
+            // Every tile of the ride is in the rectangle...
+            laid.forEach(function (tile) {
+                const parts = tile.split(",");
+                assert.ok(Number(parts[0]) >= footprint.fromX && Number(parts[0]) <= footprint.toX
+                    && Number(parts[1]) >= footprint.fromY && Number(parts[1]) <= footprint.toY,
+                where + " stands on " + tile + ", outside the rectangle "
+                    + String(footprint.fromX) + "," + String(footprint.fromY) + " to "
+                    + String(footprint.toX) + "," + String(footprint.toY));
+            });
+
+            // ...and nothing else is, so clearing it fells no tree the ride did not need.
+            const corners = [footprint.fromX, footprint.fromY, footprint.toX, footprint.toY];
+            let area = 0;
+
+            for (let x = corners[0]; x <= corners[2]; x++) {
+                for (let y = corners[1]; y <= corners[3]; y++) {
+                    assert.equal(inside[String(x) + "," + String(y)], true,
+                        where + " would clear " + String(x) + "," + String(y) + ", which the ride never covers");
+                    area++;
+                }
+            }
+
+            assert.equal(area, laid.length, where + " clears " + String(area) + " tiles to place " + String(laid.length));
+
+            // The origin is inside the footprint, which is why deriving the corners from it
+            // and a size looks plausible and is wrong. A 1x4 proves it is not the centre
+            // either: it runs -2..+1, so the origin sits off centre by half a tile.
+            assert.equal(inside["16,16"], true, where + " has its origin off the ride");
+            checked++;
+        }
+    });
+
+    assert.equal(checked, 24, "six rides at four rotations each");
+});
+
+test("a shop's footprint is the one tile it stands on, at every rotation", function () {
+    const { restore } = openPark(28);
+
+    try {
+        for (let rotation = 0; rotation < 4; rotation++) {
+            const result = describePlacement(0, 16, 16, rotation);
+
+            assert.deepEqual(result.footprint, { fromX: 16, fromY: 16, toX: 16, toY: 16, tiles: 1 },
+                "a stall covers its own tile and no other, whichever way it faces");
+        }
+    } finally {
+        restore();
     }
-
-    return { game: game, restore: game.install() };
-}
+});
 
 /**
  * The property the whole class of door bugs violates, checked against the tiles the game
@@ -223,56 +310,44 @@ function openPark(rideType: number, size = 24): { game: FakeGame; restore: () =>
  *
  * `build_flat_ride` returns ok:true for a door that touches nothing, because it reports
  * that the entrance action succeeded rather than reading adjacency back; the game then
- * says "Guests can't get to the entrance of X!". This is the assertion that would have
- * caught that from the search side, and it catches every rotation at once.
+ * says "Guests can't get to the entrance of X!". This is the assertion that catches that
+ * from the describing side, at every rotation at once.
  */
 test("every access tile touches the ride, at every rotation", function () {
-    const rides = [
-        { type: 37, trackType: 265, label: "1x4 ferris wheel" },
-        { type: 27, trackType: 263, label: "1x4 swinging inverter ship" },
-        { type: 25, trackType: 259, label: "4x4 dodgems" },
-        { type: 26, trackType: 261, label: "1x5 pirate ship" },
-        { type: 33, trackType: 266, label: "3x3 merry-go-round" },
-        { type: 38, trackType: 258, label: "2x2 motion simulator" }
-    ];
     let checked = 0;
 
-    rides.forEach(function (ride) {
+    RIDES.forEach(function (ride) {
         for (let rotation = 0; rotation < 4; rotation++) {
             const { restore } = openPark(ride.type);
-            let sites;
+            let options: AccessOption[];
 
             try {
-                sites = findBuildSites(0, 6, rotation).sites || [];
+                options = access(describePlacement(0, 16, 16, rotation));
             } finally {
                 restore();
             }
 
-            assert.ok(sites.length > 0, ride.label + " at rotation " + String(rotation) + " found nowhere to go");
+            const laid = realFootprint(24, ride.trackType, 16, 16, rotation);
+            const inside: Record<string, boolean> = {};
+            laid.forEach(function (tile) { inside[tile] = true; });
 
-            sites.forEach(function (site) {
-                const footprint = realFootprint(24, ride.trackType, site.x, site.y, site.rotation);
-                const inside: Record<string, boolean> = {};
-                footprint.forEach(function (tile) { inside[tile] = true; });
+            assert.ok(options.length > 0, ride.label + " at rotation " + String(rotation) + " offered no door at all");
 
-                assert.ok(footprint.length > 0, ride.label + " laid no track at " + String(site.x) + "," + String(site.y));
+            options.forEach(function (option) {
+                const where = ride.label + " rotation " + String(rotation) + " access "
+                    + String(option.x) + "," + String(option.y);
 
-                site.access.forEach(function (option) {
-                    const where = ride.label + " rotation " + String(rotation) + " site " + String(site.x) + ","
-                        + String(site.y) + " access " + String(option.x) + "," + String(option.y);
+                assert.equal(inside[String(option.x) + "," + String(option.y)], undefined,
+                    where + " is inside the ride itself");
 
-                    assert.equal(inside[String(option.x) + "," + String(option.y)], undefined,
-                        where + " is inside the ride itself");
-
-                    const touching = footprint.filter(function (tile) {
-                        const parts = tile.split(",");
-                        return Math.abs(Number(parts[0]) - option.x) + Math.abs(Number(parts[1]) - option.y) === 1;
-                    });
-
-                    assert.equal(touching.length > 0, true,
-                        where + " touches no tile of the ride; the ride is on " + footprint.join(" "));
-                    checked++;
+                const touching = laid.filter(function (tile) {
+                    const parts = tile.split(",");
+                    return Math.abs(Number(parts[0]) - option.x) + Math.abs(Number(parts[1]) - option.y) === 1;
                 });
+
+                assert.equal(touching.length > 0, true,
+                    where + " touches no tile of the ride; the ride is on " + laid.join(" "));
+                checked++;
             });
         }
     });
@@ -284,44 +359,239 @@ test("the side an access tile is named by is the side it is on", function () {
     // Verified against tile coordinates rather than against the direction index, because
     // SIDE_NAMES being rotated by one is invisible to anything that reads the same index back.
     const { restore } = openPark(25);
-    let sites;
+    let options: AccessOption[];
 
     try {
-        sites = findBuildSites(0, 4, 1).sites || [];
+        options = access(describePlacement(0, 16, 16, 1));
     } finally {
         restore();
     }
 
-    assert.ok(sites.length > 0);
+    const laid = realFootprint(24, 259, 16, 16, 1);
+    assert.ok(options.length > 0);
     let checked = 0;
 
-    sites.forEach(function (site) {
-        const footprint = realFootprint(24, 259, site.x, site.y, site.rotation);
+    options.forEach(function (option) {
+        const neighbour = laid.filter(function (tile) {
+            const parts = tile.split(",");
+            return Math.abs(Number(parts[0]) - option.x) + Math.abs(Number(parts[1]) - option.y) === 1;
+        })[0].split(",");
 
-        site.access.forEach(function (option) {
-            const neighbour = footprint.filter(function (tile) {
-                const parts = tile.split(",");
-                return Math.abs(Number(parts[0]) - option.x) + Math.abs(Number(parts[1]) - option.y) === 1;
-            })[0].split(",");
+        const expected = Number(neighbour[0]) < option.x ? "+x"
+            : (Number(neighbour[0]) > option.x ? "-x"
+                : (Number(neighbour[1]) < option.y ? "+y" : "-y"));
 
-            const expected = Number(neighbour[0]) < option.x ? "+x"
-                : (Number(neighbour[0]) > option.x ? "-x"
-                    : (Number(neighbour[1]) < option.y ? "+y" : "-y"));
-
-            assert.equal(option.side, expected,
-                "access " + String(option.x) + "," + String(option.y) + " touches the ride at "
-                + neighbour.join(",") + ", so it is on the " + expected + " side");
-            checked++;
-        });
+        assert.equal(option.side, expected,
+            "access " + String(option.x) + "," + String(option.y) + " touches the ride at "
+            + neighbour.join(",") + ", so it is on the " + expected + " side");
+        checked++;
     });
 
     assert.ok(checked > 0);
 });
 
-test("buildability is judged on the tiles the ride will really cover", function () {
+/**
+ * The list is every position there is, in the order the tiles ring the footprint, and in
+ * no other order.
+ *
+ * Both halves are the point of this tool. The one it replaced sorted by distance to a path
+ * and then cut the list to eight, and the model took entry #1 in 12 builds out of 12. A
+ * 4x4 in open ground has sixteen positions and the old window could show at most half of
+ * them.
+ */
+test("every door position is listed, and the list is not sorted by anything", function () {
+    // Origin 5,12 puts the path column at x=10 off the ride's +x side, so the ring - which
+    // starts on -x - reaches the far doors first and the distance-0 doors eleventh. In a
+    // park where the ring happened to agree with distance this assertion would pass under
+    // a sort as well, and prove nothing.
+    const { restore } = openPark(25);
+
+    try {
+        const result = describePlacement(0, 5, 12, 0);
+        const options = access(result);
+
+        assert.equal(options.length, 16, "a 4x4 in open ground has sixteen door positions, and all sixteen are listed");
+
+        const distances = options.map(function (option) { return option.pathDistance; });
+
+        assert.deepEqual(distances, [7, 5, 7, 7, 7, 5, 4, 4, 3, 3, 0, 2, 0, 0, 0, 2],
+            "the ring order, which is a shape rather than a ranking");
+
+        const sorted = distances.slice().sort(function (left, right) { return left - right; });
+        assert.notDeepEqual(distances, sorted,
+            "a list in ascending distance order is a list something ranked, which is the decision this tool gave back");
+
+        // And the near doors really are in there, so the un-sortedness above is a list that
+        // was left alone rather than a park with nothing to sort.
+        assert.equal(distances.filter(function (d) { return d === 0; }).length, 4,
+            "four doors open straight onto the path column");
+    } finally {
+        restore();
+    }
+});
+
+test("scenery does not stop a placement, it is counted", function () {
+    const { game, restore } = openPark(33);
+
+    for (let x = 15; x <= 17; x++) {
+        for (let y = 15; y <= 17; y++) {
+            game.addScenery(x, y);
+        }
+    }
+
+    try {
+        const result = describePlacement(0, 16, 16, 0);
+
+        assert.equal(result.fits, true, "a forest is buildable once cleared, not unbuildable");
+        assert.deepEqual(result.blockers, [], "and a tree is not a blocker");
+        assert.equal(result.sceneryToClear, 9, "every tile of the footprint carries one");
+        assert.match(String(result.ground), /9 tiles of it carry scenery/);
+        assert.match(String(result.ground), /clear_scenery/, "which is the call that takes it down");
+    } finally {
+        restore();
+    }
+});
+
+test("sceneryToClear counts the trees inside the rectangle the placement reports", function () {
+    // The two fields have to be about the same ground, or the model clears a rectangle and
+    // the count it was given never reaches zero.
+    const { game, restore } = openPark(37);
+
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            if ((x + y) % 3 === 0 && !(x === 10 && y >= 1)) {
+                game.addScenery(x, y);
+            }
+        }
+    }
+
+    try {
+        for (let rotation = 0; rotation < 4; rotation++) {
+            const result = describePlacement(0, 16, 16, rotation);
+            const footprint = result.footprint;
+
+            assert.ok(footprint);
+
+            let trees = 0;
+
+            for (let x = footprint.fromX; x <= footprint.toX; x++) {
+                for (let y = footprint.fromY; y <= footprint.toY; y++) {
+                    if (game.tile(x, y).elements.filter(function (e) { return e.type === "small_scenery"; }).length > 0) {
+                        trees++;
+                    }
+                }
+            }
+
+            assert.ok(trees > 0, "rotation " + String(rotation) + " has no tree on it, so it is not a test");
+            assert.equal(result.sceneryToClear, trees,
+                "rotation " + String(rotation) + " says " + String(result.sceneryToClear)
+                + " trees, the rectangle holds " + String(trees));
+        }
+    } finally {
+        restore();
+    }
+});
+
+test("unowned ground is named tile by tile, not refused as a whole", function () {
+    // The search reported "nowhere in the park fits" and left the model re-guessing
+    // coordinates. A named placement can say which of its own tiles are the problem, and
+    // this is the half of the answer no search could give.
+    const { game, restore } = openPark(33);
+
+    for (let y = 0; y < 24; y++) {
+        game.own(17, y, false);
+    }
+
+    try {
+        const result = describePlacement(0, 16, 16, 0);
+
+        assert.equal(result.ok, true, "the question was asked and answered");
+        assert.equal(result.fits, false);
+        assert.equal((result.blockers || []).length, 3, "the whole -x..+x column at x=17 is outside the park");
+        assert.equal(blockerAt(result, 17, 15), "is not land the park owns");
+        assert.equal(blockerAt(result, 16, 16), undefined, "and the tiles that are the park's are not blockers");
+
+        assert.match(String(result.ground), /3 are not land the park owns/);
+        assert.match(String(result.ground), /The other 6 tiles could\./);
+        assert.doesNotMatch(String(result.ground), /buy_land|buy the land|somewhere else|try /i,
+            "which constraint to relax, and where else to look, are the caller's");
+    } finally {
+        restore();
+    }
+});
+
+test("sloped ground and a step in height are different answers, and neither is a slope", function () {
+    // Two conditions the model cannot see and cannot fix - no tool levels ground - and they
+    // are told apart because the remedies differ: a slope is never buildable, while a step
+    // means the origin was picked one terrace off.
+    const { game, restore } = openPark(33);
+
+    game.tile(15, 15).elements[0].slope = 4;
+    game.tile(17, 17).elements[0].baseZ = 112;
+
+    try {
+        const result = describePlacement(0, 16, 16, 0);
+
+        assert.equal(result.z, 96, "the ride stands at the origin tile's own height, which is where build_flat_ride reads it");
+        assert.equal(result.fits, false);
+        assert.equal(blockerAt(result, 15, 15), "is on a slope, and a ride needs level ground");
+        assert.equal(blockerAt(result, 17, 17), "is at height 112 and the ride stands at height 96");
+
+        assert.match(String(result.ground), /1 are on a slope/);
+        assert.match(String(result.ground), /1 stand at a different height from the ride's origin/);
+    } finally {
+        restore();
+    }
+});
+
+test("the height everything is judged against is the origin's, the tile build_flat_ride reads", function () {
+    // build_flat_ride takes the ride's height from the origin tile and refuses any footprint
+    // tile or door that is not level with it. A describe that used the commonest height
+    // under the footprint, or the first tile's, would call a placement level that the build
+    // then refuses - and the model would have no way to tell which of the two was lying.
+    const { game, restore } = openPark(33);
+
+    // The origin is the odd one out: eight tiles at 96 and the origin at 112.
+    game.tile(16, 16).elements[0].baseZ = 112;
+
+    try {
+        const result = describePlacement(0, 16, 16, 0);
+
+        assert.equal(result.z, 112, "a majority vote would have said 96 here");
+        assert.equal((result.blockers || []).length, 8, "the other eight tiles are the ones out of step");
+        assert.equal(blockerAt(result, 15, 15), "is at height 96 and the ride stands at height 112");
+
+        assert.equal(access(result).length, 0,
+            "and no door is level with a ride standing a terrace above everything around it");
+    } finally {
+        restore();
+    }
+});
+
+test("a placement that does not fit still reports the doors it would have", function () {
+    // Refusing to describe the rest of a blocked placement would send the model back to
+    // guessing whole origins when one tile of nine is the problem. The two readings are kept
+    // apart by `fits`, which is false whatever the doors say.
+    const { game, restore } = openPark(33);
+
+    game.own(15, 15, false);
+
+    try {
+        const result = describePlacement(0, 16, 16, 0);
+
+        assert.equal(result.fits, false);
+        assert.equal((result.blockers || []).length, 1);
+        assert.equal(access(result).length, 12, "a 3x3 has twelve door positions and they are all still measured");
+    } finally {
+        restore();
+    }
+});
+
+test("a ride already standing there is what stops the placement, named by what it is", function () {
     // Live repro C: the dodgems refused to build at a rotation-1 site with "Ferris Wheel 3
     // in the way", because the tool had checked a 4x4 block three tiles away from the one
-    // the game was going to use. Nothing it offers may overlap a ride that is already there.
+    // the game was going to use. The footprint offsets are the fix, and this is the check:
+    // whatever the game would lay on is what gets judged, at every rotation.
     const { game, restore } = openPark(25);
 
     for (let x = 14; x <= 17; x++) {
@@ -332,29 +602,97 @@ test("buildability is judged on the tiles the ride will really cover", function 
 
     try {
         for (let rotation = 0; rotation < 4; rotation++) {
-            const sites = findBuildSites(0, 20, rotation).sites || [];
-
-            sites.forEach(function (site) {
-                realFootprint(24, 259, site.x, site.y, site.rotation).forEach(function (tile) {
-                    const parts = tile.split(",");
-                    const onRide = Number(parts[0]) >= 14 && Number(parts[0]) <= 17
-                        && Number(parts[1]) >= 14 && Number(parts[1]) <= 17;
-
-                    assert.equal(onRide, false, "a site at " + String(site.x) + "," + String(site.y)
-                        + " rotation " + String(site.rotation) + " would be built on " + tile + ", where a ride already stands");
-                });
+            const result = describePlacement(0, 16, 16, rotation);
+            const laid = realFootprint(24, 259, 16, 16, rotation);
+            const expected = laid.filter(function (tile) {
+                const parts = tile.split(",");
+                return Number(parts[0]) >= 14 && Number(parts[0]) <= 17
+                    && Number(parts[1]) >= 14 && Number(parts[1]) <= 17;
             });
+
+            assert.ok(expected.length > 0, "rotation " + String(rotation) + " overlaps nothing, so it is not a test");
+            assert.equal(result.fits, false, "rotation " + String(rotation) + " would be built on a ride");
+            assert.deepEqual((result.blockers || []).map(function (blocker) {
+                return String(blocker.x) + "," + String(blocker.y);
+            }).sort(), expected.slice().sort(),
+            "rotation " + String(rotation) + " must block on exactly the tiles the game would lay on the ride");
+
+            assert.match(String(blockerAt(result, Number(expected[0].split(",")[0]), Number(expected[0].split(",")[1]))),
+                /carries ride track, which is not scenery a bulldozer removes/,
+                "and say what is standing there rather than \"a structure\"");
         }
     } finally {
         restore();
     }
 });
 
-test("a door that a queue would join is marked with what it cuts off", function () {
-    // Eight "N path tiles are no longer reachable" events came from queueing the trunk
-    // path. The trunk here runs x=10, y=1..11, so the only site worth having has its three
-    // doors on it: queueing the top one strands two tiles, the middle one strands one, and
-    // the dead end at the bottom strands nothing. Same site, same distance, three answers.
+test("a park with no footpath still describes a placement, at -1", function () {
+    const { restore } = gameWith(33);
+
+    try {
+        const result = describePlacement(0, 10, 10, 0);
+
+        assert.equal(result.ok, true);
+        assert.equal(result.fits, true, "an empty park is buildable, not unbuildable");
+        access(result).forEach(function (option) {
+            assert.equal(option.pathDistance, -1, "-1 says there is no path to measure against");
+        });
+    } finally {
+        restore();
+    }
+});
+
+test("no distance ever leaves as Infinity, which JSON turns into null", function () {
+    // A park with no footpath at all is where every distance is unmeasurable, so it is the
+    // case that leaks. -1 says "there is nothing to measure against"; null says nothing.
+    const empty = gameWith(37);
+
+    try {
+        const result = describePlacement(0, 10, 10, 0);
+        const round = JSON.parse(JSON.stringify(result)) as Record<string, unknown>;
+
+        assert.equal(JSON.stringify(round).indexOf("null"), -1,
+            "a null in the result is an Infinity that leaked: " + JSON.stringify(round));
+        assert.equal(isFinite(Number(result.nearestRideDistance)), true);
+
+        access(result).forEach(function (option) {
+            assert.equal(isFinite(option.pathDistance), true);
+            assert.equal(isFinite(option.queueCutsOff), true);
+        });
+    } finally {
+        empty.restore();
+    }
+
+    const withPaths = openPark(37);
+
+    try {
+        assert.equal(JSON.stringify(describePlacement(0, 16, 16, 0)).indexOf("null"), -1);
+    } finally {
+        withPaths.restore();
+    }
+});
+
+test("nearestRideDistance counts the gate, so an empty park is not -1", function () {
+    const { restore } = openPark(33);
+
+    try {
+        const result = describePlacement(0, 16, 16, 0);
+
+        // The gate is three tiles wide from 10,0, so its nearest tile is (12,0): four across
+        // and sixteen down from the origin. Nothing else in the park carries track.
+        assert.equal(result.nearestRideDistance, 20, "measured from the origin to the park's own gate");
+    } finally {
+        restore();
+    }
+});
+
+/**
+ * The trunk park of the severance tests: a path at x=10 running y=1..11, with an owned band
+ * beside it at x 10..17, y 9..11. A 3x3 at origin 13,10 covers 12..14 x 9..11, which puts
+ * three of its doors on the trunk at (10,9), (10,10) and (10,11) and three on bare ground
+ * at x=16.
+ */
+function trunkDoorPark(): FakeGame {
     const game = new FakeGame(24, 24);
     game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
     game.addParkEntrance(9, 0);
@@ -369,15 +707,21 @@ test("a door that a queue would join is marked with what it cuts off", function 
         }
     }
 
+    return game;
+}
+
+test("a door that a queue would join is marked with what it cuts off", function () {
+    // Eight "N path tiles are no longer reachable" events came from queueing the trunk
+    // path. Queueing the top door strands two tiles, the middle one strands one, and the
+    // dead end at the bottom strands nothing. Same placement, same distance, three answers.
+    const game = trunkDoorPark();
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        assert.equal(sites.length, 1, "only one 3x3 site has room here");
-
+        const result = describePlacement(0, 13, 10, 0);
         const byDoor: Record<string, { queueCutsOff: number; isExistingPath: boolean }> = {};
 
-        sites[0].access.forEach(function (option) {
+        access(result).forEach(function (option) {
             const door = option.door;
             assert.ok(door, "a ride's access option must carry the door its queue goes on");
             byDoor[String(door.x) + "," + String(door.y)] = {
@@ -389,16 +733,13 @@ test("a door that a queue would join is marked with what it cuts off", function 
         assert.equal(byDoor["10,9"].queueCutsOff, 2, "queueing the trunk at y=9 strands (10,10) and (10,11)");
         assert.equal(byDoor["10,10"].queueCutsOff, 1, "queueing it at y=10 strands (10,11)");
         assert.equal(byDoor["10,11"].queueCutsOff, 0, "the trunk ends at y=11, so a queue there cuts nothing");
-        assert.equal(byDoor["10,9"].isExistingPath, true, "a door already on the path network is the best kind, not a rejected one");
+        assert.equal(byDoor["10,9"].isExistingPath, true,
+            "a door already on the path network is offered like any other, not rejected");
 
         // Away from the trunk there is nothing to cut, and the doors say so rather than
         // saying nothing.
         assert.equal(byDoor["16,10"].queueCutsOff, 0);
         assert.equal(byDoor["16,10"].isExistingPath, false);
-
-        // And the severing doors are still offered, in distance order, not buried.
-        assert.equal(sites[0].access[0].queueCutsOff > 0, true,
-            "the trunk doors are nearest the path, so they still come first - the fact is reported, the list is not reordered");
     } finally {
         restore();
     }
@@ -410,8 +751,8 @@ test("a door that a queue would join is marked with what it cuts off", function 
  * neighbours, on the theory that the queue run to it would block the footpath it joined -
  * so 11,9 came back 2 and 11,10 came back 1, telling the model that a ride beside the main
  * path would cut the park up. It does not. A queue no ride has claimed is walked like any
- * other path, the run to the door is new ground that carried nobody, and only the door
- * tile itself dead-ends - and on bare ground there was no route through it to lose.
+ * other path, the run to the door is new ground that carried nobody, and only the door tile
+ * itself dead-ends - and on bare ground there was no route through it to lose.
  */
 test("a door on bare ground beside the trunk cuts nothing, whatever the trunk carries", function () {
     const game = new FakeGame(24, 24);
@@ -422,8 +763,8 @@ test("a door on bare ground beside the trunk cuts nothing, whatever the trunk ca
         game.addPath(10, y);
     }
 
-    // Owned land starts one tile east of the trunk, so every door lands on bare ground
-    // next to it rather than on it.
+    // Owned land starts one tile east of the trunk, so every door lands on bare ground next
+    // to it rather than on it.
     for (let x = 0; x < 24; x++) {
         for (let y = 0; y < 24; y++) {
             game.own(x, y, x >= 11 && x <= 16 && y >= 9 && y <= 11);
@@ -433,12 +774,11 @@ test("a door on bare ground beside the trunk cuts nothing, whatever the trunk ca
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        assert.equal(sites.length, 1, "only one 3x3 site has room here");
-
-        const doors = sites[0].access.map(function (option) {
-            assert.ok(option.door, "a ride's access option must carry the door its queue goes on");
-            return { at: String(option.door.x) + "," + String(option.door.y), cuts: option.queueCutsOff };
+        const result = describePlacement(0, 14, 10, 0);
+        const doors = access(result).filter(function (option) {
+            return option.door && option.door.x === 11;
+        }).map(function (option) {
+            return { at: String(option.door?.x) + "," + String(option.door?.y), cuts: option.queueCutsOff };
         });
 
         assert.deepEqual(doors, [
@@ -447,9 +787,16 @@ test("a door on bare ground beside the trunk cuts nothing, whatever the trunk ca
             { at: "11,11", cuts: 0 }
         ], "each of these is one tile from a trunk tile whose own severance is 2, 1 and 0");
 
-        // The control: the trunk really does have something to lose, so the zeros above are
-        // the rule changing and not an empty park.
-        assert.equal(findBuildSites(0, 50, 0).sites?.length, 1);
+        // The control: the trunk really does have something to lose, which is what makes the
+        // three zeros above the rule and not an empty park.
+        const onTheTrunk = trunkDoorPark();
+        const restoreTrunk = onTheTrunk.install();
+
+        try {
+            assert.equal(optionForDoor(describePlacement(0, 13, 10, 0), 10, 9)?.queueCutsOff, 2);
+        } finally {
+            restoreTrunk();
+        }
     } finally {
         restore();
     }
@@ -457,9 +804,9 @@ test("a door on bare ground beside the trunk cuts nothing, whatever the trunk ca
 
 /**
  * A door already carrying a queue no ride owns - what a demolished ride leaves behind, and
- * a door the search offers as a finished one. Placing an entrance here claims that queue,
- * which dead-ends the tile, so it can sever exactly like an ordinary path tile can. The
- * old code returned 0 for any tile that was already a queue.
+ * a door offered as a finished one. Placing an entrance here claims that queue, which
+ * dead-ends the tile, so it can sever exactly like an ordinary path tile can. The old code
+ * returned 0 for any tile that was already a queue.
  */
 test("a door on an unbound queue in the trunk is charged for dead-ending it", function () {
     const game = new FakeGame(24, 24);
@@ -479,23 +826,15 @@ test("a door on an unbound queue in the trunk is charged for dead-ending it", fu
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        assert.equal(sites.length, 1);
+        const result = describePlacement(0, 13, 10, 0);
+        const onTheQueue = optionForDoor(result, 10, 10);
 
-        const onTheQueue = sites[0].access.filter(function (option) {
-            return option.door && option.door.x === 10 && option.door.y === 10;
-        });
-
-        assert.equal(onTheQueue.length, 1, "a door on an unbound queue is still offered");
-        assert.equal(onTheQueue[0].door?.hasUnboundQueue, true);
-        assert.equal(onTheQueue[0].queueCutsOff, 1,
+        assert.ok(onTheQueue, "a door on an unbound queue is still offered");
+        assert.equal(onTheQueue.door?.hasUnboundQueue, true);
+        assert.equal(onTheQueue.queueCutsOff, 1,
             "an entrance here claims that queue and dead-ends 10,10, which strands 10,11");
 
-        const below = sites[0].access.filter(function (option) {
-            return option.door && option.door.x === 10 && option.door.y === 11;
-        });
-
-        assert.equal(below[0].queueCutsOff, 0,
+        assert.equal(optionForDoor(result, 10, 11)?.queueCutsOff, 0,
             "and the tile past it is still reachable today, which is what makes the 1 above a real loss");
     } finally {
         restore();
@@ -503,42 +842,23 @@ test("a door on an unbound queue in the trunk is charged for dead-ending it", fu
 });
 
 test("a queue that cuts nothing is never flagged", function () {
-    // The flag has to be rare enough to mean something. A door with no footpath anywhere
-    // near it has nothing to join and nothing to cut, and must come back 0 - otherwise the
-    // model learns to ignore the number.
-    const { game, restore } = openPark(33);
-
-    const carriesPath = function (x: number, y: number): boolean {
-        if (!game.inBounds(x, y)) {
-            return false;
-        }
-
-        return game.tile(x, y).elements.filter(function (e) { return e.type === "footpath"; }).length > 0;
-    };
+    // The flag has to be rare enough to mean something. A placement with no footpath near
+    // any of its doors has nothing to join and nothing to cut, and every option must come
+    // back 0 - otherwise the model learns to ignore the number.
+    const { restore } = openPark(33);
 
     try {
-        const sites = findBuildSites(0, 10, 0).sites || [];
-        assert.ok(sites.length > 0);
-        let clearDoors = 0;
+        const result = describePlacement(0, 16, 16, 0);
+        const options = access(result);
 
-        sites.forEach(function (site) {
-            site.access.forEach(function (option) {
-                const door = option.door;
-                assert.ok(door);
-
-                const touchesPath = carriesPath(door.x, door.y)
-                    || carriesPath(door.x + 1, door.y) || carriesPath(door.x - 1, door.y)
-                    || carriesPath(door.x, door.y + 1) || carriesPath(door.x, door.y - 1);
-
-                if (!touchesPath) {
-                    clearDoors++;
-                    assert.equal(option.queueCutsOff, 0,
-                        "a queue at " + String(door.x) + "," + String(door.y) + " has no footpath to join, so it removes no route");
-                }
-            });
+        assert.equal(options.length, 12);
+        options.forEach(function (option) {
+            assert.ok(option.pathDistance >= 2,
+                "no door here is even next to the path column, which is what makes this a control");
+            assert.equal(option.queueCutsOff, 0,
+                "a queue at " + String(option.door?.x) + "," + String(option.door?.y)
+                + " has no footpath to join, so it removes no route");
         });
-
-        assert.ok(clearDoors > 0, "no door was far enough from the path to be a control");
     } finally {
         restore();
     }
@@ -547,13 +867,14 @@ test("a queue that cuts nothing is never flagged", function () {
 /**
  * The park the run produced, rebuilt: a trunk the gate reaches, and a five-tile fragment of
  * path further down that joins nothing - the "islands" park_status had listed in the turn
- * before find_build_sites offered a door on one as option #1, twice.
+ * before the old tool offered a door on one as option #1, twice.
  *
- * Two identical bands of owned ground, one beside each, leave exactly one 3x3 site apiece
- * with three of its doors on the paving beside it. The two sites are the same shape and the
- * same distance from their own paving, and differ in one thing: whether a guest can get
- * there. That is what makes the pair a discriminator - a fixture with only the island in it
- * cannot tell a tool that measures reachability from one that reports false for everything.
+ * Two identical bands of owned ground, one beside each, take the same 3x3 at 13,5 and at
+ * 13,16 with three of its doors on the paving beside it. The two placements are the same
+ * shape and the same distance from their own paving, and differ in one thing: whether a
+ * guest can get there. That is what makes the pair a discriminator - a fixture with only
+ * the island in it cannot tell a tool that measures reachability from one that reports
+ * false for everything.
  */
 function trunkAndIslandPark(): FakeGame {
     const game = new FakeGame(24, 24);
@@ -579,16 +900,6 @@ function trunkAndIslandPark(): FakeGame {
     return game;
 }
 
-function optionForDoor(site: BuildSite, x: number, y: number): AccessOption | undefined {
-    return site.access.filter(function (option) {
-        return option.door && option.door.x === x && option.door.y === y;
-    })[0];
-}
-
-function siteAt(sites: BuildSite[], x: number, y: number): BuildSite | undefined {
-    return sites.filter(function (site) { return site.x === x && site.y === y; })[0];
-}
-
 test("a door on paving the gate cannot reach is not reported as a door on the network", function () {
     const game = trunkAndIslandPark();
     const restore = game.install();
@@ -597,16 +908,14 @@ test("a door on paving the gate cannot reach is not reported as a door on the ne
         // The park's own answer, not a second implementation of one: whatever this says is
         // what the tool has to agree with.
         const walkable = walkableFromParkEntrance();
-
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 5 }), true, "the trunk is paving guests reach");
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 16 }), false, "the fragment is not, or this fixture proves nothing");
 
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        const onTheTrunk = siteAt(sites, 13, 5);
-        const onTheIsland = siteAt(sites, 13, 16);
+        const onTheTrunk = describePlacement(0, 13, 5, 0);
+        const onTheIsland = describePlacement(0, 13, 16, 0);
 
-        assert.ok(onTheTrunk, "the site beside the trunk: " + sites.map(function (s) { return String(s.x) + "," + String(s.y); }).join(" "));
-        assert.ok(onTheIsland, "and the one beside the fragment, which is still offered rather than hidden");
+        assert.equal(onTheTrunk.fits, true);
+        assert.equal(onTheIsland.fits, true, "the fragment's band is buildable ground too");
 
         const good = optionForDoor(onTheTrunk, 10, 5);
         const stranded = optionForDoor(onTheIsland, 10, 16);
@@ -631,9 +940,10 @@ test("a door on paving the gate cannot reach is not reported as a door on the ne
         assert.deepEqual(stranded.door.island, { tiles: 5, fromX: 10, fromY: 14, toX: 10, toY: 18 },
             "and the fragment is named, by the same corners park_status lists it under");
 
-        // Every door, not just the two picked out, agrees with the park's own reachability.
-        sites.forEach(function (site) {
-            site.access.forEach(function (option) {
+        // Every door of both, not just the two picked out, agrees with the park's own
+        // reachability.
+        [onTheTrunk, onTheIsland].forEach(function (result) {
+            access(result).forEach(function (option) {
                 const door = option.door;
                 assert.ok(door);
                 assert.equal(door.guestsCanReach, tileIsWalkable(walkable, { x: door.x, y: door.y }),
@@ -641,26 +951,22 @@ test("a door on paving the gate cannot reach is not reported as a door on the ne
             });
         });
 
-        assert.equal(JSON.stringify(sites).indexOf("null"), -1, "an absent island is an absent field, not a null");
+        assert.equal(JSON.stringify(onTheTrunk).indexOf("null"), -1, "an absent island is an absent field, not a null");
     } finally {
         restore();
     }
 });
 
 test("a door the gate cannot reach is still offered, with what it is attached to named", function () {
-    // Excluding it would be the tool deciding the site is not worth having, and a fragment
-    // is joinable: build_path reaches it, and then the ride on it earns. What the tool owes
-    // the caller is the fact, which is `guestsCanReach` and `island` - docs/tool-design.md.
+    // Leaving it out would be the tool deciding the placement is not worth having, and a
+    // fragment is joinable: build_path reaches it, and then the ride on it earns. What the
+    // tool owes the caller is the fact, which is `guestsCanReach` and `island`.
     const game = trunkAndIslandPark();
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        const onTheIsland = siteAt(sites, 13, 16);
-
-        assert.ok(onTheIsland, "the site beside the fragment is in the list at all");
-
-        const doors = onTheIsland.access.filter(function (option) {
+        const result = describePlacement(0, 13, 16, 0);
+        const doors = access(result).filter(function (option) {
             return option.door && option.door.x === 10;
         });
 
@@ -676,12 +982,9 @@ test("a door the gate cannot reach is still offered, with what it is attached to
 
 /**
  * The same two bands, with the ground beside the trunk stopping two tiles short of it, so
- * the network site's best door is on bare ground two tiles out while the fragment site's
- * door is on paving. Measured against any paving at all, the fragment site is the 0 and
- * sorts first - which is the run's failure exactly: option #1, taken in 4 of 4 builds.
- *
- * Nothing here reorders anything. The comparator is the same ascending pathDistance it has
- * always been; the number it sorts on stopped counting paving guests cannot reach.
+ * the network placement's doors are on bare ground two tiles out while the fragment
+ * placement's are on paving. Measured against any paving at all, the fragment reads 0 -
+ * which is the run's failure exactly: it was option #1, taken in 4 of 4 builds.
  */
 function islandOutranksNetworkPark(): FakeGame {
     const game = new FakeGame(24, 24);
@@ -700,8 +1003,8 @@ function islandOutranksNetworkPark(): FakeGame {
         for (let y = 0; y < 24; y++) {
             // The trunk is the park's own walk, so the park owns it. A distance is measured
             // only against paving the park could lay path onto, and a trunk on land it owned
-            // nothing of would be unmeasurable-against - which would leave every site in this
-            // fixture at -1 and the sort it is testing with nothing to sort on.
+            // nothing of would be unmeasurable-against - which would leave every door in this
+            // fixture at -1 and the numbers below with nothing in them.
             const theTrunk = x === 10 && y >= 1 && y <= 6;
             const besideTheTrunk = x >= 12 && x <= 18 && y >= 4 && y <= 6;
             const besideTheIsland = x >= 10 && x <= 18 && y >= 15 && y <= 17;
@@ -712,36 +1015,27 @@ function islandOutranksNetworkPark(): FakeGame {
     return game;
 }
 
-test("a site whose doors are on a stranded fragment does not outrank one on the network", function () {
+test("a door on a stranded fragment is measured to the network, not to the paving under it", function () {
     const game = islandOutranksNetworkPark();
     const restore = game.install();
 
     try {
         const walkable = walkableFromParkEntrance();
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        const first = sites[0];
+        const onTheNetwork = describePlacement(0, 15, 5, 0);
+        const onTheIsland = describePlacement(0, 13, 16, 0);
 
-        assert.ok(first, "the park holds sites at all");
-        assert.deepEqual([first.x, first.y], [15, 5],
-            "the site beside the trunk, whose best door is two tiles of bare ground from it");
-        assert.equal(first.pathDistance, 2);
+        const bare = optionForDoor(onTheNetwork, 12, 5);
+        const stranded = optionForDoor(onTheIsland, 10, 15);
 
-        const door = first.access[0].door;
-        assert.ok(door);
-        assert.equal(door.isExistingPath, false, "it is not even on a footpath, which is what makes this the test");
+        assert.ok(bare && bare.door && stranded && stranded.door);
 
-        const onTheIsland = siteAt(sites, 13, 16);
-        assert.ok(onTheIsland, "and the fragment site is still in the list, below it");
-        assert.equal(onTheIsland.pathDistance, 9,
-            "nine tiles from its best door at (10,15) to (10,6), the nearest tile the gate reaches");
+        assert.equal(bare.door.isExistingPath, false, "bare ground two tiles from the trunk");
+        assert.equal(bare.pathDistance, 2);
 
-        const strandedDoor = optionForDoor(onTheIsland, 10, 15);
-        assert.ok(strandedDoor && strandedDoor.door);
-        assert.equal(strandedDoor.door.isExistingPath, true, "measured against paving anywhere this door is the 0");
+        assert.equal(stranded.door.isExistingPath, true, "measured against paving anywhere this door is the 0");
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 15 }), false, "and no guest can stand on it");
-
-        assert.ok(sites.indexOf(onTheIsland) > sites.indexOf(first),
-            "so the honest number, not a rule about islands, is what puts it second");
+        assert.equal(stranded.pathDistance, 9,
+            "nine tiles from (10,15) to (10,6), the nearest tile the gate reaches - it used to read 0");
     } finally {
         restore();
     }
@@ -767,8 +1061,6 @@ function severedTrunkPark(): FakeGame {
 
     for (let x = 0; x < 24; x++) {
         for (let y = 0; y < 24; y++) {
-            // The trunk is the park's own walk end to end, cut or not: a distance is measured
-            // only against paving the park could lay path onto.
             const theTrunk = x === 10 && y >= 1 && y <= 18;
             const bands = x >= 10 && x <= 17 && ((y >= 4 && y <= 6) || (y >= 15 && y <= 17));
             game.own(x, y, theTrunk || bands);
@@ -796,12 +1088,7 @@ test("a fragment cut off by the game's own edges counts as cut off here too", fu
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 9 }), true);
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 10 }), false, "the game's edges are what cut this line");
 
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        const beyondTheCut = siteAt(sites, 13, 16);
-
-        assert.ok(beyondTheCut, "the site past the cut");
-
-        const stranded = optionForDoor(beyondTheCut, 10, 15);
+        const stranded = optionForDoor(describePlacement(0, 13, 16, 0), 10, 15);
         assert.ok(stranded && stranded.door);
 
         assert.equal(stranded.door.isExistingPath, true);
@@ -816,21 +1103,15 @@ test("a fragment cut off by the game's own edges counts as cut off here too", fu
 
 test("queueCutsOff counts what stops being reachable, so a door nothing reaches is 0", function () {
     // The figure answers "how many tiles stop being reachable", which is a question about
-    // tiles that are reachable now. Past the cut there are five more tiles of path beyond
+    // tiles that are reachable now. Past the cut there are three more tiles of path beyond
     // (10,15) and dead-ending it takes none of them from anybody: they were already gone.
     // Walked by adjacency the same door came back 3, a loss the park had already taken.
     const game = severedTrunkPark();
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        const beyondTheCut = siteAt(sites, 13, 16);
-        const onTheTrunk = siteAt(sites, 13, 5);
-
-        assert.ok(beyondTheCut && onTheTrunk);
-
-        const stranded = optionForDoor(beyondTheCut, 10, 15);
-        const reachable = optionForDoor(onTheTrunk, 10, 5);
+        const stranded = optionForDoor(describePlacement(0, 13, 16, 0), 10, 15);
+        const reachable = optionForDoor(describePlacement(0, 13, 5, 0), 10, 5);
 
         assert.ok(stranded && stranded.door && reachable && reachable.door);
 
@@ -859,8 +1140,6 @@ test("a park whose only paving the gate cannot reach measures against none of it
         game.addPath(10, y);
     }
 
-    // Narrow enough that the only 3x3 that fits has its doors on the fragment and nowhere
-    // else, so the numbers below are that door's and not some bare tile's further out.
     for (let x = 0; x < 24; x++) {
         for (let y = 0; y < 24; y++) {
             game.own(x, y, x >= 10 && x <= 14 && y >= 15 && y <= 17);
@@ -870,19 +1149,14 @@ test("a park whose only paving the gate cannot reach measures against none of it
     const restore = game.install();
 
     try {
-        const result = findBuildSites(0, 50, 0);
-        const sites = result.sites || [];
+        const result = describePlacement(0, 13, 16, 0);
 
         assert.equal(result.ok, true);
-        assert.ok(sites.length > 0, "a park with unreachable paving is still buildable, not unbuildable: " + String(result.note));
+        assert.equal(result.fits, true, "a park with unreachable paving is still buildable");
 
-        const site = siteAt(sites, 13, 16);
-        assert.ok(site);
-        assert.equal(site.pathDistance, -1, "there is no reachable footpath to measure against");
-
-        const stranded = optionForDoor(site, 10, 16);
+        const stranded = optionForDoor(result, 10, 16);
         assert.ok(stranded && stranded.door);
-        assert.equal(stranded.pathDistance, -1);
+        assert.equal(stranded.pathDistance, -1, "there is no reachable footpath to measure against");
         assert.equal(stranded.door.isExistingPath, true, "the tile is paved");
         assert.equal(stranded.door.guestsCanReach, false, "and it is paving nobody can get to");
         assert.equal(stranded.door.island && stranded.door.island.tiles, 5);
@@ -891,425 +1165,9 @@ test("a park whose only paving the gate cannot reach measures against none of it
     }
 });
 
-test("a shop is served from the neighbour its rotation points at", function () {
-    const deltas = [{ dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }];
-
-    for (let rotation = 0; rotation < 4; rotation++) {
-        const { restore } = openPark(28);
-
-        try {
-            const result = findBuildSites(0, 5, rotation);
-            const sites = result.sites || [];
-
-            assert.ok(sites.length > 0, "no shop site at rotation " + String(rotation));
-
-            sites.forEach(function (site) {
-                assert.equal(site.access.length, 1, "a stall has exactly one serving tile, not four");
-                assert.equal(site.access[0].x, site.x + deltas[rotation].dx,
-                    "rotation " + String(rotation) + " is served from " + String(deltas[rotation].dx) + "," + String(deltas[rotation].dy));
-                assert.equal(site.access[0].y, site.y + deltas[rotation].dy);
-                assert.equal(site.access[0].door, undefined,
-                    "`door` is a ride-entrance idea; following it puts the shop's path one tile too far out");
-            });
-
-            assert.match(String(result.note), /no entrance or exit/);
-            assert.match(String(result.note), /0 is -x, 1 is \+y, 2 is \+x, 3 is -y/,
-                "which neighbour each rotation serves from is the game's geometry and has to stay");
-            assert.match(String(result.note), /an ordinary path, not a queue/,
-                "that a stall takes a path rather than a queue is a rule, not a preference");
-            assert.match(String(result.note), /there is no `door` beyond it/,
-                "and why it is that tile itself, not one further out, stays with it");
-            assert.doesNotMatch(String(result.note), /Run build_path/,
-                "whether to pave that tile at all is the decision find_build_sites exists to hand over");
-        } finally {
-            restore();
-        }
-    }
-});
-
-test("live repro: a rotation-0 stall is served from -x, and that tile is offered even when it is already a path", function () {
-    // Measured in the game: every rotation-0 stall site offered access on plus and minus y,
-    // while the real serving tile (51,24) - already a footpath - was never in the list, and
-    // a path laid on the offered tile gave edges=1, no connection at all.
-    const game = new FakeGame(64, 40);
-    game.rideObjects = [{ index: 0, name: "Burger Bar", rideType: [28] }];
-    // Beside the footpath rather than across the map from it: every distance here is
-    // measured against the paving the gate reaches, so a gate that reaches none of it
-    // would make this a park with no measurable path in it at all.
-    game.addParkEntrance(50, 23);
-    game.addPath(51, 24);
-
-    for (let x = 0; x < 64; x++) {
-        for (let y = 0; y < 40; y++) {
-            game.own(x, y, x >= 50 && x <= 54 && y >= 22 && y <= 26);
-        }
-    }
-
-    const restore = game.install();
-
-    try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        assert.ok(sites.length > 0);
-
-        assert.equal(sites[0].x, 52, "the tile beside the path is the nearest site");
-        assert.equal(sites[0].y, 24);
-        assert.equal(sites[0].pathDistance, 0, "its serving tile is the footpath itself");
-        assert.deepEqual([sites[0].access[0].x, sites[0].access[0].y], [51, 24]);
-
-        sites.forEach(function (site) {
-            site.access.forEach(function (option) {
-                assert.equal(option.y, site.y, "a rotation-0 stall is never served from plus or minus y");
-                assert.equal(option.x, site.x - 1);
-            });
-        });
-    } finally {
-        restore();
-    }
-});
-
-test("a shop is searched at all four rotations, because rotation is which side serves it", function () {
-    // The only buildable tile is (12,12) and the only path is the tile above it, so the
-    // one site that exists is rotation 1. Searching a square footprint at rotation 0 alone
-    // - right for a ride, because rotation 2 is the same tiles - finds nothing here.
-    const game = new FakeGame(24, 24);
-    game.rideObjects = [{ index: 0, name: "Drink Stall", rideType: [30] }];
-    game.addParkEntrance(12, 14);
-    game.addPath(12, 13);
-
-    for (let x = 0; x < 24; x++) {
-        for (let y = 0; y < 24; y++) {
-            game.own(x, y, (x === 12 && y === 12) || (x === 12 && y === 13));
-        }
-    }
-
-    const restore = game.install();
-
-    try {
-        const all = findBuildSites(0, 10);
-        assert.equal((all.sites || []).length, 1);
-        assert.equal((all.sites || [])[0].rotation, 1);
-        assert.deepEqual([(all.sites || [])[0].access[0].x, (all.sites || [])[0].access[0].y], [12, 13]);
-
-        const rotationZero = findBuildSites(0, 10, 0);
-        assert.equal((rotationZero.sites || []).length, 0);
-        assert.match(String(rotationZero.note), /serving tile/);
-    } finally {
-        restore();
-    }
-});
-
-test("a square footprint is not searched twice, which would double totalFound", function () {
-    const { restore } = openPark(33);
-
-    try {
-        const both = findBuildSites(0, 3);
-        const justZero = findBuildSites(0, 3, 0);
-
-        assert.equal(both.totalFound, justZero.totalFound, "rotation 2 covers the same tiles as rotation 0");
-        (both.sites || []).forEach(function (site) {
-            assert.equal(site.rotation, 0);
-        });
-    } finally {
-        restore();
-    }
-});
-
-test("a place with room for only one door is not a site", function () {
-    // A ride needs an entrance and an exit. One usable tile beside it is half a site, and
-    // offering it sends the model to build_flat_ride with nowhere to put the exit.
-    const game = new FakeGame(24, 24);
-    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
-    game.addParkEntrance(2, 0);
-    game.addPath(9, 10);
-
-    for (let x = 0; x < 24; x++) {
-        for (let y = 0; y < 24; y++) {
-            const footprint = x >= 11 && x <= 13 && y >= 9 && y <= 11;
-            game.own(x, y, footprint || (x === 10 && y === 10) || (x === 9 && y === 10));
-        }
-    }
-
-    const restore = game.install();
-
-    try {
-        const result = findBuildSites(0, 10, 0);
-
-        assert.equal(result.ok, true);
-        assert.equal((result.sites || []).length, 0);
-        assert.equal(result.totalFound, 0);
-        assert.match(String(result.note), /entrance and one for the exit/);
-    } finally {
-        restore();
-    }
-});
-
-test("finding nothing says which constraint nothing got past", function () {
-    // "ok: true, sites: [], totalFound: 0" and no reason produced turns of re-guessed
-    // coordinates. Each of these has a different fix, so each has to say a different thing.
-    const tooBig = new FakeGame(24, 24);
-    tooBig.rideObjects = [{ index: 0, name: "Dodgems", rideType: [25] }];
-
-    for (let x = 0; x < 24; x++) {
-        for (let y = 0; y < 24; y++) {
-            tooBig.own(x, y, x >= 10 && x <= 11 && y >= 10 && y <= 11);
-        }
-    }
-
-    let restore = tooBig.install();
-
-    try {
-        const result = findBuildSites(0, 3);
-        assert.equal(result.ok, true);
-        assert.equal((result.sites || []).length, 0);
-        assert.match(String(result.note), /4x4/, "the size that would not fit has to be in the message");
-        assert.match(String(result.note), /owned, level tiles all at one height/,
-            "and the constraint nothing got past");
-        // docs/tool-design.md: naming the constraint is mechanics; naming a lever picks which
-        // constraint to relax, which is the model's call - and "level land" named a lever no
-        // tool has, which is what teaches it to invent action names.
-        assert.doesNotMatch(String(result.note), /smaller ride|list_ride_objects/,
-            "what to build instead is not the refusal's to suggest");
-        assert.doesNotMatch(String(result.note), /[Bb]uy|[Ll]evel land/,
-            "nor which constraint to relax");
-    } finally {
-        restore();
-    }
-
-    const noRoomForDoors = new FakeGame(24, 24);
-    noRoomForDoors.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
-
-    for (let x = 0; x < 24; x++) {
-        for (let y = 0; y < 24; y++) {
-            noRoomForDoors.own(x, y, x >= 10 && x <= 12 && y >= 10 && y <= 12);
-        }
-    }
-
-    restore = noRoomForDoors.install();
-
-    try {
-        const result = findBuildSites(0, 3);
-        assert.match(String(result.note), /entrance and one for the exit/);
-        // clear_scenery could never have changed this answer: scenery is explicitly not a
-        // blocker for an access tile, so the old "clear_scenery around one of them" pointed
-        // at a call that does nothing here. State what a usable tile is instead.
-        assert.match(String(result.note), /Scenery alone never disqualifies/, "and what a usable tile is");
-        assert.doesNotMatch(String(result.note), /clear_scenery|buy the land/,
-            "without naming a lever, one of which was inert here");
-    } finally {
-        restore();
-    }
-});
-
-test("an index that does not exist names the call that lists the ones that do", function () {
-    const { restore } = gameWith(33);
-
-    try {
-        const result = findBuildSites(9, 3);
-        assert.equal(result.ok, false);
-        assert.match(String(result.error), /index 9/);
-        assert.match(String(result.error), /list_ride_objects/);
-    } finally {
-        restore();
-    }
-});
-
-test("a ride object is found by its index, not by where it sits in the list", function () {
-    // The loaded object list has gaps, and `list_ride_objects` reports `.index`. Reading
-    // `rideObject` as a position instead measures sites for one ride and lets
-    // build_flat_ride build a different one, with every step of both reporting success.
-    const game = new FakeGame(24, 24);
-    game.rideObjects = [
-        { index: 5, name: "Merry-Go-Round", rideType: [33] },
-        { index: 9, name: "Ferris Wheel", rideType: [37] }
-    ];
-    game.addParkEntrance(10, 0);
-
-    for (let y = 1; y <= 20; y++) {
-        game.addPath(10, y);
-    }
-
-    const restore = game.install();
-
-    try {
-        const byIndex = findBuildSites(9, 1);
-        assert.equal(byIndex.ok, true);
-        assert.equal((byIndex.ride || { name: "" }).name, "Ferris Wheel");
-        assert.deepEqual([(byIndex.ride || { width: 0 }).width, (byIndex.ride || { depth: 0 }).depth], [1, 4]);
-
-        const other = findBuildSites(5, 1);
-        assert.equal((other.ride || { name: "" }).name, "Merry-Go-Round");
-
-        // Position 1 is the ferris wheel. Asking for 1 must not find it, or the two tools
-        // disagree about which ride the model asked for.
-        const byPosition = findBuildSites(1, 1);
-        assert.equal(byPosition.ok, false, "index 1 is not loaded; only 5 and 9 are");
-        assert.match(String(byPosition.error), /not the same/);
-
-        assert.equal(findBuildSites(0, 1).ok, false, "and neither is index 0");
-    } finally {
-        restore();
-    }
-});
-
-test("no distance ever leaves as Infinity, which JSON turns into null", function () {
-    // A park with no footpath at all is where every distance is unmeasurable, so it is the
-    // case that leaks. -1 says "there is nothing to measure against"; null says nothing.
-    const empty = gameWith(37);
-
-    try {
-        const result = findBuildSites(0, 5);
-        const round = JSON.parse(JSON.stringify(result)) as Record<string, unknown>;
-
-        assert.equal(JSON.stringify(round).indexOf("null"), -1, "a null in the result is an Infinity that leaked: " + JSON.stringify(round));
-
-        (result.sites || []).forEach(function (site) {
-            assert.equal(isFinite(site.pathDistance), true);
-            assert.equal(isFinite(site.nearestRideDistance), true);
-            assert.equal(site.pathDistance, -1, "no footpath in the park, so there is no distance");
-
-            site.access.forEach(function (option) {
-                assert.equal(isFinite(option.pathDistance), true);
-                assert.equal(isFinite(option.queueCutsOff), true);
-            });
-        });
-    } finally {
-        empty.restore();
-    }
-
-    const withPaths = openPark(37);
-
-    try {
-        const result = findBuildSites(0, 5);
-        assert.equal(JSON.stringify(result).indexOf("null"), -1);
-    } finally {
-        withPaths.restore();
-    }
-});
-
-test("a site's fromX/fromY/toX/toY is exactly the ground the ride stands on", function () {
-    // The rectangle a model hands to clear_scenery. Checked against a real trackplace, not
-    // against the code that produced it: a square centred on the origin clears 4 of the 16
-    // tiles a 4x4 needs, and 25 tiles to place a 1x5, and it is right only for a 3x3.
-    const rides = [
-        { type: 33, trackType: 266, label: "3x3 merry-go-round" },
-        { type: 37, trackType: 265, label: "1x4 ferris wheel" },
-        { type: 25, trackType: 259, label: "4x4 dodgems" },
-        { type: 26, trackType: 261, label: "1x5 pirate ship" },
-        { type: 38, trackType: 258, label: "2x2 motion simulator" }
-    ];
-    let checked = 0;
-
-    rides.forEach(function (ride) {
-        for (let rotation = 0; rotation < 4; rotation++) {
-            const { restore } = openPark(ride.type);
-            let sites;
-
-            try {
-                sites = findBuildSites(0, 4, rotation).sites || [];
-            } finally {
-                restore();
-            }
-
-            assert.ok(sites.length > 0, ride.label + " at rotation " + String(rotation) + " found nowhere to go");
-
-            sites.forEach(function (site) {
-                const where = ride.label + " rotation " + String(rotation) + " origin "
-                    + String(site.x) + "," + String(site.y);
-                const footprint = realFootprint(24, ride.trackType, site.x, site.y, site.rotation);
-                const inside: Record<string, boolean> = {};
-                footprint.forEach(function (tile) { inside[tile] = true; });
-
-                assert.ok(site.fromX <= site.toX && site.fromY <= site.toY, where + " has its corners the wrong way round");
-
-                // Every tile of the ride is in the rectangle...
-                footprint.forEach(function (tile) {
-                    const parts = tile.split(",");
-                    assert.ok(Number(parts[0]) >= site.fromX && Number(parts[0]) <= site.toX
-                        && Number(parts[1]) >= site.fromY && Number(parts[1]) <= site.toY,
-                    where + " stands on " + tile + ", outside the rectangle "
-                        + String(site.fromX) + "," + String(site.fromY) + " to " + String(site.toX) + "," + String(site.toY));
-                });
-
-                // ...and nothing else is, so clearing it fells no tree the ride did not need.
-                let area = 0;
-
-                for (let x = site.fromX; x <= site.toX; x++) {
-                    for (let y = site.fromY; y <= site.toY; y++) {
-                        assert.equal(inside[String(x) + "," + String(y)], true,
-                            where + " would clear " + String(x) + "," + String(y) + ", which the ride never covers");
-                        area++;
-                    }
-                }
-
-                assert.equal(area, footprint.length, where + " clears " + String(area) + " tiles to place " + String(footprint.length));
-
-                // The origin is inside the footprint, which is why deriving the corners
-                // from it and a size looks plausible and is wrong.
-                assert.equal(inside[String(site.x) + "," + String(site.y)], true, where + " has its origin off the ride");
-                checked++;
-            });
-        }
-    });
-
-    assert.ok(checked >= 20, "only " + String(checked) + " sites were checked");
-});
-
-test("sceneryToClear counts the trees inside the rectangle the site reports", function () {
-    // The two fields have to be about the same ground, or the model clears a rectangle and
-    // the count it was given never reaches zero.
-    const { game, restore } = openPark(37);
-
-    for (let x = 0; x < 24; x++) {
-        for (let y = 0; y < 24; y++) {
-            if ((x + y) % 3 === 0 && !(x === 10 && y >= 1)) {
-                game.addScenery(x, y);
-            }
-        }
-    }
-
-    try {
-        for (let rotation = 0; rotation < 4; rotation++) {
-            const sites = findBuildSites(0, 5, rotation).sites || [];
-            assert.ok(sites.length > 0);
-
-            sites.forEach(function (site) {
-                let trees = 0;
-
-                for (let x = site.fromX; x <= site.toX; x++) {
-                    for (let y = site.fromY; y <= site.toY; y++) {
-                        if (game.tile(x, y).elements.filter(function (e) { return e.type === "small_scenery"; }).length > 0) {
-                            trees++;
-                        }
-                    }
-                }
-
-                assert.equal(site.sceneryToClear, trees,
-                    "site " + String(site.x) + "," + String(site.y) + " rotation " + String(rotation)
-                    + " says " + String(site.sceneryToClear) + " trees, the rectangle holds " + String(trees));
-            });
-        }
-    } finally {
-        restore();
-    }
-});
-
-test("a shop's rectangle is its one tile", function () {
-    const { restore } = openPark(28);
-
-    try {
-        for (let rotation = 0; rotation < 4; rotation++) {
-            (findBuildSites(0, 3, rotation).sites || []).forEach(function (site) {
-                assert.deepEqual([site.fromX, site.fromY, site.toX, site.toY], [site.x, site.y, site.x, site.y]);
-            });
-        }
-    } finally {
-        restore();
-    }
-});
-
 /**
- * The band and trunk that leave exactly one 3x3 site, at (13,10), with its three -x doors
- * on the trunk at (10,9), (10,10) and (10,11).
+ * The band and trunk of `trunkDoorPark` with the trunk's middle tile left out, so a queue
+ * can be laid there without the path under it deciding the answer.
  */
 function oneSitePark(): FakeGame {
     const game = new FakeGame(24, 24);
@@ -1331,20 +1189,6 @@ function oneSitePark(): FakeGame {
     return game;
 }
 
-function doorKeys(sites: { access: { door?: { x: number; y: number } }[] }[]): string[] {
-    const keys: string[] = [];
-
-    sites.forEach(function (site) {
-        site.access.forEach(function (option) {
-            if (option.door) {
-                keys.push(String(option.door.x) + "," + String(option.door.y));
-            }
-        });
-    });
-
-    return keys;
-}
-
 test("a door with a queue bound to no ride is offered, because placing the entrance chains it", function () {
     // What a demolished ride leaves behind. Refusing these made the obvious place to rebuild
     // read as having no access at all, with nothing in the result to say why.
@@ -1354,23 +1198,19 @@ test("a door with a queue bound to no ride is offered, because placing the entra
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        assert.equal(sites.length, 1);
+        const result = describePlacement(0, 13, 10, 0);
+        const doors = doorKeys(result);
 
-        const doors = doorKeys(sites);
         assert.ok(doors.indexOf("10,10") >= 0, "the unbound queue is a working door, offered: " + doors.join(" "));
         assert.ok(doors.indexOf("10,9") >= 0);
         assert.ok(doors.indexOf("10,11") >= 0);
 
-        const onTheQueue = sites[0].access.filter(function (option) {
-            return option.door && option.door.x === 10 && option.door.y === 10;
-        })[0];
-
-        assert.equal(onTheQueue.door && onTheQueue.door.hasUnboundQueue, true, "and it says the queue is already there");
-        assert.equal(onTheQueue.door && onTheQueue.door.isExistingPath, true);
+        const onTheQueue = optionForDoor(result, 10, 10);
+        assert.equal(onTheQueue?.door?.hasUnboundQueue, true, "and it says the queue is already there");
+        assert.equal(onTheQueue?.door?.isExistingPath, true);
 
         // Nothing else on the map has a queue on it, so nothing else claims one.
-        sites[0].access.forEach(function (option) {
+        access(result).forEach(function (option) {
             if (option.door && !(option.door.x === 10 && option.door.y === 10)) {
                 assert.equal(option.door.hasUnboundQueue, false, String(option.door.x) + "," + String(option.door.y));
             }
@@ -1393,10 +1233,10 @@ test("a door with a queue belonging to another ride is not offered", function ()
         const bound = game.tile(10, 10).elements.filter(function (e) { return e.type === "footpath"; })[0];
         assert.equal(bound.ride, 6, "the fake has to have actually chained the queue, or this test proves nothing");
 
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        assert.equal(sites.length, 1, "the site is still there; only the one door is gone");
+        const result = describePlacement(0, 13, 10, 0);
+        const doors = doorKeys(result);
 
-        const doors = doorKeys(sites);
+        assert.equal(result.fits, true, "the placement is still there; only the one door is gone");
         assert.equal(doors.indexOf("10,10"), -1,
             "building there would re-chain ride 6's queue and leave it with none: " + doors.join(" "));
         assert.ok(doors.indexOf("10,9") >= 0, "the plain path tiles either side of it are untouched");
@@ -1406,46 +1246,12 @@ test("a door with a queue belonging to another ride is not offered", function ()
     }
 });
 
-test("accessTotal counts every door position, not the ones that fit in the window", function () {
-    // `access` is a window; `accessTotal` is what tells the model it is one. A 4x4 in open
-    // ground has sixteen tiles around it and the window holds eight, so a field that
-    // reported the window's own length would say "eight of eight" forever and no caller
-    // would ever think to look past the list it was handed.
-    const { restore } = openPark(25);
-
-    try {
-        const sites = findBuildSites(0, 5).sites || [];
-        assert.ok(sites.length > 0);
-
-        const open = sites.filter(function (site) {
-            return site.accessTotal === 16;
-        });
-
-        assert.ok(open.length > 0, "a 4x4 in open ground has sixteen door positions: "
-            + sites.map(function (site) { return String(site.accessTotal); }).join(" "));
-
-        sites.forEach(function (site) {
-            const where = String(site.x) + "," + String(site.y);
-
-            assert.ok(site.access.length <= MAX_ACCESS_OPTIONS, where + " overflowed the window");
-            assert.ok(site.accessTotal >= site.access.length,
-                where + ": accessTotal " + String(site.accessTotal) + " is below the " + String(site.access.length)
-                    + " options it is supposed to be counting");
-        });
-
-        assert.ok(open.some(function (site) { return site.accessTotal > site.access.length; }),
-            "no site reported more positions than it listed, so the window reads as the whole list");
-    } finally {
-        restore();
-    }
-});
-
 /**
- * A park with exactly one 3x3 site, whose two doors are (14,11) and (14,12).
+ * A park with room for one 3x3 at 11,11 and two door positions, at (13,11) and (13,12).
  *
  * Everything is pinned to one place so a door's own numbers can be asserted rather than
  * searched for: the owned strip is five wide and three tall with its top-right corner cut
- * off, which leaves (11,11) the only origin a 3x3 fits at with doors it can reach.
+ * off, and the one footpath in the park is a stub at (17,14) under the gate.
  */
 function oneDoorPark(): FakeGame {
     const game = new FakeGame(24, 24);
@@ -1480,24 +1286,16 @@ test("pathDistance is walked in tiles, not measured across the diagonal", functi
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50).sites || [];
-        assert.equal(sites.length, 1, "the park is built to hold exactly one site");
+        const result = describePlacement(0, 11, 11, 0);
 
-        const doorAt = function (x: number, y: number) {
-            return sites[0].access.filter(function (option) {
-                return option.door && option.door.x === x && option.door.y === y;
-            })[0];
-        };
+        assert.equal(access(result).length, 2, "the strip leaves exactly two door positions");
 
-        const far = doorAt(14, 11);
-        const near = doorAt(14, 12);
+        const far = optionForDoor(result, 14, 11);
+        const near = optionForDoor(result, 14, 12);
 
         assert.ok(far && near, "both doors are offered");
         assert.equal(far.pathDistance, 6, "(14,11) to (17,14) is 3 across and 3 down, which is 6 tiles of walking");
         assert.equal(near.pathDistance, 5, "(14,12) to (17,14) is 3 across and 2 down");
-
-        // Chebyshev would make both of these 3, and the site's own distance 3 with them.
-        assert.equal(sites[0].pathDistance, 5, "the site reports its nearest door");
     } finally {
         restore();
     }
@@ -1515,18 +1313,111 @@ test("needsClearing covers the door tile, not just the tile the building stands 
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50).sites || [];
-        assert.equal(sites.length, 1);
-        assert.equal(sites[0].sceneryToClear, 0, "nothing stands on the ride's own ground");
+        const result = describePlacement(0, 11, 11, 0);
 
-        const doorAt = function (x: number, y: number) {
-            return sites[0].access.filter(function (option) {
-                return option.door && option.door.x === x && option.door.y === y;
-            })[0];
-        };
+        assert.equal(result.sceneryToClear, 0, "nothing stands on the ride's own ground");
+        assert.equal(optionForDoor(result, 14, 11)?.needsClearing, true, "the tree is on this option's door");
+        assert.equal(optionForDoor(result, 14, 12)?.needsClearing, false, "and only on that one");
+    } finally {
+        restore();
+    }
+});
 
-        assert.equal(doorAt(14, 11).needsClearing, true, "the tree is on this option's door");
-        assert.equal(doorAt(14, 12).needsClearing, false, "and only on that one");
+test("a placement with room for only one door says a ride needs two", function () {
+    // A ride needs an entrance and an exit. One usable tile beside it is half a placement,
+    // and the search this replaced dropped such places silently - which told the model
+    // nothing about the origin it had just asked about.
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(2, 0);
+    game.addPath(9, 10);
+
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            const footprint = x >= 11 && x <= 13 && y >= 9 && y <= 11;
+            game.own(x, y, footprint || (x === 10 && y === 10) || (x === 9 && y === 10));
+        }
+    }
+
+    const restore = game.install();
+
+    try {
+        const result = describePlacement(0, 12, 10, 0);
+
+        assert.equal(result.ok, true);
+        assert.equal(result.fits, true, "the ground takes the ride; it is the doors that are missing");
+        assert.equal(access(result).length, 1);
+        assert.match(String(result.note), /needs two of these, one for the entrance and one for the exit/);
+        assert.match(String(result.note), /this placement has one/);
+        assert.match(String(result.note), /Scenery alone never disqualifies/, "and what a usable tile is");
+        assert.doesNotMatch(String(result.note), /clear_scenery|buy the land|try |instead/i,
+            "without naming a lever or a next move, which are the caller's");
+    } finally {
+        restore();
+    }
+});
+
+test("a shop is served from the neighbour its rotation points at", function () {
+    const deltas = [{ dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }];
+
+    for (let rotation = 0; rotation < 4; rotation++) {
+        const { restore } = openPark(28);
+
+        try {
+            const result = describePlacement(0, 16, 16, rotation);
+            const options = access(result);
+
+            assert.equal(result.ride?.isShop, true);
+            assert.equal(options.length, 1, "a stall has exactly one serving tile, not four");
+            assert.equal(options[0].x, 16 + deltas[rotation].dx,
+                "rotation " + String(rotation) + " is served from "
+                + String(deltas[rotation].dx) + "," + String(deltas[rotation].dy));
+            assert.equal(options[0].y, 16 + deltas[rotation].dy);
+            assert.equal(options[0].door, undefined,
+                "`door` is a ride-entrance idea; following it puts the shop's path one tile too far out");
+
+            assert.match(String(result.note), /no entrance or exit/);
+            assert.match(String(result.note), /0 is -x, 1 is \+y, 2 is \+x, 3 is -y/,
+                "which neighbour each rotation serves from is the game's geometry and has to stay");
+            assert.match(String(result.note), /an ordinary path, not a queue/,
+                "that a stall takes a path rather than a queue is a rule, not a preference");
+            assert.match(String(result.note), /there is no `door` beyond it/,
+                "and why it is that tile itself, not one further out, stays with it");
+            assert.doesNotMatch(String(result.note), /Run build_path/,
+                "whether to pave that tile at all is the decision this tool hands over");
+        } finally {
+            restore();
+        }
+    }
+});
+
+test("live repro: a rotation-0 stall is served from -x, and that tile is offered even when it is already a path", function () {
+    // Measured in the game: every rotation-0 stall site offered access on plus and minus y,
+    // while the real serving tile (51,24) - already a footpath - was never in the list, and
+    // a path laid on the offered tile gave edges=1, no connection at all.
+    const game = new FakeGame(64, 40);
+    game.rideObjects = [{ index: 0, name: "Burger Bar", rideType: [28] }];
+    // Beside the footpath rather than across the map from it: every distance here is
+    // measured against the paving the gate reaches, so a gate that reaches none of it
+    // would make this a park with no measurable path in it at all.
+    game.addParkEntrance(50, 23);
+    game.addPath(51, 24);
+
+    for (let x = 0; x < 64; x++) {
+        for (let y = 0; y < 40; y++) {
+            game.own(x, y, x >= 50 && x <= 54 && y >= 22 && y <= 26);
+        }
+    }
+
+    const restore = game.install();
+
+    try {
+        const result = describePlacement(0, 52, 24, 0);
+        const serving = access(result)[0];
+
+        assert.ok(serving, "the stall beside the path has a serving tile");
+        assert.deepEqual([serving.x, serving.y], [51, 24], "a rotation-0 stall is served from -x, never plus or minus y");
+        assert.equal(serving.pathDistance, 0, "its serving tile is the footpath itself");
     } finally {
         restore();
     }
@@ -1554,16 +1445,15 @@ test("a stall is not offered a serving tile that is a queue", function () {
     // Guests in a queue are walking to a ride, not stopping at a counter, so a stall whose
     // only neighbour is queue sells nothing. Worth pinning rather than inferring from the
     // path case: the two halves of `cell.path && !cell.queue` fail in opposite directions,
-    // and dropping the queue half reads as widening the search rather than breaking it.
+    // and dropping the queue half reads as widening the list rather than breaking it.
     const served = stallServedBy(false);
     let restore = served.install();
 
     try {
-        const sites = findBuildSites(0, 10, 0).sites || [];
+        const result = describePlacement(0, 12, 12, 0);
 
-        assert.equal(sites.length, 1, "an ordinary footpath beside the stall is the best serving tile there is");
-        assert.deepEqual([sites[0].x, sites[0].y], [12, 12]);
-        assert.deepEqual([sites[0].access[0].x, sites[0].access[0].y], [11, 12]);
+        assert.equal(access(result).length, 1, "an ordinary footpath beside the stall is a serving tile");
+        assert.deepEqual([access(result)[0].x, access(result)[0].y], [11, 12]);
     } finally {
         restore();
     }
@@ -1572,323 +1462,13 @@ test("a stall is not offered a serving tile that is a queue", function () {
     restore = queued.install();
 
     try {
-        const result = findBuildSites(0, 10, 0);
+        const result = describePlacement(0, 12, 12, 0);
 
-        assert.deepEqual(result.sites, [], "the same spot, served only by a queue, is not a site");
-        assert.match(String(result.note), /serving tile/);
+        assert.deepEqual(result.access, [], "the same spot, served only by a queue, has no serving tile");
+        assert.match(String(result.note), /this placement has none/);
     } finally {
         restore();
     }
-});
-
-test("the tool clamps `limit` into range instead of passing it through", function () {
-    // The schema refuses anything outside 1..50 before the handler runs, so the clamp is
-    // what holds when the handler is reached any other way. 5000 walks a whole park into
-    // one reply; 0 returns an empty list, which reads as "nowhere fits" rather than as a
-    // limit of zero.
-    const game = new FakeGame(40, 40);
-    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
-    game.addParkEntrance(10, 0);
-
-    for (let y = 1; y <= 36; y++) {
-        game.addPath(10, y);
-    }
-
-    const restore = game.install();
-
-    try {
-        // What an unclamped limit does here, so the two numbers below are the clamp and
-        // not a coincidence of how many sites this park happens to hold.
-        assert.ok((findBuildSites(0, 5000).sites || []).length > 50, "the park has more than 50 sites to give");
-        assert.equal((findBuildSites(0, 0).sites || []).length, 0);
-
-        const tools = new SiteTools();
-
-        assert.equal((tools.findBuildSites({ rideObject: 0, limit: 5000 }).sites || []).length, 50,
-            "50 is what reaches findBuildSites");
-        assert.equal((tools.findBuildSites({ rideObject: 0, limit: 0 }).sites || []).length, 1, "and 1");
-        assert.equal((tools.findBuildSites({ rideObject: 0 }).sites || []).length, 3, "an absent limit is 3");
-    } finally {
-        restore();
-    }
-});
-
-test("`limit` says how big a site is and never how few to ask for", function () {
-    // docs/tool-design.md: the size of a result is a fact about it. Telling the model to
-    // ask for fewer discourages looking at alternatives, which is the deliberation this
-    // tool exists to enable - and a description is read every single turn.
-    const definitions = getMcpToolDefinitions(SiteTools).filter(function (definition) {
-        return definition.handlerName === "findBuildSites";
-    });
-
-    assert.equal(definitions.length, 1, "find_build_sites is registered once");
-
-    const properties = definitions[0].inputSchema.properties || {};
-    const limit = String((properties.limit as { description?: string }).description);
-
-    assert.match(limit, /sizeable/, "how large one site is stays: it is a fact about the result");
-    assert.match(limit, /default 3, max 50/, "and so do the bounds");
-    assert.doesNotMatch(limit, /ask for more only|only when you need/,
-        "how many alternatives to look at is the model's call");
-});
-
-/**
- * Measured against the running game: turning two path tiles into a queue changed no edge
- * bit at all (51,24 and 51,25 of Forest Frontiers, `edges` 10 before and 10 after), so the
- * reason this description gave for `queueCutsOff` - that guests cannot walk through a queue -
- * was false, and it painted every door beside the trunk path as a park cut in two. What
- * severs is a ride claiming the tile its door opens onto.
- *
- * The absence of the old sentence is pinned as hard as the presence of the new one. A
- * falsehood this old comes back from a stale branch or a half-remembered paragraph, and the
- * description is read on every turn the tool is in play.
- */
-test("find_build_sites says what actually severs a route, and not that a queue does", function () {
-    const definitions = getMcpToolDefinitions(SiteTools).filter(function (definition) {
-        return definition.handlerName === "findBuildSites";
-    });
-
-    assert.equal(definitions.length, 1, "find_build_sites is registered once");
-
-    const text = String(definitions[0].description);
-
-    assert.match(text, /Guests walk a queue like any other path/,
-        "a queue is ordinary walkable path, which is the measured fact");
-    assert.match(text, /a ride claiming one, which dead-ends the single tile its door opens onto/,
-        "and the one thing that does sever a route");
-    // When a door's figure is 0 and why is now said per option, in `cost`, which is where
-    // the model reads. The schema names the field and points at the sentence; the two
-    // assertions that used to pin those rules here are behaviour now, in the `cost` tests.
-    assert.match(text, /READ `cost` ON EVERY OPTION/,
-        "the sentence has to be pointed at, or it is another field that goes unread");
-    assert.match(text, /0 on a ride's door means the tile is not free/,
-        "the inversion between a shop's 0 and a ride door's 0, which no number can carry");
-    assert.doesNotMatch(text, /cannot walk through/,
-        "the disproven rule, which converting a path to a queue in the running game refuted");
-    assert.doesNotMatch(text, /cuts that many tiles off the park/,
-        "and the claim it was used to make about every positive number");
-    assert.doesNotMatch(text, /matters most/,
-        "no door is weighted: the ordering is distance to a path and the choice is the model's");
-});
-
-/**
- * The description is read on every turn the tool is in play, and the sentence it used to
- * carry - that a distance is to "the nearest footpath", -1 when "the park has no footpath at
- * all" - is the defect written down: it says paving is paving, which is what made a door on
- * a stranded fragment read as the best door in the park. The absence of that wording is
- * pinned as hard as the presence of the new.
- */
-test("find_build_sites says a distance is to paving guests can reach", function () {
-    const definitions = getMcpToolDefinitions(SiteTools).filter(function (definition) {
-        return definition.handlerName === "findBuildSites";
-    });
-
-    assert.equal(definitions.length, 1, "find_build_sites is registered once");
-
-    const text = String(definitions[0].description);
-
-    assert.match(text, /`guestsCanReach` says whether a guest can walk to that tile from the park gate/,
-        "the field that separates a door on the network from one on a fragment");
-    assert.match(text, /the nearest footpath the gate reaches/,
-        "and what pathDistance is counted against");
-    assert.match(text, /`island` then gives that fragment's tile count and corners/,
-        "the fragment a stranded door stands on, named rather than left to be inferred");
-    assert.match(text, /-1 when the gate reaches no footpath at all/,
-        "-1 is about the reachable network, not about paving anywhere");
-    assert.doesNotMatch(text, /-1 when the park has no footpath at all/,
-        "the old claim, which was false in a park whose paving the gate could not reach");
-    assert.doesNotMatch(text, /avoid|do not build|prefer a door/,
-        "what to do about a stranded door is the model's call, not the description's");
-});
-
-/**
- * A 40x40 park, entirely owned and flat, with the gate and a three-tile path stub in one
- * corner and nothing anywhere else.
- *
- * Every 3x3 block of it is a site, so the matched set covers the whole map, while the
- * sites returned are forced into the corner the stub is in - which is the shape the real
- * park has and the shape no small hand-built fixture reproduces. A test that only ever
- * looks at parks where the window and the set coincide cannot tell the two apart, which
- * is the entire bug this field can have.
- */
-function sprawlingPark(): { game: FakeGame; restore: () => void } {
-    const game = new FakeGame(40, 40);
-    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
-    game.addParkEntrance(2, 0);
-
-    for (let y = 1; y <= 3; y++) {
-        game.addPath(2, y);
-    }
-
-    return { game: game, restore: game.install() };
-}
-
-test("candidateExtent spans every site found, not the corner the returned ones sit in", function () {
-    const { restore } = sprawlingPark();
-
-    try {
-        const result = findBuildSites(0, 3);
-        const sites = result.sites || [];
-        const extent = result.candidateExtent;
-
-        assert.equal(sites.length, 3);
-        assert.equal(result.totalFound, 1430, "every 3x3 block of a 40x40 park is a site");
-        assert.ok(extent, "a search that found sites reports where they are");
-
-        // The three handed back are packed against the path stub: nothing beyond (12,12).
-        // This is the premise the rest of the test rests on, so it is asserted rather than
-        // assumed - without it the two boxes could coincide and the comparison prove nothing.
-        sites.forEach(function (site) {
-            assert.ok(site.toX <= 12 && site.toY <= 12,
-                "site " + String(site.x) + "," + String(site.y) + " is not in the corner the stub is in");
-        });
-
-        // And the set they were cut from reaches all four edges of the map. Computing the
-        // extent from the trimmed list instead of from everything found gives at most
-        // 0,0-12,12 here: every one of these four fails, and the failure names itself.
-        assert.equal(extent?.fromX, 0, "the matched set starts at the near edge of the map");
-        assert.equal(extent?.fromY, 0);
-        assert.equal(extent?.toX, 39, "and runs to the far edge, 27 tiles past the furthest site returned");
-        assert.equal(extent?.toY, 39);
-    } finally {
-        restore();
-    }
-});
-
-test("candidateExtent's distance range is the whole set's, not the three returned", function () {
-    const { restore } = sprawlingPark();
-
-    try {
-        const result = findBuildSites(0, 3);
-        const sites = result.sites || [];
-        const extent = result.candidateExtent;
-
-        assert.ok(extent);
-
-        // The near end is the site already at the top of the list: the sort puts the global
-        // nearest first, so this end of the range costs nothing to act on and is not news.
-        assert.equal(extent?.nearestPathDistance, 0, "the nearest site stands on the path");
-        assert.equal(extent?.nearestPathDistance, sites[0].pathDistance,
-            "which is the first site's own distance, because that is what the sort means");
-
-        // The far end is the far corner of a 40-tile park measured back to a stub in the
-        // near one. No returned site is above 3, so a range taken after the trim reads
-        // 0..3 and this assertion fails - which is what makes it worth asserting.
-        const furthestReturned = sites.reduce(function (worst, site) {
-            return Math.max(worst, site.pathDistance);
-        }, 0);
-
-        assert.equal(furthestReturned, 3, "the returned sites are all but on the path");
-        assert.equal(extent?.furthestPathDistance, 67,
-            "while connecting the furthest site found is 67 tiles of paving");
-    } finally {
-        restore();
-    }
-});
-
-test("candidateExtent is the ground the sites stand on, not their build origins", function () {
-    // A 3x3 is centred on its origin, so the two are three tiles apart in every direction
-    // and a site's own corners are the ones already reported. Accumulating `x`,`y` instead
-    // gives 11,11-11,11 here - a park-wide extent one footprint too small on every side,
-    // and one that says a ride fits on a single tile.
-    const game = oneDoorPark();
-    game.addPath(17, 14);
-
-    const restore = game.install();
-
-    try {
-        const result = findBuildSites(0, 50);
-        const sites = result.sites || [];
-
-        assert.equal(sites.length, 1, "the park is built to hold exactly one site");
-        assert.equal(sites[0].x, 11, "whose origin is one tile");
-        assert.equal(sites[0].y, 11);
-
-        assert.deepEqual(result.candidateExtent, {
-            fromX: 10,
-            fromY: 10,
-            toX: 12,
-            toY: 12,
-            nearestPathDistance: 5,
-            furthestPathDistance: 5
-        }, "one site's extent is that site's own rectangle and its own distance, twice over");
-    } finally {
-        restore();
-    }
-});
-
-test("a park with nothing to measure against reports -1 at both ends of the range", function () {
-    // -1 means there was nothing to measure against, and it has to survive into the range
-    // as itself. Infinity is what the arithmetic wants to produce and JSON turns it into
-    // null; a counter left at 0 would report the whole park as already on a path.
-    const { restore } = gameWith(33);
-
-    try {
-        const result = findBuildSites(0, 3);
-        const extent = result.candidateExtent;
-
-        assert.ok(extent, "a park with no path still found sites, so it still has an extent");
-        assert.equal(extent?.fromX, 0, "which covers the park");
-        assert.equal(extent?.toX, 23);
-
-        assert.equal(extent?.nearestPathDistance, -1);
-        assert.equal(extent?.furthestPathDistance, -1);
-        (result.sites || []).forEach(function (site) {
-            assert.equal(site.pathDistance, -1, "and every site agrees, which is why the range can say it");
-        });
-    } finally {
-        restore();
-    }
-});
-
-test("a search that found nothing reports no extent rather than an empty one", function () {
-    // Zeroed corners would put the whole matched set on tile 0,0 - a claim about a park
-    // where nothing matched at all. Absent is the only honest shape, and it is the shape
-    // `ride` and `note` already use.
-    const game = new FakeGame(24, 24);
-    game.rideObjects = [{ index: 0, name: "Dodgems", rideType: [25] }];
-
-    for (let x = 0; x < 24; x++) {
-        for (let y = 0; y < 24; y++) {
-            game.own(x, y, x >= 10 && x <= 11 && y >= 10 && y <= 11);
-        }
-    }
-
-    const restore = game.install();
-
-    try {
-        const result = findBuildSites(0, 3);
-
-        assert.equal(result.totalFound, 0);
-        assert.equal(result.candidateExtent, undefined, "nothing found spans nothing");
-    } finally {
-        restore();
-    }
-});
-
-test("find_build_sites says candidateExtent measures the whole set, not the list", function () {
-    const definitions = getMcpToolDefinitions(SiteTools).filter(function (definition) {
-        return definition.handlerName === "findBuildSites";
-    });
-
-    assert.equal(definitions.length, 1, "find_build_sites is registered once");
-
-    const text = String(definitions[0].description);
-
-    // Which set it measures is the whole content of the field. A description that named it
-    // without saying that leaves it indistinguishable from a summary of the three returned,
-    // which is the reading it exists to prevent.
-    assert.match(text, /`candidateExtent` measures that same whole set rather than the returned list/,
-        "the fact that does the work: it is the set the window was cut from");
-    assert.match(text, /smallest and largest `pathDistance` among them/,
-        "and the cost range, in the unit each site already reports");
-
-    // docs/tool-design.md: the description states what the world is and never what to do
-    // about it. A spread of candidates is a measurement; building further out is a choice.
-    assert.doesNotMatch(text, /further out|spread out|more variety|vary the|consider a site|elsewhere in the park/,
-        "where to build is the model's call, not the description's");
-    assert.doesNotMatch(text, /best|better site|recommend|should pick/,
-        "and no site is marked as good: the ordering is distance and the choice is the model's");
 });
 
 // ---------------------------------------------------------------------------
@@ -1901,36 +1481,15 @@ test("find_build_sites says candidateExtent measures the whole set, not the list
 // pin the sentence that says the same fact in the place the reading happens.
 // ---------------------------------------------------------------------------
 
-/** The trunk park of the severance tests: x=10, y=1..11, with the owned band beside it. */
-function trunkDoorPark(): FakeGame {
-    const game = new FakeGame(24, 24);
-    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
-    game.addParkEntrance(9, 0);
-
-    for (let y = 1; y <= 11; y++) {
-        game.addPath(10, y);
-    }
-
-    for (let x = 0; x < 24; x++) {
-        for (let y = 0; y < 24; y++) {
-            game.own(x, y, x >= 10 && x <= 17 && y >= 9 && y <= 11);
-        }
-    }
-
-    return game;
-}
-
 test("a door on the trunk and a door on the end of it cost different things and say so", function () {
     const game = trunkDoorPark();
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        assert.equal(sites.length, 1, "only one 3x3 site has room here");
-
-        const trunk = optionForDoor(sites[0], 10, 9);
-        const middle = optionForDoor(sites[0], 10, 10);
-        const end = optionForDoor(sites[0], 10, 11);
+        const result = describePlacement(0, 13, 10, 0);
+        const trunk = optionForDoor(result, 10, 9);
+        const middle = optionForDoor(result, 10, 10);
+        const end = optionForDoor(result, 10, 11);
 
         assert.ok(trunk && middle && end, "all three trunk doors are offered");
 
@@ -1962,10 +1521,8 @@ test("a door on the trunk and a door on the end of it cost different things and 
         assert.ok(end.cost.indexOf("the queue takes 10,11") >= 0, end.cost);
         assert.ok(trunk.cost.indexOf("which is path guests walk today") >= 0, trunk.cost);
 
-        // Reported, never ranked. The severing door is nearest a path, so it is still first.
-        assert.equal(sites[0].access[0].queueCutsOff, 2,
-            "nothing is reordered, filtered or marked by any of this");
-        assert.equal(sites[0].accessTotal, 6, "three doors on the trunk and three on the far side, all still offered");
+        assert.equal(access(result).length, 6,
+            "three doors on the trunk and three on the far side, all listed, none marked");
     } finally {
         restore();
     }
@@ -1974,9 +1531,9 @@ test("a door on the trunk and a door on the end of it cost different things and 
 test("a shop's serving tile at distance 0 does not acquire a ride door's meaning", function () {
     // `pathDistance` inverts between the two. On a shop's serving tile 0 means guests can
     // already stand there, which is the best case there is. On a ride's door 0 means the
-    // tile is NOT free - the door needs one - so the queue must take paving already
-    // carrying traffic. Same field, opposite meaning, nothing in the number to tell them
-    // apart, and the shop has no `door` and no `guestsCanReach` to read beside it either.
+    // tile is NOT free - the door needs one - so the queue must take paving already carrying
+    // traffic. Same field, opposite meaning, nothing in the number to tell them apart, and
+    // the shop has no `door` and no `guestsCanReach` to read beside it either.
     const shopGame = new FakeGame(64, 40);
     shopGame.rideObjects = [{ index: 0, name: "Burger Bar", rideType: [28] }];
     shopGame.addParkEntrance(50, 23);
@@ -1992,8 +1549,7 @@ test("a shop's serving tile at distance 0 does not acquire a ride door's meaning
     let shopCostText = "";
 
     try {
-        const shopSites = findBuildSites(0, 50, 0).sites || [];
-        const serving = shopSites[0].access[0];
+        const serving = access(describePlacement(0, 52, 24, 0))[0];
 
         assert.equal(serving.pathDistance, 0, "the serving tile is the footpath itself");
         assert.equal(serving.queueCutsOff, 0);
@@ -2014,8 +1570,7 @@ test("a shop's serving tile at distance 0 does not acquire a ride door's meaning
     const restoreRide = rideGame.install();
 
     try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        const door = optionForDoor(sites[0], 10, 9);
+        const door = optionForDoor(describePlacement(0, 13, 10, 0), 10, 9);
 
         assert.ok(door);
         assert.equal(door.pathDistance, 0, "the same number the shop reported");
@@ -2048,8 +1603,7 @@ test("a door on bare ground prices the path to lay and says no route runs throug
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        const door = optionForDoor(sites[0], 11, 10);
+        const door = optionForDoor(describePlacement(0, 14, 10, 0), 11, 10);
 
         assert.ok(door && door.door);
         assert.equal(door.pathDistance, 1);
@@ -2070,20 +1624,14 @@ test("a door on bare ground prices the path to lay and says no route runs throug
 
 test("a door on a stranded fragment and a door on bare ground both cut 0 and read differently", function () {
     // Both are `queueCutsOff` 0 with `guestsCanReach` false, and they are not the same
-    // thing: one is paving that goes somewhere no guest arrives, the other is ground
-    // nothing has ever been laid on. The numbers cannot separate them; the sentence does.
+    // thing: one is paving that goes somewhere no guest arrives, the other is ground nothing
+    // has ever been laid on. The numbers cannot separate them; the sentence does.
     const game = islandOutranksNetworkPark();
     const restore = game.install();
 
     try {
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        const onTheIsland = siteAt(sites, 13, 16);
-        const onTheNetwork = siteAt(sites, 15, 5);
-
-        assert.ok(onTheIsland && onTheNetwork);
-
-        const stranded = optionForDoor(onTheIsland, 10, 15);
-        const bare = optionForDoor(onTheNetwork, 12, 5);
+        const stranded = optionForDoor(describePlacement(0, 13, 16, 0), 10, 15);
+        const bare = optionForDoor(describePlacement(0, 15, 5, 0), 12, 5);
 
         assert.ok(stranded && stranded.door && bare && bare.door);
         assert.equal(stranded.queueCutsOff, 0);
@@ -2115,9 +1663,9 @@ test("a door on a stranded fragment and a door on bare ground both cut 0 and rea
  * tile of it is reachable - guests arrive along it - so reachability, the filter that was
  * already here, does not exclude one tile of the corridor.
  *
- * The park also owns a patch at x 5..9, y 3..5, five rows north of the corridor with
- * nothing but unowned ground between. A site there had its doors priced at five tiles to
- * the corridor, for a connection that cannot be laid at any price.
+ * The park also owns a patch at x 5..9, y 3..5, five rows north of the corridor with nothing
+ * but unowned ground between. A ride there had its doors priced at five tiles to the
+ * corridor, for a connection that cannot be laid at any price.
  */
 function unbuyableCorridorPark(): FakeGame {
     const game = new FakeGame(24, 24);
@@ -2144,9 +1692,9 @@ test("paving the park could never lay a path up to is not what a distance is mea
     const restore = game.install();
 
     try {
-        // The controls first. The corridor is paving, and it is paving guests reach - so
-        // the reachability filter that was already here excludes none of it, and anything
-        // this test shows is the ownership filter and nothing else.
+        // The controls first. The corridor is paving, and it is paving guests reach - so the
+        // reachability filter that was already here excludes none of it, and anything this
+        // test shows is the ownership filter and nothing else.
         const walkable = walkableFromParkEntrance();
         assert.equal(game.tile(9, 10).elements.filter(function (e) { return e.type === "footpath"; }).length, 1,
             "(9,10) carries a footpath");
@@ -2154,9 +1702,8 @@ test("paving the park could never lay a path up to is not what a distance is mea
             "and a guest can walk to it, which is why reachability alone never caught this");
         assert.equal(tileIsWalkable(walkable, { x: 20, y: 10 }), true, "the park's own trunk is reachable too");
 
-        const sites = findBuildSites(0, 50, 0).sites || [];
-        const northern = siteAt(sites, 6, 4);
-        assert.ok(northern, "the northern patch still holds a site, and is not dropped for being far");
+        const northern = describePlacement(0, 6, 4, 0);
+        assert.equal(northern.fits, true, "the northern patch takes the ride");
 
         const door = optionForDoor(northern, 9, 5);
         assert.ok(door && door.door);
@@ -2167,8 +1714,8 @@ test("paving the park could never lay a path up to is not what a distance is mea
         // this door is measured against.
         assert.notEqual(door.pathDistance, 5, "the corridor is five tiles away and cannot be connected to");
 
-        // (15,10) is the answer: corridor paving too, but the park owns (16,10) beside it,
-        // so a footpath laid on its own ground joins that tile. 6 across and 5 down.
+        // (15,10) is the answer: corridor paving too, but the park owns (16,10) beside it, so
+        // a footpath laid on its own ground joins that tile. 6 across and 5 down.
         assert.equal(door.pathDistance, 11,
             "the nearest paving the park could join is (15,10), which is 6 across and 5 down");
         assert.equal(door.pathDistance, Math.abs(15 - 9) + Math.abs(10 - 5),
@@ -2179,15 +1726,136 @@ test("paving the park could never lay a path up to is not what a distance is mea
         assert.ok(door.cost.indexOf("at least 11 tiles of path to lay") === 0,
             "and the sentence quotes the same number: " + door.cost);
 
-        // The other control: this park has paving that IS joinable, so the 11 above is a
-        // real measurement and not a park with nothing to measure against.
-        const onTheTrunk = sites.filter(function (site) {
-            return site.access.some(function (option) { return option.pathDistance === 0; });
-        });
-        assert.ok(onTheTrunk.length > 0, "the park's own trunk still gives doors at distance 0");
-        assert.ok(sites.indexOf(onTheTrunk[0]) < sites.indexOf(northern),
-            "and the honest numbers, not a rule about corridors, are what order the list");
+        // The other control: this park has paving that IS joinable, so the 11 above is a real
+        // measurement and not a park with nothing to measure against. A 3x3 at 18,13 puts its
+        // -y doors on the park's own stretch of the corridor.
+        const onTheTrunk = describePlacement(0, 18, 13, 0);
+        assert.equal(optionForDoor(onTheTrunk, 18, 10)?.pathDistance, 0,
+            "the park's own trunk still gives a door at distance 0");
     } finally {
         restore();
     }
+});
+
+// ---------------------------------------------------------------------------
+// The description, which is read on every turn the tool is in play.
+// ---------------------------------------------------------------------------
+
+function description(): string {
+    const definitions = getMcpToolDefinitions(SiteTools).filter(function (definition) {
+        return definition.handlerName === "describePlacement";
+    });
+
+    assert.equal(definitions.length, 1, "describe_placement is registered once");
+    assert.equal(definitions[0].name, "describe_placement", "and under that name");
+
+    return String(definitions[0].description);
+}
+
+test("the description says it describes one placement and searches for nothing", function () {
+    // The whole point of the change. A description that talked about finding sites would
+    // teach the model to expect a list of candidates from a tool that answers about one
+    // tile, and the first thing it would do with that expectation is ask for the list.
+    const text = description();
+
+    assert.match(text, /It describes the placement you name and nothing else: it looks for no site, ranks nothing, and offers no alternative/,
+        "the shape of the tool, said once and plainly");
+    assert.match(text, /Where a ride goes is read off `view_map`/,
+        "and where the choice is made instead, which is the reading it replaces");
+    assert.doesNotMatch(text, /\bbest\b|\bprefer\b|recommend|should pick|nearest first/i,
+        "no site is marked as good: choosing one is the decision this tool gave back");
+    assert.doesNotMatch(text, /sorted by|ranked by|nearest.{0,20}first|in distance order/i,
+        "nothing in the result is ordered by any measurement");
+});
+
+test("the footprint geometry stands in the description that hands the rectangle over", function () {
+    // `clear_scenery` explained that `x`,`y` is a build origin and not a centre; this is the
+    // tool that hands the rectangle over, so it is the one that has to say not to recompute
+    // it. A 4x4 runs 0..3 from its origin and a 1x4 runs -2..+1.
+    const text = description();
+
+    assert.match(text, /THE ORIGIN IS NOT THE CENTRE AND NOT A CORNER/);
+    assert.match(text, /a 4x4 runs 0\.\.3 from the origin, a 1x4 runs -2\.\.\+1, and only a 3x3 is centred on it/,
+        "the worked examples, which are the part a rule cannot replace");
+    assert.match(text, /Never work that rectangle out from `x`, `y` and the ride's size/,
+        "and the instruction that avoids the error");
+    assert.match(text, /`clear_scenery`'s four arguments under the same names/,
+        "where the rectangle goes next");
+});
+
+/**
+ * Measured against the running game: turning two path tiles into a queue changed no edge bit
+ * at all (51,24 and 51,25 of Forest Frontiers, `edges` 10 before and 10 after), so the
+ * reason this description used to give for `queueCutsOff` - that guests cannot walk through
+ * a queue - was false, and it painted every door beside the trunk path as a park cut in two.
+ * What severs is a ride claiming the tile its door opens onto.
+ *
+ * The absence of the old sentence is pinned as hard as the presence of the new one. A
+ * falsehood this old comes back from a stale branch or a half-remembered paragraph.
+ */
+test("the description says what actually severs a route, and not that a queue does", function () {
+    const text = description();
+
+    assert.match(text, /Guests walk a queue like any other path/,
+        "a queue is ordinary walkable path, which is the measured fact");
+    assert.match(text, /a ride claiming one, which dead-ends the single tile its door opens onto/,
+        "and the one thing that does sever a route");
+    assert.match(text, /READ `cost` ON EVERY OPTION/,
+        "the sentence has to be pointed at, or it is another field that goes unread");
+    assert.match(text, /0 on a ride's door means the tile is not free/,
+        "the inversion between a shop's 0 and a ride door's 0, which no number can carry");
+    assert.doesNotMatch(text, /cannot walk through/,
+        "the disproven rule, which converting a path to a queue in the running game refuted");
+    assert.doesNotMatch(text, /cuts that many tiles off the park/,
+        "and the claim it was used to make about every positive number");
+});
+
+test("the description says a distance is to paving guests can reach", function () {
+    // The sentence it used to carry - that a distance is to "the nearest footpath", -1 when
+    // "the park has no footpath at all" - is the defect written down: it says paving is
+    // paving, which is what made a door on a stranded fragment read as the best door in the
+    // park.
+    const text = description();
+
+    assert.match(text, /`guestsCanReach` says whether a guest can walk to that tile from the park gate/,
+        "the field that separates a door on the network from one on a fragment");
+    assert.match(text, /the nearest footpath the gate reaches/,
+        "and what pathDistance is counted against");
+    assert.match(text, /`island` then gives that fragment's tile count and corners/,
+        "the fragment a stranded door stands on, named rather than left to be inferred");
+    assert.match(text, /-1 when the gate reaches no footpath at all/,
+        "-1 is about the reachable network, not about paving anywhere");
+    assert.doesNotMatch(text, /-1 when the park has no footpath at all/,
+        "the old claim, which was false in a park whose paving the gate could not reach");
+    assert.doesNotMatch(text, /avoid|do not build|prefer a door/,
+        "what to do about a stranded door is the model's call, not the description's");
+});
+
+test("the description says the access list is whole and unordered, and that a ride needs two", function () {
+    const text = description();
+
+    assert.match(text, /The list is in the order the tiles ring the footprint and is ordered by nothing else: it is not sorted, not trimmed, and not marked/,
+        "both halves: nothing is left out, and nothing is ranked");
+    assert.match(text, /A ride needs TWO, one for the entrance and one for the exit/,
+        "the mechanic the model cannot read anywhere else");
+    assert.doesNotMatch(text, /accessTotal|at most \d+ options|window/,
+        "there is no window any more, so a description that mentions one describes a different tool");
+});
+
+test("the rotation argument says it is required and says why there is no default", function () {
+    const definitions = getMcpToolDefinitions(SiteTools).filter(function (definition) {
+        return definition.handlerName === "describePlacement";
+    });
+    const schema = definitions[0].inputSchema;
+    const properties = schema.properties as Record<string, { description: string }>;
+
+    assert.deepEqual((schema.required || []).slice().sort(), ["rideObject", "rotation", "x", "y"],
+        "every one of the four is part of naming a placement, so none of them may be filled in");
+
+    assert.match(properties.rotation.description, /There is no default/,
+        "the absence is deliberate and the model is told so");
+    assert.match(properties.rotation.description, /4 is refused rather than read as 0/,
+        "the bound, which is the part that stops a wasted turn");
+    assert.match(properties.rotation.description, /for a shop it is the whole of it/,
+        "and the one case where rotation means something other than a footprint");
 });

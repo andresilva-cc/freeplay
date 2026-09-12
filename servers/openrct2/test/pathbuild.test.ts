@@ -418,7 +418,7 @@ test("a queue no ride owns cuts nothing, and the run says so", function () {
 
 test("a severed park is counted and explained, not told what to do about it", function () {
     // The warning used to end "Move the queue off the main path, or lay a path around it."
-    // Where a queue goes is park layout, which is the decision find_build_sites hands over
+    // Where a queue goes is park layout, which is the decision describe_placement hands over
     // with this very measurement: the tool reports the count and the cause and stops.
     withGame(corridorWithADoorOnIt, function (game) {
         const outcome = layAndLetTheRideClaimIt(game, [{ x: 9, y: 8 }, { x: 10, y: 8 }], function () {

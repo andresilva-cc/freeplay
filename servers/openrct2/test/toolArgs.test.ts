@@ -280,9 +280,9 @@ test("clear_scenery refuses half a rectangle instead of squaring it off", functi
     });
 });
 
-test("looking for sites for a tracked ride explains it has to be built from track", function () {
+test("describing a placement for a tracked ride explains it has to be built from track", function () {
     withSession(function (session) {
-        const body = structured(callTool(session, "find_build_sites", { rideObject: 1 }));
+        const body = structured(callTool(session, "describe_placement", { rideObject: 1, x: 12, y: 12, rotation: 0 }));
 
         assert.equal(body.ok, false, "a coaster has no one-piece footprint to find room for");
         assert.match(String(body.error), /Wooden Coaster/, "the ride that was asked about has to be named");

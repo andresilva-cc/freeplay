@@ -203,7 +203,7 @@ test("a door tile that does not touch the ride is refused, and says which one an
         assert.match(detail, /exitX\/exitY 16,10 is fine/, "the door that was fine is not cleared");
         assert.ok(!/16,10 does not/.test(detail), "the exit must not be blamed as well");
         assert.match(detail, /`access` list/, "and it has to say where a good option comes from");
-        assert.ok(!/find_build_sites for this ride again/.test(detail),
+        assert.ok(!/describe_placement for this ride again/.test(detail),
             "the list in hand is still good here, so it must not send the model back to re-measure");
         assert.equal(game.rides.length, 0, "nothing is created when the site is rejected");
     } finally {
@@ -303,7 +303,7 @@ test("a coordinate that is nobody's door still gets the message it always got", 
 
         assert.match(detail, /entranceX\/entranceY 12,14 does not touch the ride's footprint/,
             "the condition it failed is no longer named: " + detail);
-        assert.match(detail, /Pick a different option from this site's `access` list/,
+        assert.match(detail, /Pick a different option from this placement's `access` list/,
             "the coordinate really is wrong here, so the general message has to stand: " + detail);
         assert.ok(!/`door` of the `access` option/.test(detail), "nothing is an option's door here: " + detail);
     } finally {
@@ -345,7 +345,7 @@ test("a door tile with a structure on it says the site data is stale, not to pic
         assert.match(detail, /entranceX\/entranceY 12,10/, "the stale tile is not named");
         assert.match(detail, /is not clear: track is standing on it/, "what is on the tile is not named");
         assert.match(detail, /out of date/, "it does not say the site data has gone stale");
-        assert.match(detail, /find_build_sites for this ride again/, "it does not name the call that fixes it");
+        assert.match(detail, /describe_placement for this ride again/, "it does not name the call that fixes it");
         assert.match(detail, /Do not re-send these coordinates/,
             "re-guessing coordinates is exactly what the model did six times out of six");
         assert.equal(game.rides.length, 0, "nothing is created when the site is rejected");
@@ -355,7 +355,7 @@ test("a door tile with a structure on it says the site data is stale, not to pic
 });
 
 test("a door with nowhere to queue is refused, not built into an unusable ride", function () {
-    // Touching the footprint is necessary and not sufficient: find_build_sites checks the
+    // Touching the footprint is necessary and not sufficient: describe_placement checks the
     // tile the door opens onto too. Skipping that check accepted a door nothing could ever
     // queue to and then reported the build a success.
     const cases = [
@@ -399,7 +399,7 @@ test("a door with nowhere to queue is refused, not built into an unusable ride",
                 probe.name + ": it does not say the tile itself was fine");
             assert.match(detail, /11,10/, probe.name + ": the door tile is not named");
             assert.match(detail, probe.expect, probe.name + ": got " + detail);
-            assert.equal(/find_build_sites for this ride again/.test(detail), probe.stale,
+            assert.equal(/describe_placement for this ride again/.test(detail), probe.stale,
                 probe.name + ": wrong remedy for this kind of failure");
             assert.equal(game.rides.length, 0, probe.name + ": a ride was created for a door that cannot work");
         } finally {
@@ -590,7 +590,7 @@ test("door arguments handed to a stall are called out, not silently dropped", fu
         assert.match(detail, /entranceX\/entranceY and exitX\/exitY were ignored/);
         assert.match(detail, /Burger Bar has nowhere to put them/);
         assert.match(detail, /buy over the counter from 10,10/, "the tile that does matter is not named");
-        assert.match(detail, /no `access` list for a stall/);
+        assert.match(detail, /reports a stall's serving tile and no doors/);
 
         let doors = 0;
 

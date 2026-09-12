@@ -26,8 +26,8 @@ export class LandTools {
         description: [
             "Buy the land rights to a rectangle of tiles, bringing them inside the park.",
             "Pass `fromX`, `fromY`, `toX` and `toY`: two opposite corners in tile coordinates, both included -",
-            "the same four names a `find_build_sites` site reports its bounds under, so a site's bounds copy",
-            "straight across.",
+            "the same four names a `describe_placement` footprint reports its corners under, so a placement's",
+            "ground copies straight across.",
             "Only tiles the scenario has put up for sale can be bought. Tiles the park already owns cost nothing",
             "and are skipped, and tiles that are not for sale are left alone rather than failing the call, so a",
             "rectangle that is half for sale buys the half that is. If the park cannot afford the whole",
@@ -70,8 +70,8 @@ export class LandTools {
         if (missing.length > 0) {
             return refuse("buy_land needs all four corners: `" + missing.join("`, `") + "` "
                 + (missing.length === 1 ? "was" : "were") + " left out. Give `fromX`, `fromY`, `toX` and"
-                + " `toY` together, copied off a site from find_build_sites, which reports all four under"
-                + " those names. Nothing was bought.", { left: 0, top: 0, right: 0, bottom: 0 });
+                + " `toY` together, copied off a placement's `footprint` from describe_placement, which reports"
+                + " all four under those names. Nothing was bought.", { left: 0, top: 0, right: 0, bottom: 0 });
         }
 
         // Left as the caller gave it: `buyLand` puts the corners the right way round, and

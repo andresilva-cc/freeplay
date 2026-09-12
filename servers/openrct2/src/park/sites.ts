@@ -4,9 +4,6 @@ import { flatRideShape, footprintOffsets, perimeterOffsets, shopServingTile } fr
 import type { MapGrid } from "./map.js";
 import type { FlatRideShape, Offset } from "./flatRides.js";
 
-/** How many door positions to return per site, after every side is represented. */
-export const MAX_ACCESS_OPTIONS = 8;
-
 /** A run of footpath the park gate reaches nothing of, named the way park_status names it. */
 export interface StrandedIsland {
     /** Footpath tiles in the fragment. */
@@ -150,82 +147,84 @@ function shopCost(pathDistance: number): string {
     return lay + "; a shop claims no queue, so nothing loses its route to the park entrance.";
 }
 
-export interface BuildSite {
-    /** Origin tile to pass to build_flat_ride. Inside the footprint, but not a corner of
-     *  it: a 3x3 is centred on its origin and a 1x4 runs -2..+1 from it. */
+/** One tile of the footprint the ride cannot stand on, and the one condition it fails. */
+export interface FootprintBlocker {
     x: number;
     y: number;
-    z: number;
-    rotation: number;
-    /** The ground the ride will stand on, as two inclusive corners. These are clear_scenery's
-     *  four rectangle arguments under the same names, so they cross unchanged. Read from the
-     *  tiles the game lays for this piece at this rotation, never from width and depth: a 4x4
-     *  runs 0..3 from its origin while a 1x4 runs -2..+1, so a square centred on `x`,`y` is
-     *  the wrong ground for every footprint but a 3x3. */
+    /** The condition this tile fails, as a clause that follows the coordinates. Worded the
+     *  way build_flat_ride words the same refusals, because the two are read minutes apart
+     *  and a rule stated two ways reads as two rules. */
+    reason: string;
+}
+
+/** The ground a ride would stand on, as the two inclusive corners it spans. */
+export interface Footprint {
+    /** These are clear_scenery's four rectangle arguments under the same names, so they
+     *  cross unchanged. Read from the tiles the game lays for this piece at this rotation,
+     *  never from width and depth: a 4x4 runs 0..3 from its origin while a 1x4 runs -2..+1,
+     *  so a square centred on the origin is the wrong ground for every footprint but a 3x3. */
     fromX: number;
     fromY: number;
     toX: number;
     toY: number;
-    /** Tiles of the footprint holding scenery. 0 means bare ground; otherwise clear it first. */
-    sceneryToClear: number;
-    /** Door positions, nearest a path first. Not exhaustive for large footprints. */
-    access: AccessOption[];
-    /** How many positions exist in total, before this list was trimmed. */
-    accessTotal: number;
-    /** Distance to the nearest footpath the park gate reaches and the park could lay path
-     *  onto: from the best door, or from the shop's serving tile. -1 when there is no such
-     *  paving at all. */
-    pathDistance: number;
-    /** Tiles to the nearest existing ride. Small numbers mean no room for queues between them. */
-    nearestRideDistance: number;
+    /** Tiles the ride covers. The footprint of a one-piece ride fills its rectangle, so
+     *  this is also the area of the four corners above. */
+    tiles: number;
 }
 
 /**
- * Where the sites a search matched are, and what connecting them would cost, measured
- * over every one of them.
+ * What would happen if this ride went up at this origin, at this rotation. One placement,
+ * the one that was asked about.
  *
- * Reported beside `totalFound`, and for the same reason it is: that count says the list
- * is a window without saying anything about what lies outside it, so 1,284 sites spanning
- * the whole park and 1,284 sites packed into one corner read identically, and taking the
- * first of three is the same move in both. These are the dimensions of the set the window
- * was cut from.
- *
- * A measurement of where the matches are, the way `totalFound` is a measurement of how
- * many. Nothing here marks a site as good, and the ordering is untouched: the returned
- * sites are still the nearest of the set, which is exactly why the nearer end of the
- * distance range below is theirs.
+ * It searches for nothing and offers no alternative. The tool it replaced swept the park,
+ * scored every candidate on distance to a footpath and handed back the nearest three: the
+ * model took site #1 in 11 of 12 builds and access option #1 in 12 of 12, out of more than
+ * 1,200 candidates a time, so where every ride in every run went was chosen by a sort in
+ * this file rather than by the player. The mechanics it cannot derive are still here -
+ * which tiles a piece covers is not a formula, and neither is what a queue at a door would
+ * sever - and the choice of tile is not.
  */
-export interface CandidateExtent {
-    /** The two inclusive corners the ground of every matching site spans together: each
-     *  site's own `fromX`..`toY` rectangle, unioned. Read against a returned site's own
-     *  four corners rather than its `x`,`y`, which is a build origin sitting inside the
-     *  footprint rather than a corner of it. */
-    fromX: number;
-    fromY: number;
-    toX: number;
-    toY: number;
-    /** The smallest and the largest `pathDistance` among every matching site, counted in
-     *  the same tiles a site's own `pathDistance` counts. Both -1 when there is no paving
-     *  the gate reaches and the park could join onto, which is every site's distance in such
-     *  a park rather than some. */
-    nearestPathDistance: number;
-    furthestPathDistance: number;
-}
-
-export interface SiteSearchResult {
+export interface PlacementResult {
     ok: boolean;
-    /** What was searched for. `width` and `depth` are the ride's size for reference only:
-     *  the ground a site needs cleared is that site's own fromX/fromY/toX/toY, never a
-     *  rectangle worked out from these two numbers. */
+    /** What was asked about. `width` and `depth` are the ride's size for reference only:
+     *  the ground it stands on is `footprint`, never a rectangle worked out from these two. */
     ride?: { name: string; rideType: number; width: number; depth: number; isShop: boolean };
-    sites?: BuildSite[];
-    /** How many sites matched before the list was cut to `limit`. */
-    totalFound?: number;
-    /** Where those `totalFound` sites are and what they would cost to connect, measured
-     *  across all of them rather than across the trimmed list. Absent when none matched. */
-    candidateExtent?: CandidateExtent;
-    /** What `access` means for this ride, or - when `sites` is empty - which constraint
-     *  nothing satisfied, so the caller knows what to change. */
+    /** The origin and rotation asked about, echoed, so the answer reads on its own and the
+     *  three values that go to build_flat_ride are in the result that describes them. */
+    x?: number;
+    y?: number;
+    rotation?: number;
+    footprint?: Footprint;
+    /** The height the ride would stand at, which is the origin tile's own ground height -
+     *  the same tile build_flat_ride takes it from, so the two agree by construction. A
+     *  door and every other footprint tile is measured against this. */
+    z?: number;
+    /** True when every tile of the footprint is the park's, level, at `z`, and carrying
+     *  nothing but scenery. Scenery is not counted against it: it is `sceneryToClear`, and
+     *  it is in the way of the build all the same. */
+    fits?: boolean;
+    /** Every footprint tile that fails one of those conditions, with which one. Empty when
+     *  `fits` is true. */
+    blockers?: FootprintBlocker[];
+    /** Tiles of the footprint holding scenery. 0 means bare ground. */
+    sceneryToClear?: number;
+    /** What the ground is, in one sentence: how much of the footprint the ride can stand
+     *  on, what stops the rest, and what is standing on it. The same facts as `fits`,
+     *  `blockers` and `sceneryToClear`, said in words, for the same reason `cost` says a
+     *  door's three numbers in words - a field read as a number beside a field read as a
+     *  list is two readings, and the second one went unmade. A measurement, not a verdict. */
+    ground?: string;
+    /** Every place an entrance or exit could go for this placement - all of them, in the
+     *  order they ring the footprint, which is a shape and not a ranking. A shop has one
+     *  entry, the tile guests are served from. Empty when the origin tile has no readable
+     *  ground to measure a door against. */
+    access?: AccessOption[];
+    /** Tiles from the origin to the nearest tile carrying ride track or an entrance
+     *  building. The park's own gate is an entrance building, so in a park with a gate this
+     *  is never -1: with no ride built yet it is the distance to the gate. */
+    nearestRideDistance?: number;
+    /** What `access` means for this ride, when it means something particular - a shop's
+     *  one serving tile - or why there is none to report. */
     note?: string;
     error?: string;
 }
@@ -262,32 +261,154 @@ function queueBoundTo(x: number, y: number): number | null {
     return null;
 }
 
-function areaState(grid: MapGrid, cx: number, cy: number, offsets: Offset[]): { z: number; scenery: number } | null {
-    let z: number | null = null;
+/**
+ * What the ground under one placement is, tile by tile.
+ *
+ * The search this replaced asked the same question and answered it yes or no, because it
+ * was sifting thousands of candidates and only needed to know which to drop. One placement
+ * the caller named is the opposite case: "no" on its own sends it guessing at another
+ * origin, so every tile that fails says which condition it failed.
+ *
+ * Height is measured against the ORIGIN tile, not against the first tile of the footprint
+ * or the commonest height under it. That is the tile `build_flat_ride` takes the ride's
+ * height from, and a describe that picked a different reference would report a placement
+ * as level that the build then refuses.
+ */
+interface GroupedBlocker extends FootprintBlocker {
+    /** How the sentence counts this one, as a plural clause: "are not the park's land".
+     *  Kept off the returned blocker, which carries the tile's own reason and nothing else. */
+    group: string;
+}
+
+function footprintState(grid: MapGrid, cx: number, cy: number, z: number, offsets: Offset[]): { scenery: number; blockers: GroupedBlocker[] } {
+    const blockers: GroupedBlocker[] = [];
     let scenery = 0;
 
     for (let i = 0; i < offsets.length; i++) {
-        const cell = grid.at(cx + offsets[i].dx, cy + offsets[i].dy);
+        const x = cx + offsets[i].dx;
+        const y = cy + offsets[i].dy;
+        const cell = grid.at(x, y);
 
-        if (!cell || !cell.owned || !cell.flat || !cell.clearable) {
-            return null;
+        if (!cell) {
+            blockers.push({ x: x, y: y, reason: "is off the map", group: "are off the map" });
+            continue;
         }
 
+        if (!cell.owned) {
+            blockers.push({ x: x, y: y, reason: "is not land the park owns", group: "are not land the park owns" });
+            continue;
+        }
+
+        if (!cell.flat) {
+            blockers.push({
+                x: x, y: y,
+                reason: "is on a slope, and a ride needs level ground",
+                group: "are on a slope, and a ride needs level ground"
+            });
+            continue;
+        }
+
+        if (cell.baseZ !== z) {
+            blockers.push({
+                x: x,
+                y: y,
+                reason: "is at height " + String(cell.baseZ) + " and the ride stands at height " + String(z),
+                group: "stand at a different height from the ride's origin"
+            });
+            continue;
+        }
+
+        if (!cell.clearable) {
+            blockers.push({
+                x: x,
+                y: y,
+                reason: "carries " + standingOn(x, y) + ", which is not scenery a bulldozer removes",
+                group: "carry something a bulldozer does not remove"
+            });
+            continue;
+        }
+
+        // Scenery is not a blocker: a player fells it, and the search this came from
+        // counted it rather than refusing the ground. It is still in the way of the build,
+        // which is what `sceneryToClear` is for.
         if (!cell.clear) {
             scenery++;
         }
-
-        if (z === null) {
-            z = cell.baseZ;
-        } else if (cell.baseZ !== z) {
-            return null;
-        }
     }
 
-    return z === null ? null : { z: z, scenery: scenery };
+    return { scenery: scenery, blockers: blockers };
 }
 
-/** Tiles already occupied by a ride, so new sites can report how tight the fit is. */
+/** What is standing on a tile, named rather than called "a structure". */
+function standingOn(x: number, y: number): string {
+    const tile = map.getTile(x, y);
+    const seen: Record<string, boolean> = {};
+    const names: string[] = [];
+
+    for (let i = 0; i < tile.numElements; i++) {
+        const type = tile.getElement(i).type;
+
+        if (type === "surface" || seen[type]) {
+            continue;
+        }
+
+        seen[type] = true;
+        names.push(type === "footpath" ? "a footpath" : (type === "track" ? "ride track" : "a " + type));
+    }
+
+    return names.length > 0 ? names.join(" and ") : "something";
+}
+
+/**
+ * The footprint's ground in one sentence: how much of it the ride can stand on, what stops
+ * the rest, and what else is on it.
+ *
+ * Same reasoning as `cost` on a door, which exists because three correct numbers went
+ * unread when they were three numbers. `fits`, `blockers` and `sceneryToClear` are a flag,
+ * a list and a count, and reading them together is a step. It states what the ground is and
+ * stops: nothing here says whether to build, where else to look, or which constraint to
+ * relax - and two of the three obvious levers do not exist anyway, since no tool levels
+ * ground and none moves a ride out of the way.
+ */
+function groundSentence(footprintTiles: number, z: number, scenery: number, blockers: GroupedBlocker[]): string {
+    const trees = scenery === 0
+        ? " Nothing is standing on it."
+        : " " + tiles(scenery) + " of it " + (scenery === 1 ? "carries" : "carry") + " scenery, which is in the"
+            + " way of the build and is what clear_scenery takes down.";
+
+    if (blockers.length === 0) {
+        return "All " + tiles(footprintTiles) + " the ride would stand on are the park's, level and at height "
+            + String(z) + "." + trees;
+    }
+
+    const counts: Record<string, number> = {};
+    const order: string[] = [];
+
+    for (let i = 0; i < blockers.length; i++) {
+        const group = blockers[i].group;
+
+        if (typeof counts[group] !== "number") {
+            counts[group] = 0;
+            order.push(group);
+        }
+
+        counts[group]++;
+    }
+
+    const said: string[] = [];
+
+    for (let i = 0; i < order.length; i++) {
+        said.push(String(counts[order[i]]) + " " + order[i]);
+    }
+
+    const standsOn = footprintTiles - blockers.length;
+
+    return "The ride does not stand here: of the " + tiles(footprintTiles) + " it would cover, "
+        + String(blockers.length) + " cannot take it - " + said.join("; ") + "."
+        + (standsOn > 0 ? " The other " + tiles(standsOn) + " could." : "") + trees;
+}
+
+/** Tiles already occupied by a ride, so a placement can report how tight the fit is. */
 function collectRideTiles(): { x: number; y: number }[] {
     const tiles: { x: number; y: number }[] = [];
 
@@ -606,101 +727,27 @@ function facingDirection(offsets: Offset[], perimeter: Offset): number | null {
 }
 
 /**
- * Which constraint nothing got past, so the caller knows what to change rather than
- * re-guessing coordinates. "Nothing found" with no reason produced whole turns of the
- * model inventing tiles instead of asking a different question.
+ * What one placement of one ride would be: the ground it would cover, whether that ground
+ * takes it, and every door position it would have with what each would cost.
  *
- * It names the constraint and stops there. Naming a lever - buy land, level it, clear the
- * scenery - picks which constraint to relax, which is the caller's call, and two of those
- * three were false here anyway: no tool levels ground, and scenery never disqualifies a
- * tile in the first place, so clear_scenery could not have changed either answer.
+ * It is handed an origin and a rotation and it describes those. It does not look at any
+ * other tile of the park, rank anything, or offer an alternative, because the tool it
+ * replaced did all three and the model stopped choosing: across every measured run it took
+ * site #1 in 11 of 12 builds and access option #1 in 12 of 12, from a list of three cut out
+ * of more than 1,200 candidates by a sort in this file. What stayed is the half the model
+ * cannot work out for itself - a piece's footprint offsets are not a formula, and what a
+ * queue at a door would sever is a walk over the game's own footpath edges.
+ *
+ * `rotation` is taken as given and never wrapped or chosen: 4 is refused rather than read
+ * as 0, and there is no default, because a rotation this picked would be this file deciding
+ * which way the ride faces.
  */
-function whyNothingFound(shape: FlatRideShape, footprintFits: number, accessFits: number): string {
-    const size = String(shape.width) + "x" + String(shape.depth);
-
-    if (footprintFits === 0) {
-        return "Nothing found: nowhere in the park is a " + size + " block of owned, level tiles all at"
-            + " one height. Trees do not count against it, but rides, paths and slopes do.";
-    }
-
-    if (accessFits === 0) {
-        return shape.isShop
-            ? "Nothing found: " + String(footprintFits) + " tiles fit the shop, but on every one the"
-                + " serving tile - its neighbour in direction `rotation` - is unowned, sloped, at a"
-                + " different height, or carries something other than scenery or an ordinary footpath."
-            : "Nothing found: " + String(footprintFits) + " places fit the " + size + " footprint, but none"
-                + " has two usable tiles beside it, and a ride needs one for the entrance and one for the"
-                + " exit. A tile counts only when it is owned, level, at the ride's height and carrying"
-                + " nothing but scenery, and the tile its door opens onto is owned and carries nothing but"
-                + " scenery, a footpath, or a queue belonging to no ride. Scenery alone never disqualifies"
-                + " either.";
-    }
-
-    return "Nothing found: " + String(accessFits) + " places fit with room for doors, but none could be"
-        + " measured against a footpath.";
-}
-
-/**
- * The extent of the whole matched set, taken from every site found rather than from the
- * few kept.
- *
- * The kept list is by construction the nearest corner of the set - sorted by distance,
- * then cut - so an extent measured after the cut would report the window's own dimensions
- * and say nothing whatever about what the window was cut out of. That is the one bug this
- * field can have, and it is invisible in any park small enough to look at by hand.
- *
- * Six comparisons per site over an array already in memory, which is nothing beside the
- * work that built it: `pathDistanceOrNone` alone walks every reachable footpath tile once
- * per door of every candidate.
- */
-function candidateExtentOf(sites: BuildSite[]): CandidateExtent | undefined {
-    if (sites.length === 0) {
-        return undefined;
-    }
-
-    const extent: CandidateExtent = {
-        fromX: sites[0].fromX,
-        fromY: sites[0].fromY,
-        toX: sites[0].toX,
-        toY: sites[0].toY,
-        nearestPathDistance: -1,
-        furthestPathDistance: -1
-    };
-
-    for (let i = 0; i < sites.length; i++) {
-        extent.fromX = Math.min(extent.fromX, sites[i].fromX);
-        extent.fromY = Math.min(extent.fromY, sites[i].fromY);
-        extent.toX = Math.max(extent.toX, sites[i].toX);
-        extent.toY = Math.max(extent.toY, sites[i].toY);
-
-        // -1 is "there was nothing to measure against", not a short distance, so it stays
-        // out of the range rather than being reported as the nearest end of it. Every site
-        // of one search agrees on this today - no reachable paving gives -1 to all of them,
-        // any gives it to none - and this is the arm that stays right if that ever splits.
-        const distance = sites[i].pathDistance;
-
-        if (distance < 0) {
-            continue;
-        }
-
-        if (extent.nearestPathDistance < 0 || distance < extent.nearestPathDistance) {
-            extent.nearestPathDistance = distance;
-        }
-
-        if (distance > extent.furthestPathDistance) {
-            extent.furthestPathDistance = distance;
-        }
-    }
-
-    return extent;
-}
-
-export function findBuildSites(rideObjectIndex: number, limit: number, rotation?: number): SiteSearchResult {
+export function describePlacement(rideObjectIndex: number, cx: number, cy: number, rotation: number): PlacementResult {
     const objects = context.getAllObjects("ride");
     // Indexed by `.index`, not by position: `list_ride_objects` reports `.index`, and the
     // two only coincide while the loaded object list has no gaps in it. build_flat_ride
-    // resolves it the same way, and a tool that disagrees with it hands back sites measured
-    // for one ride and then builds another, with every step reporting success.
+    // resolves it the same way, and a tool that disagrees with it describes one ride and
+    // then builds another, with every step reporting success.
     let rideObject: RideObject | undefined;
 
     for (let i = 0; i < objects.length; i++) {
@@ -729,7 +776,42 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
         };
     }
 
+    if (rotation < 0 || rotation > 3 || Math.floor(rotation) !== rotation) {
+        return {
+            ok: false,
+            error: "`rotation` is 0, 1, 2 or 3 and " + String(rotation) + " is none of them. It is not wrapped:"
+                + " 4 is refused rather than read as 0."
+        };
+    }
+
     const grid = readMapGrid();
+    const origin = grid.at(cx, cy);
+
+    if (!origin) {
+        return {
+            ok: false,
+            error: "There is no tile at " + String(cx) + "," + String(cy) + ": the map runs 0 to "
+                + String(map.size.x - 1) + " across and 0 to " + String(map.size.y - 1) + " down."
+        };
+    }
+
+    if (origin.baseZ < 0) {
+        return {
+            ok: false,
+            error: "No ground could be read at " + String(cx) + "," + String(cy) + ", so there is no height for"
+                + " a ride to stand at there."
+        };
+    }
+
+    // The ride's height is the origin tile's, because that is the tile build_flat_ride takes
+    // it from. Every other footprint tile and every door is measured against it, so the two
+    // tools cannot disagree about whether this placement is level.
+    const z = origin.baseZ;
+    const offsets = footprintOffsets(shape, rotation);
+    const perimeter = perimeterOffsets(offsets);
+    const bounds = footprintBounds(offsets);
+    const state = footprintState(grid, cx, cy, z, offsets);
+
     const rideTiles = collectRideTiles();
     const gate = findParkEntranceTiles();
     const edges = readPathEdges(grid);
@@ -740,16 +822,16 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
     const paths = connectablePathTiles(grid, reachableNow);
     const islands = strandedIslands(grid, reachableNow);
 
-    // The answer is a property of the footpath tile, not of the door, and thousands of
-    // doors share a handful of footpaths, so it is measured once per tile and kept. Only a
-    // tile the gate reaches can cut anything: a queue laid on bare ground adds to the
+    // The answer is a property of the footpath tile, not of the door, and two doors of one
+    // placement can open onto the same paving, so it is measured once per tile and kept.
+    // Only a tile the gate reaches can cut anything: a queue laid on bare ground adds to the
     // network and takes no route out of it, and a stranded fragment has no route to take.
-    // A reachable tile already carrying a queue counts - an entrance placed here claims
-    // that queue and dead-ends this tile, which is the `hasUnboundQueue` door the search
-    // offers as a finished one.
+    // A reachable tile already carrying a queue counts - an entrance placed here claims that
+    // queue and dead-ends this tile, which is the `hasUnboundQueue` door offered as a
+    // finished one.
     const severance: Record<string, number> = {};
 
-    const costOfDeadEnding = function (x: number, y: number): number {
+    const queueCutsOffAt = function (x: number, y: number): number {
         const tile = key(x, y);
 
         // Only a tile guests reach today has a route through it to lose. Bare ground carries
@@ -777,285 +859,176 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
         return lost;
     };
 
-    // An entrance built here claims whatever queue reaches its door, and claiming it
-    // dead-ends that one tile. So the cost is the door tile's own, and nothing else's.
-    //
-    // This used to charge a door standing on bare ground for the worst of its four
-    // neighbours, on the theory that the queue run to it would block the footpath it
-    // joined. It does not: a queue no ride has claimed is walked like any other path, and
-    // the tiles the run adds are new ground that carried nobody before. That door is 0 -
-    // measured, not assumed - and the old figure told the model that putting a ride beside
-    // the trunk path would cut the park in half. Reported, never used to reorder: which
-    // tile to use is the player's call.
-    const queueCutsOffAt = function (x: number, y: number): number {
-        return costOfDeadEnding(x, y);
-    };
+    const options: AccessOption[] = [];
 
-    // A square footprint occupies the same tiles either way round, so searching both
-    // finds every position twice and doubles totalFound. A shop is the exception: it is
-    // 1x1, but its rotation is the one thing that decides which neighbour guests are
-    // served from, so all four are genuinely different placements.
-    const squareFootprint = shape.width === shape.depth;
-    const rotations = typeof rotation === "number"
-        ? [((rotation % 4) + 4) % 4]
-        : (shape.isShop ? [0, 1, 2, 3] : (squareFootprint ? [0] : [0, 1]));
-    const found: BuildSite[] = [];
-    let footprintFits = 0;
-    let accessFits = 0;
+    if (shape.isShop) {
+        // Measured in the game by ringing a stall with four paths: only the neighbour in
+        // direction `rotation` formed a footpath edge to it. The other three touch the shop
+        // and serve nobody. There is no door beyond it either - a queue tile one further out
+        // is a tile too far.
+        const serving = shopServingTile(cx, cy, rotation);
+        const cell = grid.at(serving.x, serving.y);
 
-    for (let r = 0; r < rotations.length; r++) {
-        const turn = rotations[r];
-        const offsets = footprintOffsets(shape, turn);
-        const perimeter = perimeterOffsets(offsets);
-        const bounds = footprintBounds(offsets);
+        // A footpath here is the best case, not a blocker: the shop is already served.
+        // Demanding bare ground threw away every stall position beside the park's paths. A
+        // queue is a blocker, though - guests in a queue buy nothing.
+        if (cell && cell.owned && cell.flat && cell.baseZ === z
+            && (cell.clearable || (cell.path && !cell.queue))) {
+            const facing = (rotation + 2) % 4;
+            const distance = pathDistanceOrNone(paths, serving.x, serving.y);
 
-        for (let cy = 0; cy < grid.height; cy++) {
-            for (let cx = 0; cx < grid.width; cx++) {
-                const area = areaState(grid, cx, cy, offsets);
+            options.push({
+                x: serving.x,
+                y: serving.y,
+                direction: facing,
+                side: SIDE_NAMES[facing],
+                cost: shopCost(distance),
+                needsClearing: !cell.clear && !cell.path,
+                pathDistance: distance,
+                queueCutsOff: 0
+            });
+        }
+    } else {
+        // In the order the tiles ring the footprint, which is a shape rather than a
+        // judgement. The list this replaced was sorted by distance to a path and cut to
+        // eight, and the model took the first entry of it every time; there is no sort here
+        // and nothing is left out, so the order carries no claim about which door is worth
+        // using.
+        for (let p = 0; p < perimeter.length; p++) {
+            const tile = { x: cx + perimeter[p].dx, y: cy + perimeter[p].dy };
+            const cell = grid.at(tile.x, tile.y);
 
-                if (area === null) {
-                    continue;
-                }
-
-                footprintFits++;
-                const options: AccessOption[] = [];
-
-                if (shape.isShop) {
-                    // Measured in the game by ringing a stall with four paths: only the
-                    // neighbour in direction `rotation` formed a footpath edge to it. The
-                    // other three touch the shop and serve nobody. There is no door beyond
-                    // it either - a queue tile one further out is a tile too far.
-                    const serving = shopServingTile(cx, cy, turn);
-                    const cell = grid.at(serving.x, serving.y);
-
-                    // A footpath here is the best case, not a blocker: the shop is already
-                    // served. Demanding bare ground threw away every stall position that was
-                    // beside the park's paths, which is every position worth having. A queue
-                    // is a blocker, though - guests in a queue buy nothing.
-                    if (cell && cell.owned && cell.flat && cell.baseZ === area.z
-                        && (cell.clearable || (cell.path && !cell.queue))) {
-                        const facing = (turn + 2) % 4;
-                        const distance = pathDistanceOrNone(paths, serving.x, serving.y);
-
-                        options.push({
-                            x: serving.x,
-                            y: serving.y,
-                            direction: facing,
-                            side: SIDE_NAMES[facing],
-                            cost: shopCost(distance),
-                            needsClearing: !cell.clear && !cell.path,
-                            pathDistance: distance,
-                            queueCutsOff: 0
-                        });
-                    }
-                } else {
-                    for (let p = 0; p < perimeter.length; p++) {
-                        const tile = { x: cx + perimeter[p].dx, y: cy + perimeter[p].dy };
-                        const cell = grid.at(tile.x, tile.y);
-
-                        // Scenery is not a blocker here any more than it is on the footprint:
-                        // a player fells it. Requiring bare ground dropped whole sites in a
-                        // forest because a tree stood where the entrance would go.
-                        if (!cell || !cell.owned || !cell.flat || !cell.clearable || cell.baseZ !== area.z) {
-                            continue;
-                        }
-
-                        const direction = facingDirection(offsets, perimeter[p]);
-
-                        if (direction === null) {
-                            continue;
-                        }
-
-                        const outward = DIRECTION_VECTORS[(direction + 2) % 4];
-                        const door = { x: tile.x + outward.dx, y: tile.y + outward.dy };
-                        const doorCell = grid.at(door.x, door.y);
-
-                        // A door onto the path network the gate reaches is the shortest work
-                        // there is - pathDistance 0, nothing to lay but the queue itself.
-                        // Requiring bare ground here quietly discarded exactly those, and left
-                        // `isExistingPath` a flag that could never be true. A door onto paving
-                        // the gate does not reach looks identical from this tile and is not the
-                        // same thing at all, which is what `guestsCanReach` below separates.
-                        if (!doorCell || !doorCell.owned || (!doorCell.clearable && !doorCell.path)) {
-                            continue;
-                        }
-
-                        // The one queue that is a blocker, and it is the same line
-                        // build_flat_ride draws: a queue chained to another ride would be
-                        // re-chained to this one, leaving that ride with none. An unbound
-                        // queue is a working door - the entrance chains it when it is placed -
-                        // and refusing those made a demolished ride's own spot unbuildable.
-                        const boundTo = doorCell.queue ? queueBoundTo(door.x, door.y) : null;
-
-                        if (boundTo !== null) {
-                            continue;
-                        }
-
-                        const doorTile: DoorTile = {
-                            x: door.x,
-                            y: door.y,
-                            isExistingPath: doorCell.path,
-                            guestsCanReach: reachableNow[key(door.x, door.y)] === true,
-                            hasUnboundQueue: doorCell.queue,
-                            island: islands[key(door.x, door.y)]
-                        };
-                        const distance = pathDistanceOrNone(paths, door.x, door.y);
-                        const cutsOff = queueCutsOffAt(door.x, door.y);
-
-                        options.push({
-                            x: tile.x,
-                            y: tile.y,
-                            direction: direction,
-                            side: SIDE_NAMES[direction % 4],
-                            cost: doorCost(doorTile, distance, cutsOff),
-                            needsClearing: !cell.clear || (!doorCell.clear && !doorCell.path),
-                            door: doorTile,
-                            pathDistance: distance,
-                            queueCutsOff: cutsOff
-                        });
-                    }
-                }
-
-                // A ride needs two: one for the entrance, one for the exit. One viable tile
-                // is not a site, it is half of one. A shop needs the single serving tile.
-                if (options.length < (shape.isShop ? 1 : 2)) {
-                    continue;
-                }
-
-                accessFits++;
-
-                const rank = function (distance: number): number {
-                    return distance < 0 ? Infinity : distance;
-                };
-
-                options.sort(function (left, right) {
-                    return rank(left.pathDistance) - rank(right.pathDistance);
-                });
-
-                // Trimming purely by distance to a path can hide a whole side of the ride,
-                // which quietly removes the option of putting both doors on one face. Take
-                // the best of every side first, then fill the rest by distance.
-                const shown: AccessOption[] = [];
-                const sideSeen: Record<string, boolean> = {};
-
-                for (let i = 0; i < options.length; i++) {
-                    if (!sideSeen[options[i].side]) {
-                        sideSeen[options[i].side] = true;
-                        shown.push(options[i]);
-                    }
-                }
-
-                for (let i = 0; i < options.length && shown.length < MAX_ACCESS_OPTIONS; i++) {
-                    let already = false;
-
-                    for (let j = 0; j < shown.length; j++) {
-                        if (shown[j].x === options[i].x && shown[j].y === options[i].y) {
-                            already = true;
-                            break;
-                        }
-                    }
-
-                    if (!already) {
-                        shown.push(options[i]);
-                    }
-                }
-
-                // Already -1 rather than Infinity, and a shop measures from its serving
-                // tile rather than from itself: the shop tile is where the building goes,
-                // the serving tile is where the guest has to be able to stand.
-                const distanceToPath = shown[0].pathDistance;
-
-                // A park with no footpath the gate reaches and the park could join onto -
-                // none laid yet, every fragment of it stranded, or all of it running over
-                // ground the park owns nothing beside - leaves every distance unmeasurable,
-                // and dropping those sites would report such a park as unbuildable. Every
-                // site there comes back at -1 rather than vanishing.
-                if (distanceToPath < 0 && paths.length > 0) {
-                    continue;
-                }
-
-                let nearestRide = Infinity;
-                for (let i = 0; i < rideTiles.length; i++) {
-                    const distance = Math.abs(rideTiles[i].x - cx) + Math.abs(rideTiles[i].y - cy);
-                    if (distance < nearestRide) {
-                        nearestRide = distance;
-                    }
-                }
-
-                found.push({
-                    x: cx,
-                    y: cy,
-                    z: area.z,
-                    rotation: turn,
-                    fromX: cx + bounds.minDx,
-                    fromY: cy + bounds.minDy,
-                    toX: cx + bounds.maxDx,
-                    toY: cy + bounds.maxDy,
-                    sceneryToClear: area.scenery,
-                    access: shown,
-                    accessTotal: options.length,
-                    nearestRideDistance: nearestRide === Infinity ? -1 : nearestRide,
-                    pathDistance: distanceToPath
-                });
+            // Scenery is not a blocker here any more than it is on the footprint: a player
+            // fells it, and `needsClearing` says so. Requiring bare ground dropped whole
+            // sites in a forest because a tree stood where the entrance would go.
+            if (!cell || !cell.owned || !cell.flat || !cell.clearable || cell.baseZ !== z) {
+                continue;
             }
+
+            const direction = facingDirection(offsets, perimeter[p]);
+
+            if (direction === null) {
+                continue;
+            }
+
+            const outward = DIRECTION_VECTORS[(direction + 2) % 4];
+            const door = { x: tile.x + outward.dx, y: tile.y + outward.dy };
+            const doorCell = grid.at(door.x, door.y);
+
+            // A door onto the path network the gate reaches is the shortest work there is -
+            // pathDistance 0, nothing to lay but the queue itself. Requiring bare ground here
+            // quietly discarded exactly those, and left `isExistingPath` a flag that could
+            // never be true. A door onto paving the gate does not reach looks identical from
+            // this tile and is not the same thing at all, which is what `guestsCanReach`
+            // below separates.
+            if (!doorCell || !doorCell.owned || (!doorCell.clearable && !doorCell.path)) {
+                continue;
+            }
+
+            // The one queue that is a blocker, and it is the same line build_flat_ride draws:
+            // a queue chained to another ride would be re-chained to this one, leaving that
+            // ride with none. An unbound queue is a working door - the entrance chains it
+            // when it is placed - and refusing those made a demolished ride's own spot
+            // unbuildable.
+            const boundTo = doorCell.queue ? queueBoundTo(door.x, door.y) : null;
+
+            if (boundTo !== null) {
+                continue;
+            }
+
+            const doorTile: DoorTile = {
+                x: door.x,
+                y: door.y,
+                isExistingPath: doorCell.path,
+                guestsCanReach: reachableNow[key(door.x, door.y)] === true,
+                hasUnboundQueue: doorCell.queue,
+                island: islands[key(door.x, door.y)]
+            };
+            const distance = pathDistanceOrNone(paths, door.x, door.y);
+            const cutsOff = queueCutsOffAt(door.x, door.y);
+
+            options.push({
+                x: tile.x,
+                y: tile.y,
+                direction: direction,
+                side: SIDE_NAMES[direction % 4],
+                cost: doorCost(doorTile, distance, cutsOff),
+                needsClearing: !cell.clear || (!doorCell.clear && !doorCell.path),
+                door: doorTile,
+                pathDistance: distance,
+                queueCutsOff: cutsOff
+            });
         }
     }
 
-    // Ordered by distance to the footpath network the gate reaches, and by nothing else.
-    // Preferring bare ground over treed ground at equal distance would be a preference, not
-    // a measurement; sceneryToClear is reported so the caller can weigh it. A site whose
-    // doors stand on paving the gate cannot reach is not moved anywhere either, and not
-    // dropped: it sorts on the same number as every other site, which for it is the tiles
-    // between it and the network rather than the 0 it used to report. Doors that would sever
-    // the park are reported, not moved down the list: naming the consequence is perception,
-    // choosing the tile is not.
-    found.sort(function (left, right) {
-        const rank = function (distance: number): number {
-            return distance < 0 ? Infinity : distance;
-        };
-        return rank(left.pathDistance) - rank(right.pathDistance);
+    let nearestRide = Infinity;
+
+    for (let i = 0; i < rideTiles.length; i++) {
+        const distance = Math.abs(rideTiles[i].x - cx) + Math.abs(rideTiles[i].y - cy);
+
+        if (distance < nearestRide) {
+            nearestRide = distance;
+        }
+    }
+
+    const blockers: FootprintBlocker[] = state.blockers.map(function (blocker) {
+        return { x: blocker.x, y: blocker.y, reason: blocker.reason };
     });
-
-    // Measured here, over every site that matched, and deliberately above the trim rather
-    // than below it: what comes out of the trim is the nearest few of this set, so an
-    // extent taken from those would describe the window instead of the set.
-    const extent = candidateExtentOf(found);
-
-    // Returning the top N by path distance hands back the same spot N times, which reads
-    // as N options and is not. Keep them a footprint apart so the choice is a real one.
-    const spread = Math.max(shape.width, shape.depth) + 2;
-    const chosen: BuildSite[] = [];
-
-    for (let i = 0; i < found.length && chosen.length < limit; i++) {
-        let tooClose = false;
-
-        for (let c = 0; c < chosen.length; c++) {
-            if (Math.abs(chosen[c].x - found[i].x) + Math.abs(chosen[c].y - found[i].y) < spread) {
-                tooClose = true;
-                break;
-            }
-        }
-
-        if (!tooClose) {
-            chosen.push(found[i]);
-        }
-    }
-
-    const note = chosen.length === 0
-        ? whyNothingFound(shape, footprintFits, accessFits)
-        : (shape.isShop
-            ? "A shop has no entrance or exit. Its one `access` tile is the tile guests are served"
-                + " from, and which neighbour that is comes from the site's `rotation`: 0 is -x, 1 is"
-                + " +y, 2 is +x, 3 is -y. That tile takes an ordinary path, not a queue - there is"
-                + " no `door` beyond it."
-            : undefined);
 
     return {
         ok: true,
         ride: { name: rideObject.name, rideType: rideType, width: shape.width, depth: shape.depth, isShop: shape.isShop },
-        sites: chosen,
-        totalFound: found.length,
-        candidateExtent: extent,
-        note: note
+        x: cx,
+        y: cy,
+        rotation: rotation,
+        z: z,
+        footprint: {
+            fromX: cx + bounds.minDx,
+            fromY: cy + bounds.minDy,
+            toX: cx + bounds.maxDx,
+            toY: cy + bounds.maxDy,
+            tiles: offsets.length
+        },
+        fits: blockers.length === 0,
+        blockers: blockers,
+        sceneryToClear: state.scenery,
+        ground: groundSentence(offsets.length, z, state.scenery, state.blockers),
+        access: options,
+        nearestRideDistance: nearestRide === Infinity ? -1 : nearestRide,
+        note: accessNote(shape, options.length)
     };
+}
+
+/**
+ * What `access` means for this ride, when it means something the list itself does not say.
+ *
+ * A shop's one tile is not a door and following it as one puts the path a tile too far out.
+ * A ride with fewer than two positions cannot be built at all - the game needs one for the
+ * entrance and one for the exit - and an `access` list of one reads as a working placement
+ * with an obvious choice in it.
+ *
+ * It states the rule and what a usable tile is. Which lever to pull is not here: naming one
+ * picks which constraint to relax, and that is the caller's.
+ */
+function accessNote(shape: FlatRideShape, found: number): string | undefined {
+    if (shape.isShop) {
+        return "A shop has no entrance or exit. Its one `access` tile is the tile guests are served"
+            + " from, and which neighbour that is comes from the `rotation` asked about: 0 is -x, 1 is"
+            + " +y, 2 is +x, 3 is -y. That tile takes an ordinary path, not a queue - there is"
+            + " no `door` beyond it."
+            + (found === 0
+                ? " Here it is unowned, sloped, at a different height, or carrying something other than"
+                    + " scenery or an ordinary footpath, so this placement has none."
+                : "");
+    }
+
+    if (found >= 2) {
+        return undefined;
+    }
+
+    return "A ride needs two of these, one for the entrance and one for the exit, and this placement has "
+        + (found === 0 ? "none" : "one") + "."
+        + " A tile counts only when it is owned, level, at the ride's height and carrying nothing but"
+        + " scenery, and the tile its door opens onto is owned and carries nothing but scenery, a"
+        + " footpath, or a queue belonging to no ride. Scenery alone never disqualifies either.";
 }

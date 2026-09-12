@@ -53,7 +53,7 @@ session state, and the connected client's session id becomes unknown.
 | `park_status` | `tools/status.ts` | Objective, money, rating, guests, staff, park messages, the walkable path network as runs, junctions, dead ends and islands, a per-block ground census, and every ride with its doors, door tiles and whether guests can reach it |
 | `guest_feedback` | `tools/status.ts` | Guest thoughts, counted |
 | `list_ride_objects` | `tools/status.ts` | What can be built, with footprints |
-| `find_build_sites` | `tools/sites.ts` | Where a given ride fits, the ground it stands on, and every door position |
+| `describe_placement` | `tools/sites.ts` | One ride at one tile at one rotation: the ground it would stand on, what stops it, and every door position |
 | `clear_scenery` | `tools/clear.ts` | Strip a rectangle of ground, or a square centred on a tile |
 | `build_flat_ride` | `tools/build.ts` | Create, place, entrance, exit, price, open |
 | `build_path` | `tools/path.ts` | A path or queue, optionally along given waypoints |
@@ -221,7 +221,7 @@ The listener binds `127.0.0.1:8080`, loopback only.
   Streamable HTTP is not implemented.
 - **Tracked rides are not buildable through a tool.** Roller coasters need track laid piece
   by piece; only `evaluate` reaches that. `list_ride_objects` reports `isFlatRide: false`
-  for these, and `find_build_sites` and `build_flat_ride` refuse them by name rather than
+  for these, and `describe_placement` and `build_flat_ride` refuse them by name rather than
   failing obscurely.
 - **The port is fixed at 8080.** `BRIDGE_PORT` in `src/index.ts` is a constant, and a
   plugin cannot read the environment it was loaded into, so there is nothing to override

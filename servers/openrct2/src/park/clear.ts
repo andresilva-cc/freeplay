@@ -78,7 +78,7 @@ function actionError(result: GameActionResult): string {
  * still blocking.
  *
  * A rectangle rather than a centred square because a centred square cannot describe a
- * ride's footprint. `find_build_sites` reports a site's origin, and a flat ride is not
+ * ride's footprint. `describe_placement` reports a placement's origin, and a flat ride is not
  * centred on it: a 4x4 runs 0..3 from the origin, a 2x2 runs 0..1, a 1x4 runs -2..+1.
  * `centredSquare` is still the shape for ordinary ground, and turns into one of these.
  *

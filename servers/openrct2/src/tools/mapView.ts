@@ -39,7 +39,7 @@ function whole(args: Record<string, unknown>, name: string, fallback: number): n
  * Which window was asked for, or what was missing or contradictory about it.
  *
  * The two forms share no arguments, so which one a call means is never a judgement call,
- * and `find_build_sites` reports its four bounds under the same four names the rectangle
+ * and `describe_placement` reports a footprint's four corners under the same four names the rectangle
  * form takes. A call with neither form is the commonest one there is - "show me the park" -
  * and answering it from the gate costs the model nothing to get right.
  */
@@ -68,7 +68,7 @@ function areaFromArgs(args: Record<string, unknown>): TileRect | ArgumentFailure
                 ok: false,
                 error: "A rectangle needs all four of `fromX`, `fromY`, `toX` and `toY`; `"
                     + missing.join("`, `") + "` " + (missing.length === 1 ? "was" : "were")
-                    + " left out. A site from find_build_sites carries all four under those names."
+                    + " left out. A placement's `footprint` from describe_placement carries all four under those names."
             };
         }
 
@@ -125,8 +125,8 @@ export class MapViewTools {
             "Called with no arguments at all it draws a",
             String(DEFAULT_VIEW_SIZE) + "x" + String(DEFAULT_VIEW_SIZE),
             "square around the park's own gate.",
-            "TO SEE A SITE AND ITS SURROUNDINGS, pass `fromX`, `fromY`, `toX` and `toY` copied",
-            "straight off a site from `find_build_sites` - the same four names - and `margin` tiles",
+            "TO SEE A PLACEMENT AND ITS SURROUNDINGS, pass `fromX`, `fromY`, `toX` and `toY` copied",
+            "straight off a `footprint` from `describe_placement` - the same four names - and `margin` tiles",
             "of ground are drawn around them, " + String(DEFAULT_VIEW_MARGIN) + " unless you say otherwise.",
             "TO SEE AROUND A TILE, pass `x`, `y` and `size`: a square of `size` tiles centred there,",
             "the same form `clear_scenery` takes. Any tile another tool reported works - a ride's",
@@ -174,10 +174,10 @@ export class MapViewTools {
                         + " to " + String(MAX_VIEW_SIDE) + ". Default " + String(DEFAULT_VIEW_SIZE)
                         + ". Works with x and y, and on its own with the gate-centred default."
                 },
-                fromX: { type: "integer", minimum: 0, description: "Rectangle form: the site's `fromX`. Tile x of one corner, included." },
-                fromY: { type: "integer", minimum: 0, description: "Rectangle form: the site's `fromY`. Tile y of one corner, included." },
-                toX: { type: "integer", minimum: 0, description: "Rectangle form: the site's `toX`. Tile x of the opposite corner, included." },
-                toY: { type: "integer", minimum: 0, description: "Rectangle form: the site's `toY`. Tile y of the opposite corner, included." },
+                fromX: { type: "integer", minimum: 0, description: "Rectangle form: a footprint's `fromX`. Tile x of one corner, included." },
+                fromY: { type: "integer", minimum: 0, description: "Rectangle form: a footprint's `fromY`. Tile y of one corner, included." },
+                toX: { type: "integer", minimum: 0, description: "Rectangle form: a footprint's `toX`. Tile x of the opposite corner, included." },
+                toY: { type: "integer", minimum: 0, description: "Rectangle form: a footprint's `toY`. Tile y of the opposite corner, included." },
                 margin: {
                     type: "integer",
                     minimum: 0,

@@ -60,8 +60,12 @@ const FACTS: { fact: string; why: string }[] = [
     { fact: "counts the park gate and every ride door as a ride", why: "what `nearestRideDistance` is actually measuring" },
     { fact: "an unbounded loop freezes the game with no error and ends the run", why: "evaluate runs on the game's own thread" },
     { fact: "use `keys(value)`", why: "`Object.keys` is empty on game objects" },
-    { fact: "`totalFound` is how many exist altogether", why: "the site list is a window, not the whole truth" },
-    { fact: "`access` shows at most 8 of `accessTotal`", why: "the door list is a window too" },
+    { fact: "Nothing here searches for one", why: "there is no site finder any more, and a model that expects one spends the turn asking for it; find_build_sites swept the park, sorted by distance and returned three, and the model took site #1 in 11 of 12 builds and access option #1 in 12 of 12" },
+    { fact: "and only a 3x3 is centred on it", why: "a footprint is not a formula, and this is the half of the geometry no rule covers: the origin the model now names is inside the ride's ground without being its centre" },
+    { fact: "its door opens onto the tile one further out, which is where that ride's queue goes", why: "a door position is two tiles, not one, and the second is the one the model cannot see it needs" },
+    { fact: "A ride needs two of these, one for the entrance and one for the exit", why: "one usable tile beside a ride is half a placement, and the search used to drop those silently" },
+    { fact: "A tile carrying another ride's queue is not a door position at all", why: "an entrance there takes that ride's queue away; it was in the window section, which is gone, and it is a rule about the game rather than about a list" },
+    { fact: "A placement's origin and rotation are yours and nothing reports them", why: "the one exception to copy-values-across, which otherwise reads as a rule against naming a tile at all - and naming the tile is now the whole of siting a ride" },
     { fact: "every reachable tile is on exactly one run, and their `tiles` add up to `reachableTiles`", why: "the arithmetic that replaced the flat tile list, and the only check the model can run on the payload it was handed" },
     { fact: "`severingComputed` false says so rather than reporting nothing severs", why: "a missing figure read as a zero is the lie the flag exists to prevent" },
     { fact: "`queueCutsOff` measures that before you build", why: "the cost of a door is countable ahead of time" },
@@ -71,7 +75,6 @@ const FACTS: { fact: string; why: string }[] = [
     { fact: "A rectangle that is part for sale buys the part that is rather than failing, and `buy_land`'s `notOwned` names the tiles it did not get, so the purchase is itself the reading", why: "the model reasoned verbatim `I don't know which tiles are for sale` and gave up; the answer has to arrive before `no tool lists which tiles those are` reads as a closed door" },
     { fact: "Buying a sloped tile makes it the park's, not flat", why: "there is no levelling tool, so buying is not a remedy for ground a ride will not stand on" },
     { fact: "How fast it runs is `set_game_speed`, whose `speed` is a setting and not a multiplier", why: "the trap is that the numbers look like multipliers; the scale itself now lives once, on the `speed` argument, pinned below" },
-    { fact: "`find_build_sites` is the largest single payload in a run", why: "measured across nine sessions: find_build_sites averages 1700 tokens and peaks at 6000, park_status averages 694 and peaks at 1506. The prompt named park_status, which sent the model economising on the cheaper of the two" },
     { fact: "the only picture of the park there is, and its size in tiles is its price", why: "view_map is the one tool that draws rather than reports, and its cost scales with the window asked for, which no tool description says" },
     { fact: "while it is `paused` no scenario time passes at all", why: "scenario time is charged against thinking time, and one test run lost a full scenario year that way" },
     { fact: "Nothing asks you anything again unless you call a tool, so a turn that ends by letting the park run and checking back later ends the run there", why: "the one fact `wait`'s schema cannot carry: the agent loop continues only while a tool is called, so a model that says it will let the park run and check back has ended the run believing it is mid-plan. That is what ended a run, and nothing the model can read says it" },
@@ -180,43 +183,49 @@ test("park_status does not restate the speed scale a third time", function () {
         "the scale belongs to `set_game_speed.speed`, and a third copy is a third payment for it");
 });
 
-test("the footprint geometry clear_scenery dropped still stands in find_build_sites", function () {
+test("the footprint geometry clear_scenery dropped still stands in describe_placement", function () {
     // `clear_scenery` explained that `x`,`y` is a build origin and not a centre, which is the
-    // same explanation `find_build_sites` carries - and find_build_sites is the tool that hands
-    // the rectangle over, so it is the one that has to say not to recompute it.
+    // same explanation `describe_placement` carries - and describe_placement is the tool that
+    // hands the rectangle over, so it is the one that has to say not to recompute it.
     const tools = getMcpTools();
-    const sites = tools.filter(function (tool) { return tool.name === "find_build_sites"; })[0];
+    const placement = tools.filter(function (tool) { return tool.name === "describe_placement"; })[0];
     const clear = tools.filter(function (tool) { return tool.name === "clear_scenery"; })[0];
-    const sitesText = String(sites.description);
+    const placementText = String(placement.description);
 
-    assert.match(sitesText, /`x`,`y` is the build origin, which sits inside the footprint but is not a corner of it/,
+    assert.match(placementText, /THE ORIGIN IS NOT THE CENTRE AND NOT A CORNER/,
         "what the origin is");
-    assert.match(sitesText, /a square centred on it is the wrong ground for every footprint but a 3x3/,
+    assert.match(placementText, /a square centred on the origin is the wrong ground for every footprint but a 3x3/,
         "and why a recomputed rectangle is wrong");
-    assert.match(sitesText, /Never work the rectangle out from `x`, `y` and the ride's size/,
+    assert.match(placementText, /Never work that rectangle out from `x`, `y` and the ride's size/,
         "and the instruction that avoids the error, at the tool that hands the rectangle over");
 
     const clearText = String(clear.description);
 
-    assert.match(clearText, /do not work them out\s+from the ride's size and do not use the site's `x`,`y`/,
+    assert.match(clearText, /do not work them out\s+from the ride's size and do not use the placement's `x`,`y`/,
         "clear_scenery keeps the short form: copy the four corners, do not derive them");
     assert.doesNotMatch(clearText, /A 4x4 ride runs from its origin/,
-        "the worked examples were the duplicated half and live in find_build_sites");
+        "the worked examples were the duplicated half and live in describe_placement");
 });
 
-test("find_build_sites.rotation still says why it can be left out", function () {
-    // Never passed in 34 calls across nine sessions, which is the tool being used correctly.
-    // Cutting the text that produces that would cost more than the text does, so both of its
-    // facts are pinned: the tool already covers every distinct rotation, and a shop's rotation
-    // is a serving side rather than a footprint.
+/**
+ * The argument that used to be optional, and now cannot be.
+ *
+ * `find_build_sites.rotation` was passed in 0 of 34 calls across nine sessions, because the
+ * tool searched every rotation and the model never had to say which way a ride faced. That
+ * is the decision this change is handing back, so the schema requires it and the text says
+ * why there is nothing to fall back on.
+ */
+test("describe_placement.rotation says it is required and why there is no default", function () {
     const tools = getMcpTools();
-    const sites = tools.filter(function (tool) { return tool.name === "find_build_sites"; })[0];
-    const properties = sites.inputSchema.properties as Record<string, { description: string }>;
+    const placement = tools.filter(function (tool) { return tool.name === "describe_placement"; })[0];
+    const properties = placement.inputSchema.properties as Record<string, { description: string }>;
     const rotation = properties.rotation.description;
 
-    assert.match(rotation, /already searches every rotation that covers different ground/,
-        "why passing one is unnecessary");
-    assert.match(rotation, /a shop, whose rotation is which neighbour guests are served from/,
+    assert.deepEqual((placement.inputSchema.required || []).slice().sort(), ["rideObject", "rotation", "x", "y"],
+        "all four name the placement, so none of them may be filled in by the tool");
+    assert.match(rotation, /There is no default/,
+        "why there is nothing to leave out");
+    assert.match(rotation, /for a shop it is the whole of it/,
         "and the one case where rotation means something other than a footprint");
     assert.match(rotation, /4 is refused rather than read as 0/,
         "the bound, which is the part that stops a wasted turn");

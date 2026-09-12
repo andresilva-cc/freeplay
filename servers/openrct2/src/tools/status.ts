@@ -106,7 +106,7 @@ export class StatusTools {
     @mcpTool({
         name: "List ride objects",
         description: [
-            "Every ride and stall this scenario lets you build, with the index `find_build_sites` and",
+            "Every ride and stall this scenario lets you build, with the index `describe_placement` and",
             "`build_flat_ride` expect. `isFlatRide` true means it goes up in one action; false means it is a",
             "tracked ride that has to be built piece by piece with evaluate. `footprint` is its size in tiles.",
             "`count` is how many came back, `totalAvailable` how many exist before any filter."

@@ -507,7 +507,7 @@ test("an ordinary tool still answers on the normal path", function () {
 
         const result = app.handleSocketRequest(rawRequest(JSON.stringify({
             jsonrpc: "2.0", id: 2, method: "tools/call",
-            params: { name: "find_build_sites", arguments: { rideObject: 0, limit: 1 } }
+            params: { name: "describe_placement", arguments: { rideObject: 0, x: 16, y: 16, rotation: 0 } }
         }), headers), socket);
 
         assert.equal(result.context.connection.hijacked, false, "no need to take the connection over");
@@ -579,7 +579,7 @@ test("every mutating tool is reachable through tools/call", function () {
         const names = body.result.tools.map(function (tool) { return tool.name; }).sort();
 
         assert.deepEqual(names, [
-            "build_flat_ride", "build_path", "buy_land", "clear_scenery", "evaluate", "find_build_sites",
+            "build_flat_ride", "build_path", "buy_land", "clear_scenery", "describe_placement", "evaluate",
             "guest_feedback", "hire_staff", "list_ride_objects", "open_park", "operate_ride",
             "park_status", "remove_path", "set_game_speed", "view_map", "wait"
         ]);

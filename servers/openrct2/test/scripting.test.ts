@@ -112,7 +112,7 @@ test("runScript returns null for undefined so the result is always JSON", functi
 test("a tool's nested result keeps the depth the tool promised", function () {
     // An AccessOption sits at depth 4 - the result, sites, a site, access, the option
     // itself - which is exactly where evaluate's depth limit cuts. Every door in
-    // find_build_sites came back as "<object depth limit>", so the model saw no valid
+    // every door came back as "<object depth limit>", so the model saw no valid
     // entrance position at all and invented coordinates instead.
     const result = sanitizeToolResult({
         ok: true,

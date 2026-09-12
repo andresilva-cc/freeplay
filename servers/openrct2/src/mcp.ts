@@ -633,7 +633,8 @@ export class McpServer {
             instructions: [
                 "Sixteen tools reach the running game.",
                 "`park_status` returns the whole park in one call;",
-                "`guest_feedback`, `list_ride_objects`, `find_build_sites` and `view_map` read further.",
+                "`guest_feedback`, `list_ride_objects`, `view_map` and `describe_placement` read further;",
+                "`describe_placement` answers for one ride at one tile at one rotation and searches for nothing.",
                 "`clear_scenery`, `build_flat_ride`, `build_path`, `remove_path`, `buy_land`, `operate_ride`,",
                 "`open_park`, `hire_staff` and `set_game_speed` act,",
                 "and answer once the work has landed a few ticks later.",

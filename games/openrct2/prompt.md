@@ -38,13 +38,37 @@ wall and sell nothing.
 `build_flat_ride` is the only build tool there is, and it puts up flat rides and stalls
 only; `isFlatRide: false` is a tracked ride, laid piece by piece with `evaluate`.
 
-1. `find_build_sites` with an `index` from `list_ride_objects`, and pick a site.
+A placement is three things: which ride, which tile is its origin, and which way round it
+faces. Nothing here searches for one. The ground is in `view_map`, which draws it a
+character a tile, and in `park_status`, whose ground census counts what kind of ground the
+park owns block by block and whose `paths` say what joins what; the tile is yours to name.
+
+How the ride's own tiles fall around that origin is the game's doing and is not a formula:
+a 4x4 runs 0..3 from its origin, a 1x4 runs −2..+1, and only a 3x3 is centred on it. The
+origin therefore sits inside the ride's ground without being its centre or a corner of it,
+and that ground is the `footprint` rectangle `describe_placement` reports. A ride stands
+only where every tile of that rectangle is the park's, level, all at one height, and
+carrying nothing but scenery — which `clear_scenery` takes down and nothing else will.
+
+An entrance or an exit goes on a tile touching the footprint, and its door opens onto the
+tile one further out, which is where that ride's queue goes. So a door position needs two
+tiles: one owned, level, at the ride's height and carrying nothing but scenery, and the one
+behind it owned and carrying nothing but scenery, a footpath, or a queue belonging to no
+ride. A tile carrying another ride's queue is not a door position at all, because an
+entrance there takes that ride's queue away. A ride needs two of these, one for the
+entrance and one for the exit; a stall needs none.
+
+1. `describe_placement` with a `rideObject` index from `list_ride_objects` and the `x`, `y`
+   and `rotation` you are asking about. It answers for that one placement: `footprint` and
+   `fits` for the ground, `blockers` for any tile of it that will not take the ride,
+   `ground` saying the whole of that in a sentence, and `access`, which is every door
+   position the placement has with what each one costs.
 2. If scenery is in the way — `sceneryToClear` above 0, or an access option saying
-   `needsClearing` — `clear_scenery` with that site's `fromX`, `fromY`, `toX` and `toY`
-   copied across unchanged. Those four ARE the ride's ground. The `x`/`y`/`size` square
-   is for ordinary ground such as room for a path: aimed at a 4x4 dodgems it clears 4
-   of the 16 tiles the ride stands on.
-3. `build_flat_ride` with the same `rideObject` index, the site's `x`, `y` and `rotation`,
+   `needsClearing` — `clear_scenery` with that placement's `footprint` `fromX`, `fromY`,
+   `toX` and `toY` copied across unchanged. Those four ARE the ride's ground. The
+   `x`/`y`/`size` square is for ordinary ground such as room for a path: aimed at a 4x4
+   dodgems it clears 4 of the 16 tiles the ride stands on.
+3. `build_flat_ride` with the same `rideObject` index, the same `x`, `y` and `rotation`,
    `entranceX`/`entranceY` from one `access` option and `exitX`/`exitY` from another — each
    option's own `x`,`y`, never its `door`. `rideObject`, `x`, `y`, `rotation`, `price` and
    `open` are all required: a call missing any of them is refused by the schema before it
@@ -61,11 +85,12 @@ does not mean the build failed.
 
 ## Copy values across; never work them out
 
-Every coordinate you send should be one a tool just reported:
+A placement's origin and rotation are yours and nothing reports them. Every other
+coordinate you send should be one a tool just reported:
 
 - `index` from `list_ride_objects` → `rideObject`
-- a site's `fromX`/`fromY`/`toX`/`toY` → `clear_scenery`'s four of the same name
-- a site's `x`, `y`, `rotation` → `build_flat_ride`
+- a placement's `footprint` `fromX`/`fromY`/`toX`/`toY` → `clear_scenery`'s four of the same name
+- the `x`, `y` and `rotation` you asked `describe_placement` about → the same three to `build_flat_ride`
 - an `access` option's `x`,`y` → `entranceX`/`entranceY` or `exitX`/`exitY`
 - that option's `door`, or `park_status`'s `entranceDoor`/`exitDoor` → `build_path`
 - a run's end, a junction or a dead end from `paths` → the other end of that path
@@ -76,14 +101,13 @@ not a reachable one unless a run in `paths.runs` covers it.
 
 ## Every list you are shown is a window
 
-- `sites` is cut to `limit`, 3 unless you ask for more; `totalFound` is how many exist
-  altogether, not how many are left over.
-- `access` shows at most 8 of `accessTotal`. A tile counts only when it is owned, level,
-  at the ride's height and carrying nothing but scenery, and the tile its door opens onto
-  is owned and carries nothing but scenery, a footpath, or a queue belonging to no ride —
-  a door carrying another ride's queue is never offered, because an entrance there takes
-  that ride's queue away.
-- `paths.runs` is the exception: every reachable tile is on exactly one run, and their
+- `park_status`'s `ground` census counts the park's own tiles block by block, and
+  `complete` false says the park holds more blocks than the call reported.
+- `view_map` draws the window you asked for and no more of the park; `clipped` says the
+  map's edge cut it down.
+- `describe_placement` is the exception among the readers: its `access` is every door
+  position that placement has, not a window on them.
+- `paths.runs` is the other one: every reachable tile is on exactly one run, and their
   `tiles` add up to `reachableTiles`. A run's `cutsIfBlocked` is the only part that can
   be missing, and `severingComputed` false says so rather than reporting nothing severs.
 - `guest_feedback` counts `sampled` of `guests`. `messages` is `park_status`'s field, and
@@ -97,12 +121,12 @@ not a reachable one unless a run in `paths.runs` covers it.
   measures that before you build — 0 for a door on bare ground, counted for a door already
   carrying an unbound queue. An ordinary path laid back over a queue unbinds it from its
   ride, and `remove_path` takes the footpath or queue off the tiles it names.
-- A site's `nearestRideDistance` is measured from its origin tile and counts the park
+- A placement's `nearestRideDistance` is measured from its origin tile and counts the park
   gate and every ride door as a ride, so in an empty park it is the distance to the gate.
 - Nothing goes on ground the park does not own, and `buy_land` buys only the tiles a
-  scenario has put up for sale. No tool lists which tiles those are, and `find_build_sites`
-  searches owned ground only. A rectangle that is part for sale buys the part that is
-  rather than failing, and `buy_land`'s `notOwned` names the tiles it did not get, so the
+  scenario has put up for sale. No tool lists which tiles those are, and a placement on
+  ground the park does not own comes back with those tiles named in `blockers`.
+  A rectangle that is part for sale buys the part that is rather than failing, and `buy_land`'s `notOwned` names the tiles it did not get, so the
   purchase is itself the reading; a surface element's `ownership` through `evaluate` is
   that reading taken beforehand. Buying a sloped tile makes it the park's, not flat —
   there is no levelling tool, and a ride or a path needs level ground.
@@ -146,10 +170,10 @@ anything guests cannot reach, `remove_path` to take a footpath or queue back up,
 `operate_ride` to reprice, open, close or demolish, `hire_staff` for a mechanic, handyman,
 security guard or entertainer, `build_flat_ride` for something new, `buy_land` for ground
 outside the park, `evaluate` for the rest. `park_status`, `guest_feedback`, `view_map`,
-`find_build_sites` and `list_ride_objects` change nothing: they are what there is to see with.
+`describe_placement` and `list_ride_objects` change nothing: they are what there is to see with.
 
 Every tool re-reads the world after acting and reports what it found, so its result is the
-park as it stands afterwards, and `find_build_sites` is the largest single payload in a run.
+park as it stands afterwards.
 
 A tool answers from the world as it reads it, so the same arguments against an unchanged
 world give the same answer. A refusal that names cash is the one the clock changes by

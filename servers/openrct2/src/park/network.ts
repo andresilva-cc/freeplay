@@ -17,7 +17,7 @@
  * Severance is reported per run rather than per tile on purpose. Every tile of a single-file
  * corridor severs something, so the tile list for a twenty-two tile park was nineteen
  * entries and two thirds of the whole report, while saying one thing: this corridor has no
- * way round. `find_build_sites` still gives the exact figure for the one tile being decided
+ * way round. `describe_placement` still gives the exact figure for the one tile being decided
  * about, as each access option's `queueCutsOff`.
  *
  * It is also sized for a context that gets compacted. A compaction summary does carry
@@ -78,7 +78,7 @@ export interface PathRun {
      * tile the door opens onto dead-ends there. Laying the queue is not what does it; a
      * queue no ride owns is walked like any other path. 0 means no tile of this run cuts
      * anything off, so there is a way round all of it. A higher figure is the worst tile of
-     * the run, usually its end nearest the gate; `find_build_sites` gives the exact figure
+     * the run, usually its end nearest the gate; `describe_placement` gives the exact figure
      * for one particular tile, as an access option's `queueCutsOff`. Absent when
      * `severingComputed` is false.
      */
@@ -587,7 +587,7 @@ export interface GroundCensus {
  *
  * Counts and nothing else. The obvious next field - the largest clear rectangle in each
  * block - is an extremum rather than a measurement, and reporting one is a step towards
- * telling the model where to build, which `find_build_sites` already answers.
+ * telling the model where to build, which is not this bridge's to answer.
  */
 export function readGroundCensus(block: number): GroundCensus {
     const side = Math.max(1, Math.floor(block));

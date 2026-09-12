@@ -34,7 +34,7 @@
  * model reads the right shape at the wrong offset and builds one tile out. x runs down the
  * header rows, one digit place per row, and every row carries its own y.
  *
- * The ground is read through `readMapGrid`, the same pass `find_build_sites` searches, so a
+ * The ground is read through `readMapGrid`, the same pass `describe_placement` searches, so a
  * tile this map calls buildable is a tile that tool would consider. A second reader here
  * with its own idea of "owned and flat" would eventually disagree with it, and a map that
  * contradicts the tool that answers "where can I build" is worse than no map.
@@ -183,7 +183,7 @@ interface TileReading {
 /**
  * One tile, read rather than inferred.
  *
- * `grid` answers for ownership and slope so this agrees with `find_build_sites`; the
+ * `grid` answers for ownership and slope so this agrees with `describe_placement`; the
  * element walk answers for everything that grid does not carry - water, which kind of
  * entrance a building is, and which ride a piece of track belongs to.
  */

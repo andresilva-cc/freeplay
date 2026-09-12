@@ -524,11 +524,11 @@ test("createApplication implements the MCP initialize, tools/list, tools/call, a
 
         assert.deepEqual(
             Object.keys(toolsByName).sort(),
-            ["build_flat_ride", "build_path", "buy_land", "clear_scenery", "evaluate", "find_build_sites", "guest_feedback", "hire_staff", "list_ride_objects", "open_park", "operate_ride", "park_status", "remove_path", "set_game_speed", "view_map", "wait"]
+            ["build_flat_ride", "build_path", "buy_land", "clear_scenery", "describe_placement", "evaluate", "guest_feedback", "hire_staff", "list_ride_objects", "open_park", "operate_ride", "park_status", "remove_path", "set_game_speed", "view_map", "wait"]
         );
 
         assert.equal(toolsByName.evaluate.annotations?.readOnlyHint, false);
-        assert.equal(toolsByName.find_build_sites.annotations?.readOnlyHint, true);
+        assert.equal(toolsByName.describe_placement.annotations?.readOnlyHint, true);
         assert.equal(toolsByName.build_flat_ride.annotations?.readOnlyHint, false);
         assert.equal(toolsByName.build_path.annotations?.readOnlyHint, false);
         assert.equal(toolsByName.clear_scenery.annotations?.destructiveHint, true);
@@ -715,7 +715,7 @@ test("createApplication reports a failing evaluate script without a transport er
     assert.match(callBody.result.structuredContent.error, /noSuchGlobal/);
 });
 
-test("find_build_sites hands back a door the model can build on", function () {
+test("describe_placement hands back a door the model can build on", function () {
     // The end-to-end twin of scripting.test.ts: every access option sits deep enough in
     // the result to be cut by a tight depth limit, and a cut one reads as the string
     // "<object depth limit>" where a door tile should be.
@@ -769,8 +769,8 @@ test("find_build_sites hands back a door the model can build on", function () {
                 id: 2,
                 method: "tools/call",
                 params: {
-                    name: "find_build_sites",
-                    arguments: { rideObject: 0, limit: 1 }
+                    name: "describe_placement",
+                    arguments: { rideObject: 0, x: 16, y: 16, rotation: 0 }
                 }
             })
         ));
@@ -779,17 +779,19 @@ test("find_build_sites hands back a door the model can build on", function () {
             result: {
                 structuredContent: {
                     ok: boolean;
-                    sites: { access: { door: { x: unknown; y: unknown } }[] }[];
+                    fits: boolean;
+                    access: { door: { x: unknown; y: unknown } }[];
                 };
             };
         };
 
         assert.equal(callBody.result.structuredContent.ok, true);
+        assert.equal(callBody.result.structuredContent.fits, true, "this park has room for a carousel");
 
-        const sites = callBody.result.structuredContent.sites;
-        assert.ok(sites.length > 0, "this park has room for a carousel");
+        const options = callBody.result.structuredContent.access;
+        assert.ok(options.length > 0, "and doors to put on it");
 
-        const option = sites[0].access[0];
+        const option = options[0];
         assert.equal(typeof option, "object", "an access option must arrive as an object, not as: " + JSON.stringify(option));
 
         assert.equal(typeof option.door.x, "number", "the door needs a real x to build on, got: " + JSON.stringify(option.door));

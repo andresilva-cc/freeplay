@@ -166,7 +166,7 @@ function shopRotation(x: number, y: number, rideId: number): number | null {
 
 /**
  * The one tile a stall is served from: its neighbour in the direction it faces, which is
- * what `shopServingTile` answers for find_build_sites and build_flat_ride as well.
+ * what `shopServingTile` answers for describe_placement and build_flat_ride as well.
  *
  * Measured in the running game, not reasoned: a rotation-1 stall at 56,33 was ringed with
  * footpath on all four sides and only the tile on its facing side formed a footpath edge

@@ -359,7 +359,7 @@ test("clearing a square never takes the ground with it", function () {
 /*
  * The rest of this file drives clear_scenery through MCP, the way the model reaches it.
  *
- * A centred square is the wrong shape for a ride. `find_build_sites` reports a site's
+ * A centred square is the wrong shape for a ride. `describe_placement` reports a site's
  * origin, and a flat ride's footprint runs from that origin rather than around it: a 4x4
  * covers origin..origin+3 on both axes, a 2x2 covers origin..origin+1, and a 1x4 runs from
  * two tiles before it to one after. So `size: 4` at a 4x4 site clears sixteen tiles of
@@ -728,12 +728,12 @@ test("the rectangle form reports what is still standing rather than what it aske
     });
 });
 
-test("a site's four bounds go straight into clear_scenery and clear the ride's ground", function () {
+test("a footprint's four corners go straight into clear_scenery and clear the ride's ground", function () {
     // The contract the two tools share, and the reason the rectangle form is named the way
-    // it is: `find_build_sites` reports `fromX`, `fromY`, `toX` and `toY`, and they are
-    // handed over field for field with nothing computed on the way. Anything the model has
-    // to transform first is a step it can get wrong, and getting it wrong here fells the
-    // wrong trees or leaves the ride's ground blocked.
+    // it is: `describe_placement` reports `fromX`, `fromY`, `toX` and `toY` on its
+    // `footprint`, and they are handed over field for field with nothing computed on the
+    // way. Anything the model has to transform first is a step it can get wrong, and
+    // getting it wrong here fells the wrong trees or leaves the ride's ground blocked.
     const game = new FakeGame(32, 32);
 
     // A dodgems: 4x4, and its footprint runs from its origin rather than around it, so the
@@ -756,34 +756,36 @@ test("a site's four bounds go straight into clear_scenery and clear the ride's g
     try {
         const app = createApplication();
         const session = { app: app, headers: openSession(app), game: game };
-        const search = structured(callTool(session, "find_build_sites", { rideObject: 0 }));
-        const sites = search.sites as Record<string, number>[];
+        const placement = structured(callTool(session, "describe_placement", {
+            rideObject: 0, x: 16, y: 16, rotation: 0
+        }));
+        const footprint = placement.footprint as Record<string, number>;
 
-        assert.ok(sites && sites.length > 0, "no site to clear: " + JSON.stringify(search.note));
-
-        const site = sites[0];
+        assert.equal(placement.fits, true, "no ground to clear: " + JSON.stringify(placement.ground));
 
         ["fromX", "fromY", "toX", "toY"].forEach(function (field) {
-            assert.equal(typeof site[field], "number",
-                "find_build_sites must report `" + field + "` for clear_scenery to copy");
+            assert.equal(typeof footprint[field], "number",
+                "describe_placement must report `" + field + "` for clear_scenery to copy");
         });
 
         const body = structured(callTool(session, "clear_scenery", {
-            fromX: site.fromX, fromY: site.fromY, toX: site.toX, toY: site.toY
+            fromX: footprint.fromX, fromY: footprint.fromY, toX: footprint.toX, toY: footprint.toY
         }));
 
         assert.equal(body.ok, true, String(body.detail));
         assert.equal(body.tilesRequested, 16, "a dodgems stands on sixteen tiles");
-        assert.deepEqual(baredTiles(game), rectTiles(site.fromX, site.fromY, site.toX, site.toY),
-            "the ground that lost its scenery is not the ground the site named");
+        assert.deepEqual(baredTiles(game), rectTiles(footprint.fromX, footprint.fromY, footprint.toX, footprint.toY),
+            "the ground that lost its scenery is not the ground the placement named");
 
-        // And the site's own origin is inside that rectangle without being its corner,
+        // And the placement's own origin is inside that rectangle without being its corner,
         // which is why `x`,`y` could not have been used as the near corner.
-        assert.ok(site.x >= site.fromX && site.x <= site.toX && site.y >= site.fromY && site.y <= site.toY,
+        assert.ok(16 >= footprint.fromX && 16 <= footprint.toX && 16 >= footprint.fromY && 16 <= footprint.toY,
             "the build origin has to be inside the footprint");
+        assert.deepEqual([footprint.fromX, footprint.toX], [16, 19],
+            "a 4x4 runs 0..3 from its origin, so the ground is not a square centred on 16,16 - which would be 14..18");
 
         const reclear = structured(callTool(session, "clear_scenery", {
-            fromX: site.fromX, fromY: site.fromY, toX: site.toX, toY: site.toY
+            fromX: footprint.fromX, fromY: footprint.fromY, toX: footprint.toX, toY: footprint.toY
         }));
 
         assert.equal(reclear.tilesStillBlocked, 0, "and nothing is left standing on it");

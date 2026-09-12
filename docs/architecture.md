@@ -81,7 +81,7 @@ is self-contained and does not read or write a developer's global pi setup.
 result. It reaches the whole plugin API, which means it reaches every game action, and
 for the first runs it was deliberately the entire action surface.
 
-The alternative was a set of typed tools — `find_build_sites`, `build_path`,
+The alternative was a set of typed tools — `describe_placement`, `build_path`,
 `operate_ride` — which is better in most respects: the schema teaches the model what is
 possible, invalid calls are rejected before they run, and the tool list is a readable
 contract. It was also, at that point, a guess. Which typed tools to build depends on
