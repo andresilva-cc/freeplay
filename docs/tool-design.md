@@ -52,7 +52,7 @@ path does not.
 | `park_status` | What the game shows on screen: money, rating, guests, every ride, and which tiles a door actually opens onto | What any of it means, and what to do |
 | `guest_feedback` | What guests are complaining about | Which complaint is worth acting on |
 | `list_ride_objects` | What exists, its footprint, whether it builds in one action | What is worth building |
-| `find_build_sites` | Where a ride fits, the ground it stands on, how far each door is from a path, and what a queue at that door would cut off | Which site, which doors, whether to build at all |
+| `find_build_sites` | Where a ride fits, the ground it stands on, how far each door is from a path, and what an entrance at that door would dead-end | Which site, which doors, whether to build at all |
 | `clear_scenery` | Removing scenery from a named patch of ground | Whether felling it is worth the money and the rating |
 | `build_flat_ride` | The create/place/entrance/exit sequence, with correct arguments | What, where, which way round, which doors, what price, whether to open |
 | `build_path` | Placement and routing around obstacles | Where paths go, and whether a run is a queue |
@@ -93,11 +93,17 @@ still making it.
 
 Nothing could remove a footpath at all, and `build_path`'s own messages named two
 situations whose only remedy is removal: an ordinary path laid over a queue unbinds it from
-its ride, and a queue laid across a through route splits the park, because guests cannot
-walk through one. Across eight sessions the model severed its park eight times, was told
-accurately what it had done each time, and looped — correct diagnosis, no lever. Naming a
-mistake the model cannot undo is the same defect as not naming it, one step later, and it
-is easier to miss because the tool that names it is working perfectly.
+its ride, and a ride's entrance claiming the queue at its door dead-ends that one tile,
+cutting off whatever lay past it. Across eight sessions the model was told it had cut its
+park in two, and looped — a diagnosis with no lever attached. Naming a mistake the model
+cannot undo is the same defect as not naming it, one step later, and it is easier to miss
+because the tool that names it is working perfectly.
+
+Those messages blamed the wrong thing while they did it. What they actually said was that a
+queue laid across a through route splits the park, because guests cannot walk through one,
+and that is not a rule the game has; how it got written down, and what believing it cost,
+is further down this page. The gap stands either way: a park that has been cut, however it
+was cut, needs a way to take the path back up.
 
 `remove_path` takes the same addressing as `build_path` — `fromX`/`fromY`/`toX`/`toY` or
 `waypoints` — so a `build_path` result's own `route` handed back as `waypoints` lifts
@@ -195,15 +201,25 @@ they ship.
 - Sites are kept at least the ride's longest side plus two tiles apart. Returning the
   three nearest tiles to a path returns one location three times, which reads as a choice
   and is not.
-- `guest_feedback` samples 100 guests; `park_status` lists the reachable path network in
-  full up to 250 tiles and the last dozen park messages. Sampling data is not choosing
-  with it.
+- `guest_feedback` samples 100 guests, and says so; `park_status` reports the last dozen
+  park messages. Its `paths` samples nothing: it carries the whole reachable network as
+  runs — straight lines of one kind of path, each with its ends, its tile count, a queue's
+  bound ride, and `cutsIfBlocked` — plus the junctions, the dead ends, and `islands`, the
+  fragments the gate cannot reach at all, with any stranded ride doors named on them. Above
+  400 reachable tiles severance is not worked out, and `severingComputed` false says so
+  rather than reporting that nothing severs. The `ground` census beside it counts clear,
+  scenery, sloped, water, path and built tiles per 32-tile block, and says
+  `complete: false` when the park owns more blocks than the 64 it shows. Sampling data is
+  not choosing with it, as long as the result says which it did.
 - Each access option carries `queueCutsOff`: how many path tiles stop being reachable from
-  the park entrance if a queue reaches that door. A queue does not stop at the door — it is
-  laid onto the footpath it joins, and guests cannot walk through one — so joining a tile
-  that carries a through route splits the park in two. That is a count of what would
-  happen, and the list is deliberately *not* reordered by it; the ordering stays distance
-  to a path, and which door to accept the cost at is the model's.
+  the park entrance once an entrance here claims the queue on that door. Guests walk a queue
+  like any other path; what severs a route is a ride *claiming* a tile, and it dead-ends
+  exactly the one its door opens onto. So a door on bare ground is 0, and only a door
+  already carrying a footpath or an unclaimed queue can be above 0. That is a count of what
+  would happen, and the list is deliberately *not* reordered by it; the ordering stays
+  distance to a path, and which door to accept the cost at is the model's. The field is
+  right and has always been the right thing to report; the reason it was first added was
+  false, which is the subject of the section on it below.
 - `find_build_sites` tries a ride at rotations 0 and 1 when none is given, because 2 and 3
   cover exactly the same tiles with the ride facing the other way. A shop is tried at all
   four, because a stall's rotation decides which single neighbour guests are served from.
@@ -261,10 +277,10 @@ inside the game.
 This is not hypothetical here. OpenRCT2 reported a ride as `status: "open"` with a real
 excitement rating when nothing had been built on the ground. A later version of the build
 tool reported "8 of 8 path tiles placed" while the ride sat unreachable, because it was
-counting actions it had queued rather than tiles that existed. And a ride whose entrance
-is touched by an ordinary footpath looks finished from every angle the API offers, while
-guests crowd around it and never board, because an entrance needs a *queue* path bound to
-that ride.
+counting actions it had queued rather than tiles that existed. And `guestsCanReach`
+reported `false` for four rides while the game recorded 29 boardings at them, because the
+tool demanded a bound queue the game has never required: a guest steps onto a ride from
+ordinary path abutting its door, one at a time.
 
 So every step verifies by reading the world back, and reports what it found rather than
 what it attempted. Game actions apply on a later tick, so a tool that acts and checks in
@@ -423,6 +439,109 @@ But the shape of that list is the finding rather than the fixes in it: every ent
 tool that passed its own tests, and most were found by asking what a result would look like
 if it were wrong, not by a run failing. The model's actual play has still barely been
 measured.
+
+### A complete list the model could not use
+
+`park_status` used to hand the reachable path network over as a flat list of tiles,
+`reachableSample`, capped, with `reachableSampleComplete` beside it saying whether the cap
+had bitten. It had, and a run read the sample as the network: it reasoned about what
+connected to what among the tiles it had been shown, as though nothing else were paved, and
+the park it was describing was not the park. That is why the list was made complete rather
+than merely longer. A window the model cannot see the edge of is not a window, it is a false
+map, and the answer to one is never a bigger cap — it is the whole thing, or a number saying
+what was left out.
+
+Completeness turned out not to be sufficient. Handed all 31 reachable tiles of a small park,
+the model still could not do set membership over them, and said so in as many words:
+"(51,26) and (52,26) are BOTH in the reachableSample! Why are they not connected?" The list
+was correct, complete, and the wrong shape. It answered *which tiles*, when every question
+the model actually had was *what joins what* — and across nine classified runs, 63% of the
+spatial failures were connectivity: a path laid to nowhere, a queue dead-ending the only
+route through, an ordinary path laid back over its own queue.
+
+So `paths` reports the shape instead: runs, junctions, dead ends, and the islands the gate
+cannot reach with the ride doors stranded on them. Completeness survived the change and got
+better for it, because it stopped being a promise and became something the reader can check
+— every reachable tile lies on exactly one run, so the runs' `tiles` add up to
+`reachableTiles`. It is also cheaper: the tile list cost about 1,111 tokens at its cap,
+while runs scale with the number of corridors rather than the number of tiles. That is what
+makes re-sending the whole network every turn affordable, which matters more than it sounds,
+because what survives a context compaction is stale coordinates — three consecutive
+summaries in one run carried a demolished ride's — so the live shape has to arrive whole
+each turn rather than be remembered.
+
+Where the whole answer genuinely cannot be given, the gap is named. Severance costs a walk
+of the network per tile, on the game's own thread where a long loop is a frozen game, so
+above 400 reachable tiles it is not computed and `severingComputed` is false. Reporting 0
+there would have been the same defect as the truncated sample, one field along: a number
+that looks like an answer, in exactly the parks too large to have a way round everything.
+
+### Six places agreeing with each other is not evidence
+
+The worst of them belongs on that list and is not on it, because nothing was broken. Every
+tool involved did exactly what it was written to do. What they were written from was a rule
+the game does not have.
+
+The rule was that guests cannot walk through a queue — a queue reaches a ride and dead-ends
+there, so laying one across a route guests use splits the park in two. Nobody measured it.
+It was written down once and then read back out of six places that had each taken it from
+one of the others: the reachability flood in `src/park/paths.ts`, `build_path`'s severance
+warnings, `queueCutsOff` in `find_build_sites`, four tool descriptions, the prompt, and a
+test written to hold it honest. Six things in step with each other, one source between
+them, and the game disagreeing with all six.
+
+What settled it was reading the thing guest movement is actually made of. Every footpath
+element carries an `edges` bitfield — the sides a guest may leave that tile by — and
+`PathGetPermittedEdges`, the one function the guest pathfinder asks which way it may go,
+returns that bitfield verbatim. The bits are not a hint about connectivity; they are the
+connectivity. Turning two tiles of a running park's main walk into a queue changed no bit
+at all, 10 before and 10 after, so guests walked straight over it. Binding a queue to a
+ride's entrance did change bits, and changed exactly one link: the tile the door opens onto
+lost its edge to what lay beyond, 10 to 3, and stripping the queue put it back. A queue
+tile in the middle of a bound line kept its edge to the ordinary path beside it. Across 35
+footpaths there was not one pair of tiles where the two sides disagreed about a link.
+
+So a queue is ordinary walkable path, and what severs a route is a ride *claiming* a tile.
+An entrance dead-ends exactly one: the tile its door opens onto.
+
+Believing otherwise cost in both directions at once, which is most of why it survived.
+`queueCutsOff` is the field that exists to stop the model cutting up its own park. A door
+standing on bare ground was charged the worst severance of its four neighbours, on the
+theory that the queue run leading to it would block the path it joined — so the field added
+to prevent that mistake was telling the model that building beside the main path would
+commit it. Those are 0 now, measured rather than assumed. A door already carrying a queue
+no ride had claimed read 0, and is now measured, because that is the one tile an entrance
+really does dead-end. Meanwhile `guestsCanReach` demanded a bound queue before it would
+call a ride reachable, so it called rides unreachable while guests were riding them: one
+park went from 48 to 96 paying customers on a ride the tool was still reporting as cut off,
+with 94 of its 106 guests standing on the far side of the queue they supposedly could not
+cross.
+
+The correction moved a fact rather than deleting one. A bound queue is throughput, not
+admission: without one, the single guest at the door is the whole line, and anyone who
+arrives while they are still there is turned away. That is what `hasQueue` now says, and it
+is the difference between a ride taking 3 customers in a run and another taking 16.
+Reachability and throughput had been folded into one flag, and the flag was answering
+neither question.
+
+The test is the part worth keeping. There was one, written for exactly this rule, and it
+could not fail: its queue was a dead end with no path beyond it, so the true rule and the
+false one returned the same answer on the only ground it ever ran on. That is the fifth
+test this session alone has caught proving something other than what it claimed, which is
+too many to file as accidents — it is a property of how tests get written here. A test
+whose fixture cannot tell a rule from its negation is not thin coverage; it is a green
+light wired to nothing, and it is worse than no test at all, because the rule it appears to
+guard stops being asked about. The replacements are built the other way round: one lays a
+queue across a walk *with path beyond it* and asserts guests still get past, one cuts the
+single edge the game actually cuts and asserts they do not, and a third asserts the
+sentence is absent from the tool descriptions — because a falsehood copied into six places
+comes back from a stale branch or a half-remembered paragraph, and a description is read on
+every turn its tool is in play.
+
+The general point is the one this whole section keeps arriving at from different sides. The
+bridge's job is to report what the game says, and agreement between our own components is
+not a reading of the game. Six copies of an unmeasured claim are one claim, and the thing
+that would have caught it — asking the game — was available the whole time.
 
 ## The clock is the model's problem, and that is a reversal
 

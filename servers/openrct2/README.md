@@ -50,7 +50,7 @@ session state, and the connected client's session id becomes unknown.
 
 | Tool | Source | |
 |---|---|---|
-| `park_status` | `tools/status.ts` | Objective, money, rating, guests, staff, park messages, the walkable path network, and every ride with its doors, door tiles and whether guests can reach it |
+| `park_status` | `tools/status.ts` | Objective, money, rating, guests, staff, park messages, the walkable path network as runs, junctions, dead ends and islands, a per-block ground census, and every ride with its doors, door tiles and whether guests can reach it |
 | `guest_feedback` | `tools/status.ts` | Guest thoughts, counted |
 | `list_ride_objects` | `tools/status.ts` | What can be built, with footprints |
 | `find_build_sites` | `tools/sites.ts` | Where a given ride fits, the ground it stands on, and every door position |

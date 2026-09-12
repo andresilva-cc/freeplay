@@ -63,7 +63,7 @@ what each one does is in its own description, which is what the model reads.
 
 | Tool | |
 |---|---|
-| `park_status` | Objective, money, rating, guests, staff, park messages, the walkable path network, and every ride: its doors, the tiles those doors open onto, whether a queue is bound to it, and whether guests can reach it |
+| `park_status` | Objective, money, rating, guests, staff, park messages, the walkable path network as runs, junctions, dead ends and stranded islands, a per-block census of the ground the park owns, and every ride: its doors, the tiles those doors open onto, whether a queue is bound to it, and whether guests can reach it |
 | `guest_feedback` | Guest thoughts, counted over a sample |
 | `list_ride_objects` | What can be built, with footprints |
 | `find_build_sites` | Where a given ride fits, the ground it will stand on, and where each door can go on it |
@@ -90,8 +90,8 @@ whatever it is asked for.
 `set_game_speed` is the same story about the clock, and `remove_path` and `buy_land` are
 the two most recent. `remove_path` closed a gap rather than an ergonomic problem: nothing
 could delete a footpath at all, while `build_path` could lay a path over a queue (which
-unbinds it from its ride) or a queue across a through route (which splits the park, because
-guests cannot walk through one). It takes `build_path`'s own addressing, so that call's
+unbinds it from its ride) or run a queue up to a door whose entrance then claims it (which
+dead-ends that tile and cuts off whatever lay past it). It takes `build_path`'s own addressing, so that call's
 `route` passed back as `waypoints` lifts exactly what it laid, and it reports how much of
 the network is still reachable from the gate and any ride whose bound queue went with the
 path. `buy_land` wraps `landbuyrights`, which is the only lever a plugin has over park
@@ -148,20 +148,29 @@ test covered was one of the ones that cannot tell the two apart. The tests now p
 rotations of the 1x4, 2x4 and 4x4 pieces to the tiles the game lays, and one test states the
 rule itself, so it fails on the rule rather than on a table someone could regenerate wrong.
 
-**Queues.** A ride entrance needs a *queue* path on the tile its door opens onto, bound
-to that ride. An ordinary footpath touching the door looks identical through the API and
-does nothing. The binding is `FootpathElement.ride`, set by the game when the queue
-connects; check it rather than assuming.
+**Queues.** A ride entrance claims the queue on the tile its door opens onto, and the
+binding is `FootpathElement.ride`, set by the game when the queue connects; check it rather
+than assuming. What the binding buys is throughput, not admission. A guest boards off an
+ordinary footpath abutting the door — `PeepInteractWithEntrance` puts whoever walks up
+straight into queuing state — but only one at a time, because `shouldGoOnRide` with
+`atQueue` false turns away anyone arriving while that guest is still there. A bound queue
+is what lets several wait at once, which is the difference between a ride taking 3
+customers in a run and another taking 16. So `hasQueue` is a throughput signal and
+`guestsCanReach` is a separate question, and folding the two together reported four rides
+unreachable across 29 recorded boardings.
 
-A queue is walkable in only one sense. A guest walks the whole length of a queue to reach
-the ride at the end of it, but cannot cut *through* one to get somewhere else, so it is
-not a shortcut to anywhere. A reachability search therefore expands from a queue tile
-to further queue tiles — following the line to its door — and never back out onto
-ordinary path (`walkableFromParkEntrance` in `src/park/paths.ts`). Getting this wrong is
-expensive in either direction: treating a queue as ordinary path marks everything behind
-it reachable when it is not, and refusing to expand from a queue at all marks every ride
-with more than a one-tile queue unreachable, which is worse, because that is the normal
-case.
+Otherwise a queue is ordinary walkable path, and a reachability search must not invent a
+rule about it. This one did: it expanded from a queue tile only to further queue tiles, on
+the theory that a guest cannot cut *through* a queue to get somewhere else. They can —
+converting two tiles of a running park's main walk into a queue left every `edges` bit
+unchanged, 10 before and 10 after. `walkableFromParkEntrance` in `src/park/paths.ts` now
+floods the game's own graph instead: the `edges` bitfield of each footpath element, which
+is what `PathGetPermittedEdges` hands the guest pathfinder, with both sides of a link
+required to claim it. Read that way there is no rule left to get wrong. When an entrance
+claims a queue, the game itself clears the bit on the far side of the door tile — 10 to 3
+where it was measured — and the flood stops there because the game stopped it. The
+measurement, and the six places that had agreed with each other about the invented rule,
+are in [tool-design.md](tool-design.md).
 
 **Actions apply on the next tick.** Nothing a game action does is visible within the
 same `evaluate` call. Tools that need to act then verify use the deferred-result path
