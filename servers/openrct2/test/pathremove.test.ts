@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { FakeGame } from "./fakeGame.ts";
 import type { FakeElement, FakeRide } from "./fakeGame.ts";
@@ -534,4 +536,48 @@ test("tiles that stay put with no refusal read say that, rather than borrowing a
         assert.doesNotMatch(outcome.detail, /The game refused the removal/,
             "no refusal was read, so none may be reported");
     }, { inert: true });
+});
+
+/**
+ * `remove_path` exists because two path mistakes had no remedy. One of the two was
+ * described by a rule the game does not implement: a queue was said to split the park
+ * because guests cannot walk through one. They can. What dead-ends is the single tile a
+ * ride's entrance claims for its door, and only once a ride owns the line.
+ *
+ * Both halves are pinned - the mechanic that is true, and the sentence that is not - because
+ * the false one is the half that comes back.
+ */
+test("remove_path names the entrance claim as what severs, not the queue", function () {
+    const definitions = getMcpToolDefinitions(PathRemoveTools);
+
+    assert.equal(definitions.length, 1, "remove_path is registered once");
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /An ordinary path laid over a queue unbinds that queue from its ride/,
+        "the first mistake removal undoes");
+    assert.match(text, /entrance claiming a queue, not the queue itself, dead-ends the tile its door opens onto/,
+        "and the second, named by the cause the game actually implements");
+    assert.doesNotMatch(text, /cannot walk through/,
+        "guests cross a queue no ride has claimed like any other path, measured in the running game");
+    assert.doesNotMatch(text, /splits the park/,
+        "one tile dead-ends; the line is not a wall");
+});
+
+test("the module note on why removal exists carries the same rule", function () {
+    // Nothing imports a comment, so an edit to one breaks no build and fails no test. This
+    // paragraph is where the next reader of pathremove.ts learns why the tool is here, and
+    // it carried the disproven rule for as long as the description did.
+    // The leading `*` of each comment line goes with the newline, so rewrapping the
+    // paragraph cannot fail this.
+    const source = readFileSync(fileURLToPath(new URL("../src/park/pathremove.ts", import.meta.url)), "utf8")
+        .replace(/\n\s*\*/g, " ")
+        .replace(/\s+/g, " ");
+
+    assert.match(source, /a ride's entrance claiming a queue - not the queue itself - dead-ends the tile its door opens onto/,
+        "the mechanic, in the same words the tool description uses");
+    assert.doesNotMatch(source, /guests cannot walk through/,
+        "and not the rule the game does not implement");
+    assert.doesNotMatch(source, /splits the park/,
+        "nor the consequence that rule was used to claim");
 });

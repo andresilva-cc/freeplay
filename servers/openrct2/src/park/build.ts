@@ -713,7 +713,8 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                                     + " only from the neighbour on the side it faces, which at rotation "
                                     + String(request.rotation) + " is " + String(counter.x) + "," + String(counter.y)
                                     + ". A path on any of its other three sides touches a wall and serves nobody."
-                                    + " The tiles guests can walk to are park_status `paths.reachableSample`."
+                                    + " The tiles guests can walk to are the ones park_status covers with"
+                                    + " `paths.runs`."
                         });
                     }
 

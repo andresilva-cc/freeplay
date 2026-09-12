@@ -35,8 +35,13 @@ function readPrompt(): string {
 const FACTS: { fact: string; why: string }[] = [
     { fact: "`open_park` is the only thing in this bridge that opens it", why: "nothing else here admits guests, and `open_park.ts` says it with the same care: `evaluate` can still set the flag, which is what five earlier runs did" },
     { fact: "no guests exist otherwise", why: "a closed park has no guests to measure anything with" },
-    { fact: "A queue bound to that ride sits on its `entranceDoor` tile: `hasQueue`", why: "an entrance needs a queue, not a footpath" },
-    { fact: "`guestsCanReach` is what proves it; `hasQueue` alone proves nothing, because a queue can be an island", why: "the failure that looks finished from every angle the API offers" },
+    { fact: "`guestsCanReach` is that walk and nothing else, because a guest boards off ordinary path abutting the door", why: "guestsCanReach is the entrance door tile being walkable from the gate and nothing more; demanding a queue of it reported four rides unreachable through 29 recorded boardings" },
+    { fact: "`hasQueue` is not on that list", why: "a ride with no bound queue still takes guests, so pinning hasQueue as an admission condition was the disproven rule" },
+    { fact: "throughput rather than admission", why: "what a bound queue actually buys: several guests waiting at once instead of one" },
+    { fact: "one run measured 3 customers against 16", why: "the size of the throughput difference, and a number the model can read nowhere else" },
+    { fact: "`brokenDown` is shut until a mechanic walks to it, and", why: "a broken ride is the one way an open ride earns nothing, and it is stated where the ride-is-open condition is, not in a dispatch list at the end" },
+    { fact: "`hire_staff` is what puts a mechanic in the park", why: "hire_staff was named only in the closing dispatch list and went uncalled in a run with a breakdown" },
+    { fact: "counted nowhere but `guest_feedback`", why: "guest_feedback reads and so has no slot in a list about changing things; this is the one place it is named beside the question it answers" },
     { fact: "A path reaches its `exitDoor`, or guests board and cannot get off: `exitConnected`", why: "both doors matter, not just the entrance" },
     { fact: "Guests weigh `price` against that ride's `value`", why: "the one rule that makes a price good or bad" },
     { fact: "Miss one and the ride is finished, paid for, and earning nothing", why: "an unmet condition is a paid-for zero, not a neutral outcome" },
@@ -48,22 +53,32 @@ const FACTS: { fact: string; why: string }[] = [
     { fact: "Money is in tenths: 1000 means 100.00", why: "every price argument in every tool" },
     { fact: "`inspectionInterval` is an index from 0 to 6, not minutes", why: "the values look like minutes and are not" },
     { fact: "Ratings are fixed-point (652 is 6.52, -1 unrated)", why: "a rating read as a plain number is off by a hundred" },
-    { fact: "a queue laid across a route splits the park", why: "guests walk a queue to its ride but never through it" },
-    { fact: "an ordinary path laid back over a queue unbinds it from its ride", why: "undoes a working entrance invisibly" },
+    { fact: "A queue is ordinary walkable path, and guests cross one no ride has claimed like any other path", why: "measured live: turning two tiles into a queue changed no edge bit at all, so the old rule that a queue splits the park was false and sent the model round obstacles that were not there" },
+    { fact: "What severs a route is a ride claiming a tile: binding a queue to an entrance dead-ends the one tile that door opens onto", why: "the real severing rule, and the only one - the game clears the far-side edge of the tile at the door and nothing else" },
+    { fact: "0 for a door on bare ground, counted for a door already carrying an unbound queue", why: "which doors queueCutsOff charges, now that it no longer charges a bare-ground door the worst of its neighbours" },
+    { fact: "path laid back over a queue unbinds it from its ride", why: "undoes a working entrance invisibly; pinned without its article because the sentence moved to the front of a bullet" },
     { fact: "counts the park gate and every ride door as a ride", why: "what `nearestRideDistance` is actually measuring" },
     { fact: "an unbounded loop freezes the game with no error and ends the run", why: "evaluate runs on the game's own thread" },
     { fact: "use `keys(value)`", why: "`Object.keys` is empty on game objects" },
     { fact: "`totalFound` is how many exist altogether", why: "the site list is a window, not the whole truth" },
     { fact: "`access` shows at most 8 of `accessTotal`", why: "the door list is a window too" },
-    { fact: "`paths.reachableSample` is every reachable tile while `reachableSampleComplete` is", why: "when the sample is the truth and when it is a spread" },
+    { fact: "every reachable tile is on exactly one run, and their `tiles` add up to `reachableTiles`", why: "the arithmetic that replaced the flat tile list, and the only check the model can run on the payload it was handed" },
+    { fact: "`severingComputed` false says so rather than reporting nothing severs", why: "a missing figure read as a zero is the lie the flag exists to prevent" },
     { fact: "`queueCutsOff` measures that before you build", why: "the cost of a door is countable ahead of time" },
-    { fact: "Neither is permanent: `remove_path` takes the footpath or queue off the tiles it names", why: "the two path mistakes above had no remedy for eight sessions, and the model looped instead of undoing them" },
-    { fact: "a `build_path` result's `route` handed back as its `waypoints` lifts exactly what that call laid", why: "the one addressing that undoes a build_path without working any coordinate out" },
+    { fact: "`remove_path` takes the footpath or queue off the tiles it names", why: "the path mistakes above had no remedy for eight sessions, and the model looped instead of undoing them" },
+    { fact: "handed back to `remove_path` as its `waypoints` it lifts exactly those, so a run laid wrong is not permanent", why: "the undo now sits in the build recipe beside the build_path that lays the run, because a run of three failing build_path retries is where the model needed it and Traps is not where it was looking" },
     { fact: "Nothing goes on ground the park does not own, and `buy_land` buys only the tiles a scenario has put up for sale", why: "a tile outside the park is the one situation buying resolves, and an unlisted tile cannot be made buyable" },
+    { fact: "A rectangle that is part for sale buys the part that is rather than failing, and `buy_land`'s `notOwned` names the tiles it did not get, so the purchase is itself the reading", why: "the model reasoned verbatim `I don't know which tiles are for sale` and gave up; the answer has to arrive before `no tool lists which tiles those are` reads as a closed door" },
     { fact: "Buying a sloped tile makes it the park's, not flat", why: "there is no levelling tool, so buying is not a remedy for ground a ride will not stand on" },
-    { fact: "How fast it runs is `set_game_speed`: 1 is normal, 2 twice, 3 four times, 4 eight times", why: "these are the game's speed settings and not multipliers, so 8 is out of range and 4 is what eight times is called" },
+    { fact: "How fast it runs is `set_game_speed`, whose `speed` is a setting and not a multiplier", why: "the trap is that the numbers look like multipliers; the scale itself now lives once, on the `speed` argument, pinned below" },
+    { fact: "`find_build_sites` is the largest single payload in a run", why: "measured across nine sessions: find_build_sites averages 1700 tokens and peaks at 6000, park_status averages 694 and peaks at 1506. The prompt named park_status, which sent the model economising on the cheaper of the two" },
+    { fact: "the only picture of the park there is, and its size in tiles is its price", why: "view_map is the one tool that draws rather than reports, and its cost scales with the window asked for, which no tool description says" },
     { fact: "while it is `paused` no scenario time passes at all", why: "scenario time is charged against thinking time, and one test run lost a full scenario year that way" },
-    { fact: "`park_status` carries both, as `speed` and `paused`", why: "a paused game is otherwise indistinguishable from a running one nothing is happening in, and a run can sit frozen to the end of it" }
+    { fact: "`park_status` carries both, as `speed` and `paused`", why: "a paused game is otherwise indistinguishable from a running one nothing is happening in, and a run can sit frozen to the end of it" },
+    { fact: "When the context fills it is replaced by a written summary", why: "the model has no other way to know its own memory is not the transcript; measured in session 01a092cd, three consecutive summaries kept a demolished ride at its dead coordinates" },
+    { fact: "the summaries are additive: each carries the last one's facts forward and has no way to say that one of them has stopped being true", why: "why a stale coordinate is never corrected rather than merely late - pi's own update prompt says PRESERVE all existing information from the previous summary" },
+    { fact: "A ride demolished and rebuilt elsewhere still reads at its first coordinates there", why: "the exact measured failure: a Pirate Ship built at (56,26), demolished, rebuilt at (54,31), still summarised at (56,26)" },
+    { fact: "Nothing in a summary was read from the park", why: "the fact that settles which text is evidence, with no procedure attached to it" }
 ];
 
 /**
@@ -120,6 +135,88 @@ test("the prompt tells the model what the world is, never what to want", functio
                 + ". docs/tool-design.md: a fact about the world stays, a steer goes."
         );
     }
+});
+
+/**
+ * A fact that lives in two places is a fact paid for twice, on every turn of every run. A fact
+ * that lives in neither is worse, and silent. So where a fact was cut from one place it is
+ * pinned in the other, and the prompt is checked for having let it back in.
+ */
+test("the game speed scale is stated once, in the schema and not in the prompt", function () {
+    // The four-item scale was in the prompt, in `set_game_speed`'s tool description and in
+    // `park_status`'s at the same time. The surviving copy is `set_game_speed.speed`, because
+    // that is the text read at the moment a speed is being chosen, and a speed outside 1-4 is
+    // refused only after the turn that asked for it is already spent.
+    const tools = getMcpTools();
+    const speedTool = tools.filter(function (tool) { return tool.name === "set_game_speed"; })[0];
+
+    assert.ok(speedTool, "set_game_speed is registered");
+
+    const properties = speedTool.inputSchema.properties as Record<string, { description: string }>;
+
+    assert.match(properties.speed.description, /1 is normal, 2 runs the simulation twice as fast, 3 four times, 4 eight times/,
+        "the scale has to survive somewhere the model reads, and this is where it was kept");
+
+    const prompt = readPrompt();
+
+    assert.doesNotMatch(prompt, /1 is normal, 2 twice/,
+        "the prompt's copy was cut; it names `set_game_speed` and the tool states the numbers");
+    assert.doesNotMatch(prompt, /4 eight times/);
+});
+
+test("park_status does not restate the speed scale a third time", function () {
+    // It still has to say what its own `speed` and `paused` fields are - that is the fields'
+    // meaning and nothing else carries it - but not what the numbers mean.
+    const tools = getMcpTools();
+    const status = tools.filter(function (tool) { return tool.name === "park_status"; })[0];
+    const text = String(status.description);
+
+    assert.match(text, /`speed` and `paused` are the two values `set_game_speed` sets/,
+        "which fields they are, and which tool sets them, stays");
+    assert.doesNotMatch(text, /1 is normal|2 twice|four times|eight times/,
+        "the scale belongs to `set_game_speed.speed`, and a third copy is a third payment for it");
+});
+
+test("the footprint geometry clear_scenery dropped still stands in find_build_sites", function () {
+    // `clear_scenery` explained that `x`,`y` is a build origin and not a centre, which is the
+    // same explanation `find_build_sites` carries - and find_build_sites is the tool that hands
+    // the rectangle over, so it is the one that has to say not to recompute it.
+    const tools = getMcpTools();
+    const sites = tools.filter(function (tool) { return tool.name === "find_build_sites"; })[0];
+    const clear = tools.filter(function (tool) { return tool.name === "clear_scenery"; })[0];
+    const sitesText = String(sites.description);
+
+    assert.match(sitesText, /`x`,`y` is the build origin, which sits inside the footprint but is not a corner of it/,
+        "what the origin is");
+    assert.match(sitesText, /a square centred on it is the wrong ground for every footprint but a 3x3/,
+        "and why a recomputed rectangle is wrong");
+    assert.match(sitesText, /Never work the rectangle out from `x`, `y` and the ride's size/,
+        "and the instruction that avoids the error, at the tool that hands the rectangle over");
+
+    const clearText = String(clear.description);
+
+    assert.match(clearText, /do not work them out\s+from the ride's size and do not use the site's `x`,`y`/,
+        "clear_scenery keeps the short form: copy the four corners, do not derive them");
+    assert.doesNotMatch(clearText, /A 4x4 ride runs from its origin/,
+        "the worked examples were the duplicated half and live in find_build_sites");
+});
+
+test("find_build_sites.rotation still says why it can be left out", function () {
+    // Never passed in 34 calls across nine sessions, which is the tool being used correctly.
+    // Cutting the text that produces that would cost more than the text does, so both of its
+    // facts are pinned: the tool already covers every distinct rotation, and a shop's rotation
+    // is a serving side rather than a footprint.
+    const tools = getMcpTools();
+    const sites = tools.filter(function (tool) { return tool.name === "find_build_sites"; })[0];
+    const properties = sites.inputSchema.properties as Record<string, { description: string }>;
+    const rotation = properties.rotation.description;
+
+    assert.match(rotation, /already searches every rotation that covers different ground/,
+        "why passing one is unnecessary");
+    assert.match(rotation, /a shop, whose rotation is which neighbour guests are served from/,
+        "and the one case where rotation means something other than a footprint");
+    assert.match(rotation, /4 is refused rather than read as 0/,
+        "the bound, which is the part that stops a wasted turn");
 });
 
 /**
@@ -189,6 +286,47 @@ test("no sentence in the prompt opens by telling the model what to do", function
     }
 });
 
+/**
+ * Naming a tool is not the same as making it findable.
+ *
+ * Five of fourteen tools were never called once in session 01a092cd - `remove_path`,
+ * `guest_feedback`, `buy_land`, `hire_staff` and `evaluate` - and every one of them was
+ * already named in the prompt. Four were named only in the closing "Which tool changes what"
+ * sentence, which the model reads at the end of a prompt whose problems were all described
+ * further up, and a tool that only reads has no slot in a list about changing things at all.
+ *
+ * So the check is position, not presence: each of the five has to be named somewhere above
+ * "## Each turn", which is where the situation it answers is stated. Falling back to naming
+ * it only in the dispatch list is the regression, and the one the previous test cannot see.
+ */
+const TOOLS_NAMED_AT_THE_PROBLEM: { tool: string; problem: string }[] = [
+    { tool: "remove_path", problem: "a path or queue that went down wrong - the model retried the same failing build_path three times instead" },
+    { tool: "guest_feedback", problem: "a ride that meets every condition and still takes nobody, which was the run's central question" },
+    { tool: "buy_land", problem: "ground the park does not own, and which tiles a scenario is selling" },
+    { tool: "hire_staff", problem: "a ride the game has marked brokenDown, which no other tool reopens" },
+    { tool: "evaluate", problem: "everything the typed tools do not reach, including a tile's ownership" }
+];
+
+test("the five tools no run has called are named where their problem is stated", function () {
+    const raw = readFileSync(PROMPT_PATH, "utf8");
+    const dispatch = raw.indexOf(TURN_HEADING);
+
+    assert.ok(dispatch >= 0, "there is no \"" + TURN_HEADING + "\" section, so this is checking nothing");
+
+    const problems = raw.slice(0, dispatch);
+
+    for (let i = 0; i < TOOLS_NAMED_AT_THE_PROBLEM.length; i++) {
+        const entry = TOOLS_NAMED_AT_THE_PROBLEM[i];
+
+        assert.ok(
+            problems.indexOf("`" + entry.tool + "`") >= 0,
+            "prompt.md names `" + entry.tool + "` nowhere before \"" + TURN_HEADING + "\", so the only place the"
+                + " model meets it is the dispatch list at the end - not beside " + entry.problem + "."
+                + " All five of these were named in the prompt and called zero times in session 01a092cd."
+        );
+    }
+});
+
 test("every tool the prompt names is a tool that exists", function () {
     const prompt = readFileSync(PROMPT_PATH, "utf8");
     const tools = getMcpTools();
@@ -210,4 +348,21 @@ test("every tool the prompt names is a tool that exists", function () {
 
     assert.ok(registered.evaluate, "the prompt sends the model to `evaluate` for everything the typed tools miss");
     assert.ok(named.length > 5, "the tool-name scan found almost nothing, so it is not checking anything");
+});
+
+/**
+ * And the other direction. A tool the prompt never names is one the model has to find in
+ * the tool list on its own; `view_map` shipped and went unnamed here, which is how this
+ * check came to exist.
+ */
+test("every tool that reaches the game is named in the prompt", function () {
+    const prompt = readFileSync(PROMPT_PATH, "utf8");
+    const missing = getMcpTools().filter(function (tool) {
+        return prompt.indexOf("`" + tool.name + "`") < 0;
+    }).map(function (tool) {
+        return tool.name;
+    });
+
+    assert.deepEqual(missing, [], "prompt.md names no " + missing.join(", ")
+        + ", so nothing in the text the model reads every turn says the tool is there");
 });

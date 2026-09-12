@@ -476,8 +476,8 @@ test("a stall with a path against its back wall is not reachable, and is told wh
         assert.match(detail, /only from the neighbour on the side it faces/, "the rule itself is not stated");
         assert.match(detail, /other three sides touches a wall and serves nobody/,
             "the other half of the rule - why the three remaining neighbours are useless - is not stated");
-        assert.match(detail, /The tiles guests can walk to are park_status `paths\.reachableSample`/,
-            "where the reachable tiles are listed is a fact and has to stay");
+        assert.match(detail, /The tiles guests can walk to are the ones park_status covers with `paths\.runs`/,
+            "where the reachable tiles are reported is a fact and has to stay");
         assert.doesNotMatch(detail, /Run build_path to 12,10/,
             "which tile to pave, and whether to pave one at all, is the model's call");
 

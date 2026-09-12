@@ -180,24 +180,10 @@ export class GameSpeedTools {
     @mcpTool({
         name: "Set the game speed",
         description: [
-            "Set how fast the simulation runs, and pause or unpause it.",
+            "Set how fast the simulation runs, and pause or unpause it. Pass either or both in one call.",
             "The scenario clock keeps running between your calls, so the time you spend deciding is charged",
             "to the scenario: months and years pass while you think, and the objective's deadline is in",
-            "scenario time.",
-            "`speed` is the game's speed setting, not a multiplier: " + SPEED_HELP + ".",
-            "`paused` stops the simulation dead — no guests arrive or move, no ride earns, no day passes —",
-            "until it is unpaused.",
-            "While paused the game refuses every action that changes the map, with \"Construction not possible",
-            "while game is paused!\". `build_path`, `remove_path`, `buy_land`, `clear_scenery` and `operate_ride`",
-            "`demolish` each fire such an action and report that refusal in their own result; `build_flat_ride`",
-            "refuses the whole call while the game is paused, and builds and charges nothing.",
-            "Settings do go through: `operate_ride` opening, closing, pricing and inspection intervals,",
-            "`hire_staff`, `open_park`, and this tool itself. Reading is never affected.",
-            "A ride opened while paused is open, but takes its first guest only once the clock runs again.",
-            "Pass either or both in one call.",
-            "The result reports the speed and pause state the game reads back as afterwards, which is what",
-            "`ok` is about; `speed` in the result is the setting in effect, not the one you asked for.",
-            "When to run fast, when to run slow, and when to pause are your decisions."
+            "scenario time."
         ].join(" "),
         inputSchema: {
             type: "object",
@@ -209,16 +195,20 @@ export class GameSpeedTools {
                     maximum: MAX_SPEED,
                     description: "The game's speed setting: " + SPEED_HELP
                         + ". These are settings, not multipliers, so eight times normal is 4 and there is no 8."
+                        + " `speed` in the result is the setting in effect afterwards, not the one you asked for."
                         + " Omit to leave the speed as it is."
                 },
                 paused: {
                     type: "boolean",
                     description: "true to pause the simulation, false to let it run. While paused no scenario"
-                        + " time passes at all, and the game refuses every action that changes the map -"
-                        + " build_path, remove_path, buy_land, clear_scenery, demolishing a ride, and the"
-                        + " track and door steps of build_flat_ride - with \"Construction not possible while"
-                        + " game is paused!\", which each of those tools reports back in its own result."
-                        + " Ride settings, hire_staff, open_park and reading still work."
+                        + " time passes at all, and the game refuses every action that changes the map, with"
+                        + " \"Construction not possible while game is paused!\". build_path, remove_path,"
+                        + " buy_land, clear_scenery and operate_ride demolish each fire such an action and"
+                        + " report that refusal in their own result; build_flat_ride refuses the whole call"
+                        + " while the game is paused, and builds and charges nothing. Settings do go through:"
+                        + " operate_ride opening, closing, pricing and inspection intervals, hire_staff,"
+                        + " open_park and this tool itself, and reading is never affected. A ride opened while"
+                        + " paused is open, but takes its first guest only once the clock runs again."
                         + " Omit to leave it as it is."
                 }
             },

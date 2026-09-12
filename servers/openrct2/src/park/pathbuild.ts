@@ -302,8 +302,8 @@ function buildingOnPoint(points: Tile[]): string | null {
         if (isParkGate(points[i])) {
             return "Point " + String(i) + " of this run, " + tileName(points[i]) + ", is the park entrance"
                 + " BUILDING. A path cannot be laid on it. Start from a path tile beside the gate instead:"
-                + " park_status gives the gate's own tiles as `paths.entrance` and the tiles guests can walk to"
-                + " as `paths.reachableSample`. Nothing was built.";
+                + " park_status gives the gate's own tiles as `paths.gate` and the tiles guests can walk to"
+                + " as `paths.runs`. Nothing was built.";
         }
     }
 
@@ -360,8 +360,9 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
             connectedToPark: false,
             detail: "No level, owned, unobstructed route" + between + ". Every tile of a run has to be owned,"
                 + " flat and at the same height as the tile the run starts on. Clear the way, or give waypoints"
-                + " that go round it. Existing queues also block a route: guests cannot walk through a queue, so"
-                + " paths are never laid across one. Nothing was built."
+                + " that go round it. Existing queues also block a route: ordinary path laid over a queue unbinds"
+                + " it from its ride, so no route is taken across one. Guests walk a queue like any other path -"
+                + " what dead-ends is the single tile a ride's entrance claims. Nothing was built."
         });
     }
 
@@ -572,15 +573,20 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
                                 ? "its start " + tileName(first) + " is cut off"
                                 : "neither end, " + tileName(first) + " or " + tileName(last) + ", is connected"))
                         + ". Having a path on a tile is not the same as that tile being reachable. Aim one end at a"
-                        + " tile park_status lists under `paths.reachableSample` - those are the tiles guests can"
-                        + " actually walk to - rather than at a neighbouring tile that happens to be paved.")
+                        + " tile covered by a run park_status reports under `paths.runs` whose `kind` is \"path\""
+                        + " - those are the tiles guests can actually walk to, and a run covers every tile between"
+                        + " its `fromX`,`fromY` and its `toX`,`toY` - rather than at a neighbouring tile that"
+                        + " happens to be paved. A run whose `kind` is \"queue\" is not an anchor for either kind"
+                        + " of run: ordinary path laid onto one unbinds that queue from its ride, and a queue laid"
+                        + " onto one joins two rides' lines together.")
                 + (replacedQueue > 0
                     ? " WARNING: " + String(replacedQueue) + " tiles replaced an existing queue line with ordinary path,"
                         + " which unbinds it from its ride."
                     : "")
                 + (lost > 0
                     ? " WARNING: " + String(lost) + " path tiles are no longer reachable from the park entrance."
-                        + " Guests cannot walk through a queue, so this run cut an existing route in two."
+                        + " A queue on its own is walked like any other path; what dead-ends is the one tile a"
+                        + " ride's entrance claims, and the route to those tiles ran through such a tile."
                     : (replacedExistingPath > 0
                         ? " Nothing was cut off by it."
                         : ""))

@@ -2,5 +2,13 @@
   "defaultProjectTrust": "always",
   "enableInstallTelemetry": false,
   "lastChangelogVersion": "0.85.1",
-  "theme": "dark"
+  "theme": "dark",
+  "compaction": {
+    "//": "JSON takes no comments, so the reasoning lives in these keys. Context window is 65536 (pi/models.json).",
+    "//summariser": "The summary's CONTENT is not configurable from here. pi 0.85.1 reads exactly three keys under `compaction` - enabled, reserveTokens, keepRecentTokens (dist/core/settings-manager.js getCompactionSettings, CompactionSettings in its .d.ts) - and nothing else. The prompt that writes the summary is the const UPDATE_SUMMARIZATION_PROMPT in dist/core/compaction/compaction.js, and its `customInstructions` hook is reachable only from `/compact <text>` typed by hand or from the programmatic API; the auto-compaction path passes undefined. That prompt says 'PRESERVE all existing information from the previous summary', which is why a summary never corrects a coordinate it carried before. The one real lever is a `session_before_compact` extension in pi/extensions/ or ~/.pi/agent/extensions/, which can supply customInstructions or the whole summary. Not taken: the fact that its own memory goes stale now lives in games/openrct2/prompt.md instead, where it costs no extension to maintain. Do not add a key here expecting it to bite - pi's loader ignores unknown keys silently.",
+    "//reserveTokens": "Compaction fires above contextWindow - reserveTokens, so 12288 moves the trigger from 49152 to 53248. Headroom only: models.json caps maxTokens at 8192 and the largest response seen in play is 2202. Do not go below 12288: pi estimates a freshly-appended tool result at chars/4, which undercounts a worst-case 17176-char find_build_sites result by ~1700 real tokens, and the summariser's own cap is min(floor(0.8 * reserveTokens), model.maxTokens) - 8192 here, but it starts shrinking below 10240.",
+    "reserveTokens": 12288,
+    "//keepRecentTokens": "The retained tail after a compaction. pi measures it at chars/4 while these payloads tokenize at ~2.86 chars/token, so the real tail is about 1.4x this number: 10000 retains ~14000 real tokens, where 20000 retained ~28000. This is the one lever that can cost play quality - below this the model leans on a prose summary carrying no coordinates - so it was halved rather than taken to the 8000 that was modelled.",
+    "keepRecentTokens": 10000
+  }
 }

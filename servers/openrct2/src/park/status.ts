@@ -1,6 +1,9 @@
 import { flatRideShape, shopServingTile } from "./flatRides.js";
 import { DIRECTION_VECTORS } from "./map.js";
-import { findParkEntranceTiles, tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
+import { DEFAULT_CENSUS_BLOCK, readGroundCensus, readPathNetwork } from "./network.js";
+import type { GroundCensus, PathNetworkShape } from "./network.js";
+import { tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
+import type { Tile } from "./paths.js";
 
 /** Bit positions in Ride.flags, from OpenRCT2's RideFlag enum. */
 const RIDE_FLAG_BROKEN_DOWN = 1 << 7;
@@ -32,16 +35,6 @@ const EXPENDITURE_STREAMS: ExpenditureType[] = [
     "food_drink_sales", "food_drink_stock", "wages", "marketing", "research", "interest"
 ];
 
-/**
- * How many reachable path tiles `paths.reachableSample` will list in full.
- *
- * A park that still needs connecting up has tens of path tiles, so this reports the
- * whole network and the model can see where it actually ends. Past this it is a spread,
- * and `reachableSampleComplete` says so: a mature park's network would otherwise cost
- * a few thousand tokens of every single turn.
- */
-const MAX_REPORTED_PATH_TILES = 250;
-
 export interface RideSummary {
     id: number;
     name: string;
@@ -58,12 +51,19 @@ export interface RideSummary {
     queueTime: number;
     /** Shops and stalls: no entrance, no exit, no queue. Guests buy from the path beside them. */
     isShop: boolean;
-    /** A queue is bound to the entrance. Necessary, but on its own it proves nothing. Null for a shop. */
+    /**
+     * A queue is bound to the entrance. This is throughput, not reachability: without one a
+     * ride still takes guests, one at a time - `PeepInteractWithEntrance` puts a guest who
+     * walks up on ordinary path straight into queuing state, and `shouldGoOnRide` with
+     * `atQueue` false then turns away anyone who arrives while that guest is still there.
+     * A bound queue is what lets several wait at once. Null for a shop.
+     */
     hasQueue: boolean | null;
     /**
-     * Guests can get to this ride from the park entrance: for a ride, a queue bound to it
-     * reaches its door; for a shop, a path they can walk to reaches `counter`. The one
-     * that matters.
+     * Guests can get to this ride from the park entrance: for a ride, they can walk to the
+     * tile its entrance door opens onto; for a shop, to `counter`. A queue is not part of
+     * this - a ride with none is reachable, it just boards one guest at a time - and
+     * demanding one here reported four rides unreachable through 29 recorded boardings.
      */
     guestsCanReach: boolean;
     /**
@@ -89,25 +89,16 @@ export interface RideSummary {
     queueFull: boolean;
 }
 
-export interface PathNetwork {
-    /** Tiles of the park entrance itself. Guests enter here. */
-    entrance: { x: number; y: number }[];
-    /** How many path tiles guests can actually walk to from the entrance. */
-    reachableTiles: number;
-    /** Those tiles, as targets for build_path. Every one of them unless the network is huge. */
-    reachableSample: { x: number; y: number }[];
-    /**
-     * True when `reachableSample` is every reachable tile, so a tile missing from it is
-     * genuinely not connected. False means it is a spread of a larger network and
-     * `reachableTiles` is the real count.
-     */
-    reachableSampleComplete: boolean;
-}
-
 export interface ParkStatus {
     scenario: { name: string; objective: object; status: string };
-    /** Where guests come in, and which paths they can reach. Paths must join this. */
-    paths: PathNetwork;
+    /**
+     * Where guests come in and what joins what: the gate, how many path tiles it reaches,
+     * every one of those tiles as a straight run, the junctions and dead ends, and the
+     * fragments of path it reaches nothing of. A new path has to join a run.
+     */
+    paths: PathNetworkShape;
+    /** How much of what kind of ground the park owns, per map-aligned block. */
+    ground: GroundCensus;
     parkOpen: boolean;
     date: { year: number; month: number; day: number };
     /**
@@ -134,8 +125,14 @@ export interface ParkStatus {
     rides: RideSummary[];
 }
 
-/** The tile a door opens onto: one step further out than the building itself. */
-function doorTile(access: CoordsXYZD): { x: number; y: number } {
+/**
+ * The tile a door opens onto: one step further out than the building itself.
+ *
+ * Exported because `network.ts` needs the same answer to say which ride doors are standing
+ * on an unreachable island, and two copies of this would be two different maps of where
+ * guests queue.
+ */
+export function doorTile(access: CoordsXYZD): Tile {
     const towardsRide = DIRECTION_VECTORS[access.direction % 4];
     return { x: access.x / 32 - towardsRide.dx, y: access.y / 32 - towardsRide.dy };
 }
@@ -276,9 +273,7 @@ export function readParkStatus(): ParkStatus {
             hasQueue: overTheCounter ? null : queueServes(entrance, ride.id),
             guestsCanReach: overTheCounter
                 ? counter !== null && tileIsWalkable(walkableNow, counter)
-                : entranceDoor !== null
-                    && queueServes(entrance, ride.id)
-                    && tileIsWalkable(walkableNow, entranceDoor),
+                : entranceDoor !== null && tileIsWalkable(walkableNow, entranceDoor),
             counter: counter,
             exitConnected: overTheCounter
                 ? null
@@ -306,24 +301,10 @@ export function readParkStatus(): ParkStatus {
         }
     }
 
-    const reachableKeys = Object.keys(walkableNow);
-    const sample: { x: number; y: number }[] = [];
-    const complete = reachableKeys.length <= MAX_REPORTED_PATH_TILES;
-    const stride = complete ? 1 : Math.ceil(reachableKeys.length / MAX_REPORTED_PATH_TILES);
-
-    for (let i = 0; i < reachableKeys.length; i += stride) {
-        const parts = reachableKeys[i].split(",");
-        sample.push({ x: Number(parts[0]), y: Number(parts[1]) });
-    }
-
     return {
         scenario: { name: scenario.name, objective: scenario.objective, status: scenario.status },
-        paths: {
-            entrance: findParkEntranceTiles(),
-            reachableTiles: reachableKeys.length,
-            reachableSample: sample,
-            reachableSampleComplete: complete
-        },
+        paths: readPathNetwork(),
+        ground: readGroundCensus(DEFAULT_CENSUS_BLOCK),
         parkOpen: park.getFlag("open"),
         date: { year: date.year, month: date.month, day: date.day },
         speed: typeof context.gameSpeed === "number" ? context.gameSpeed : 0,

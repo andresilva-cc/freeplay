@@ -7,6 +7,7 @@ import { buildPath, DEFAULT_PATH_OBJECT, DEFAULT_QUEUE_OBJECT } from "../src/par
 import type { BuildPathOutcome } from "../src/park/pathbuild.ts";
 import type { Tile } from "../src/park/paths.ts";
 import { PathTools } from "../src/tools/path.ts";
+import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
 
 function withGame(build: (game: FakeGame) => void, run: (game: FakeGame) => void, options?: { inert?: boolean }): void {
     const game = new FakeGame(24, 24, options);
@@ -33,6 +34,64 @@ function lay(points: Tile[], queue = false): BuildPathOutcome {
 
     assert.ok(outcome, "buildPath never called back");
     return outcome as unknown as BuildPathOutcome;
+}
+
+/**
+ * `lay`, with the edge the game cuts when a ride claims a queue applied at the moment it
+ * would land: after the placements, before build_path reads the map back.
+ *
+ * The fake binds a queue to its ride - `updateQueueChains` fills the tile's `ride` in - but
+ * never derives an edge from that, because deriving edges by hand is the bug all of this
+ * replaced. So the cut is stated as data with `severPath`, and it has to be stated inside
+ * the run: build_path measures reachability before the placements and again after, and a
+ * cut applied once the call has returned is a cut it never saw.
+ */
+function layAndLetTheRideClaimIt(game: FakeGame, points: Tile[], claim: () => void): BuildPathOutcome {
+    const realSetTimeout = context.setTimeout;
+    let outcome: BuildPathOutcome | null = null;
+
+    context.setTimeout = function (callback: () => void): number {
+        game.applyQueuedActions();
+        claim();
+        callback();
+        return 0;
+    };
+
+    try {
+        buildPath({
+            points: points,
+            queue: true,
+            surfaceObject: DEFAULT_QUEUE_OBJECT,
+            railingsObject: 0
+        }, function (result) { outcome = result; });
+    } finally {
+        context.setTimeout = realSetTimeout;
+    }
+
+    assert.ok(outcome, "buildPath never called back");
+    return outcome as unknown as BuildPathOutcome;
+}
+
+/**
+ * The corridor every severance test below is built on: one line of path from the gate to
+ * 10,12, and a ride to the east of 10,8 whose entrance door opens onto it. A queue laid on
+ * 10,8 is the one the ride claims, and claiming it dead-ends that tile.
+ */
+function corridorWithADoorOnIt(game: FakeGame): void {
+    game.addParkEntrance(10, 4);
+    game.addPath(10, 5);
+
+    for (let y = 6; y <= 12; y++) {
+        game.addPath(10, y);
+    }
+
+    // The building at 11,8 with the ride at 12,8, so the door opens onto the corridor.
+    game.addRideEntrance(11, 8, 0, 2);
+}
+
+/** The cut the game makes when the entrance at 11,8 claims a queue on 10,8. */
+function theRideClaimsTheDoorTile(game: FakeGame): void {
+    game.severPath(10, 8, 10, 9);
 }
 
 /** The same call as the model makes it: raw arguments, through the MCP tool layer. */
@@ -101,8 +160,11 @@ test("a path laid out of reach of the entrance is a success that says so", funct
         assert.match(outcome.detail, /does not reach the park entrance/);
         assert.match(outcome.detail, /neither end, 2,2 or 2,6, is connected/,
             "the ends that are cut off have to be named, not left to be guessed at");
-        assert.match(outcome.detail, /`paths.reachableSample`/,
+        assert.match(outcome.detail, /`paths.runs`/,
             "fourteen calls in the logs retried an adjacent endpoint for want of this");
+        assert.match(outcome.detail, /whose `kind` is "path"/,
+            "and a bare tile list cost two more: the model aimed an ordinary path at a queue tile,"
+            + " because nothing said which of the reachable tiles were queues");
     });
 });
 
@@ -180,7 +242,8 @@ test("a run aimed at the park gate says so rather than failing to route", functi
 
         assert.equal(outcome.ok, false);
         assert.match(outcome.detail, /is the park entrance BUILDING/);
-        assert.match(outcome.detail, /`paths.reachableSample`/);
+        assert.match(outcome.detail, /`paths.runs`/);
+        assert.match(outcome.detail, /`paths.gate`/);
         assert.equal(game.attempted.length, 0);
         assert.equal(footpathAt(game, 10, 4), undefined);
     });
@@ -314,15 +377,19 @@ test("a route that ends on existing path counts that tile as joined, not failed"
     });
 });
 
-test("a queue laid across a walking route reports how much of the park it cut off", function () {
-    withGame(function (game) {
-        parkWithGate(game);
-        for (let y = 6; y <= 12; y++) {
-            game.addPath(10, y);
-        }
-    }, function () {
-        // A queue straight across the only corridor: everything south of it is stranded.
-        const outcome = lay([{ x: 8, y: 8 }, { x: 12, y: 8 }], true);
+/**
+ * The fixture that tells the two rules apart. What stood here laid an UNBOUND queue across
+ * the corridor and expected four stranded tiles; measured against a running game an
+ * unbound queue strands nothing - turning path into queue moves no edge bit - so the old
+ * assertion was proving the bridge's own invented rule. Here a ride owns the queue, which
+ * is what actually cuts, and it cuts exactly one tile's worth of through traffic.
+ */
+test("a queue the ride claims at its door reports how much of the park it cut off", function () {
+    withGame(corridorWithADoorOnIt, function (game) {
+        // A queue from bare ground onto the corridor tile the door opens onto.
+        const outcome = layAndLetTheRideClaimIt(game, [{ x: 9, y: 8 }, { x: 10, y: 8 }], function () {
+            theRideClaimsTheDoorTile(game);
+        });
 
         assert.equal(outcome.ok, true, "the queue itself was laid");
         assert.equal(outcome.connectedToPark, true, "and both its ends are still reachable");
@@ -331,22 +398,39 @@ test("a queue laid across a walking route reports how much of the park it cut of
     });
 });
 
-test("a severed park is counted and explained, not told what to do about it", function () {
-    // The warning used to end "Move the queue off the main path, or lay a path around it."
-    // Where a queue goes is park layout, which is the decision find_build_sites hands over
-    // with this very measurement: the tool reports the count and the cause and stops.
+test("a queue no ride owns cuts nothing, and the run says so", function () {
     withGame(function (game) {
         parkWithGate(game);
         for (let y = 6; y <= 12; y++) {
             game.addPath(10, y);
         }
     }, function () {
+        // The old rule's own fixture: a queue straight across the only corridor, bound to
+        // nothing. Guests walk over it, so the corridor south of it is untouched.
         const outcome = lay([{ x: 8, y: 8 }, { x: 12, y: 8 }], true);
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.doesNotMatch(outcome.detail, /no longer reachable/,
+            "an unclaimed queue severs nothing: this is the claim that was wrong");
+        assert.match(outcome.detail, /Nothing was cut off by it\.$/);
+    });
+});
+
+test("a severed park is counted and explained, not told what to do about it", function () {
+    // The warning used to end "Move the queue off the main path, or lay a path around it."
+    // Where a queue goes is park layout, which is the decision find_build_sites hands over
+    // with this very measurement: the tool reports the count and the cause and stops.
+    withGame(corridorWithADoorOnIt, function (game) {
+        const outcome = layAndLetTheRideClaimIt(game, [{ x: 9, y: 8 }, { x: 10, y: 8 }], function () {
+            theRideClaimsTheDoorTile(game);
+        });
 
         assert.match(outcome.detail, /WARNING: 4 path tiles are no longer reachable from the park entrance\./,
             "the count stays: it is a measurement");
-        assert.match(outcome.detail, /cut an existing route in two\.$/,
-            "and so does the cause, which is the last thing said");
+        assert.match(outcome.detail, /the one tile a ride's entrance claims, and the route to those tiles ran through such a tile\.$/,
+            "and so does the cause, which is the last thing said - and it is now the cause the game has");
+        assert.doesNotMatch(outcome.detail, /cannot walk through a queue/,
+            "the mechanic it used to name is not the game's");
         assert.doesNotMatch(outcome.detail, /Move the queue|lay a path around/,
             "what to do about it is the model's call");
     });
@@ -379,7 +463,9 @@ test("a route goes round an existing queue rather than through it", function () 
     withGame(function (game) {
         parkWithGate(game);
         game.addPath(10, 6);
-        // A queue lying across the corridor. Guests cannot walk through it, so neither may a route.
+        // A queue lying across the corridor, bound to ride 0. Guests walk straight over it -
+        // it is ordinary walkable path - but a route must still go round: paving a queue with
+        // ordinary path unbinds it from its ride, and nothing in the API shows that damage.
         game.addPath(9, 7, true, 0);
         game.addPath(10, 7, true, 0);
         game.addPath(11, 7, true, 0);
@@ -496,6 +582,10 @@ test("a run with no owned, level way through is refused outright", function () {
         assert.equal(outcome.route.length, 0);
         assert.match(outcome.detail, /No level, owned, unobstructed route between 10,6 and 10,10/,
             "the leg that could not be routed has to be named");
+        assert.match(outcome.detail, /unbinds it from its ride/,
+            "a route avoids an existing queue because paving it unbinds the ride, which is the real reason");
+        assert.doesNotMatch(outcome.detail, /cannot walk through a queue/,
+            "and not because guests cannot walk through one, which the game does not do");
         assert.equal(game.attempted.length, 0, "nothing should be attempted when there is no route");
     });
 });
@@ -565,23 +655,26 @@ test("a queue beside the door but off its queue side binds to nothing", function
     });
 });
 
-test("the route a queue severs is severed on the map, not only in the sentence", function () {
-    withGame(function (game) {
-        parkWithGate(game);
-        for (let y = 6; y <= 12; y++) {
-            game.addPath(10, y);
-        }
-    }, function (game) {
-        const outcome = lay([{ x: 8, y: 8 }, { x: 12, y: 8 }], true);
+test("the route a claimed queue severs is severed on the map, not only in the sentence", function () {
+    withGame(corridorWithADoorOnIt, function (game) {
+        const outcome = layAndLetTheRideClaimIt(game, [{ x: 9, y: 8 }, { x: 10, y: 8 }], function () {
+            theRideClaimsTheDoorTile(game);
+        });
 
         assert.match(outcome.detail, /WARNING: 4 path tiles are no longer reachable/);
 
-        // The wall is real: five queue tiles straight across the only corridor.
-        for (let x = 8; x <= 12; x++) {
-            const wall = footpathAt(game, x, 8);
-            assert.ok(wall, "the queue is missing from " + String(x) + ",8");
-            assert.equal(wall.isQueue, true, "tile " + String(x) + ",8 is not a queue, so it blocks nobody");
+        // The queue is real, and it reaches the tile the door opens onto.
+        for (let x = 9; x <= 10; x++) {
+            const line = footpathAt(game, x, 8);
+            assert.ok(line, "the queue is missing from " + String(x) + ",8");
+            assert.equal(line.isQueue, true, "tile " + String(x) + ",8 is not a queue, so no ride claims it");
         }
+
+        // The cut is one tile's: the door tile no longer carries traffic to the tile beyond.
+        assert.equal((footpathAt(game, 10, 8)?.edges ?? 0) & (1 << 1), 0,
+            "10,8 still claims its edge south, so the ride never dead-ended it");
+        assert.equal((footpathAt(game, 10, 9)?.edges ?? 0) & (1 << 3), 0,
+            "and 10,9 still claims the same link back, which the game keeps symmetric");
 
         // And what it cut off is still there: the loss is reachability, not tiles.
         for (let y = 9; y <= 12; y++) {
@@ -590,7 +683,7 @@ test("the route a queue severs is severed on the map, not only in the sentence",
             assert.equal(stranded.isQueue, false, "it is ordinary path with no way back to the gate");
         }
 
-        assert.equal(footpathAt(game, 10, 7)?.isQueue, false, "the corridor north of the wall is untouched");
+        assert.equal(footpathAt(game, 10, 7)?.isQueue, false, "the corridor north of the door is untouched");
     });
 });
 
@@ -671,7 +764,7 @@ test("a paused run reports the game's own refusal rather than a cause nothing ch
             "nor the one call a paused game does not refuse");
         assert.doesNotMatch(outcome.detail, /`entranceDoor` and `exitDoor`/,
             "this run failed on the clock, and door buildings had nothing to do with it");
-        assert.doesNotMatch(outcome.detail, /`paths.reachableSample`/,
+        assert.doesNotMatch(outcome.detail, /`paths.runs`/,
             "no tile of this run is on the ground, so telling it to move an endpoint is a fix"
             + " for a failure that did not happen");
     });
@@ -710,4 +803,23 @@ test("a shortfall the game never answered keeps the door-building explanation", 
         assert.doesNotMatch(outcome.detail, /The game refused the placement/,
             "no refusal was read, so none may be reported");
     }, { inert: true });
+});
+
+/**
+ * `surfaceObject` and `railingsObject` both spelled out the same `context.getAllObjects`
+ * lookup. It is one fact about the plugin API, so it is stated on the first of them and
+ * referred to by the second, which is what a reader does with it anyway.
+ */
+test("the footpath object lookup is spelled out once across the two style arguments", function () {
+    const properties = (getMcpToolDefinitions(PathTools)[0].inputSchema.properties
+        || {}) as Record<string, { description?: string }>;
+    const surface = String(properties.surfaceObject.description);
+    const railings = String(properties.railingsObject.description);
+
+    assert.match(surface, /context\.getAllObjects\("footpath_surface"\)/, "where a surface index comes from");
+    assert.match(surface, /Queue styles are separate objects/,
+        "the fact a queue needs its own object, which nothing else says");
+    assert.doesNotMatch(railings, /getAllObjects/, "the second copy of the lookup was the duplicate");
+    assert.match(railings, /`footpath_railings` the same way/, "and it names its own object type");
+    assert.match(railings, /Default 0/);
 });

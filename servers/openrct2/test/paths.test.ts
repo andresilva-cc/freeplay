@@ -48,18 +48,76 @@ test("guests reach paths joined to the entrance", function () {
     });
 });
 
-test("a queue can be joined but not walked through", function () {
+/**
+ * Measured, not reasoned. In a running Forest Frontiers the main walk was turned into a
+ * queue at 51,24 and 51,25 and every edge bit came back unchanged - 10 before, 10 after -
+ * so the game had not cut anything. The park then ran with the tool insisting the Dodgems
+ * beyond it could not be reached: it went from 48 to 96 paying customers while it said so,
+ * and 94 of the 106 guests were past the queue.
+ */
+test("a queue laid across a walk does not cut it, because the game does not cut it", function () {
     withGame(function (game) {
         game.addParkEntrance(10, 4);
         game.addPath(10, 5);
         game.addPath(10, 6, true);   // queue across the corridor
-        game.addPath(10, 7);         // only reachable by passing through it
+        game.addPath(10, 7);         // beyond it
     }, function () {
         const walkable = walkableFromParkEntrance();
 
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 5 }), true);
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 6 }), true, "the queue itself can be reached");
-        assert.equal(tileIsWalkable(walkable, { x: 10, y: 7 }), false, "but not what lies beyond it");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 7 }), true,
+            "and so is what lies beyond it: guests walk over a queue, they are not stopped by one");
+    });
+});
+
+/**
+ * The other half of the same rule, and the half the old one got right by accident.
+ *
+ * What actually severs a line is the ride claiming its queue: when the entrance at 50,25
+ * took the queue at 51,25, the game cleared the bit on the far side of it - 51,25 went from
+ * `edges` 10 to 9 and the tile past it, 51,26, from 10 to 3 - so the queue dead-ends at the
+ * door. That cut is real and guests obey it: 94 of 106 guests ended up in the pocket behind
+ * it, arriving through the ride's exit and unable to walk back out.
+ */
+test("a link the game has cut is not walked, even between two paths", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+        game.addPath(10, 6, true);
+        game.addPath(10, 7);
+        game.severPath(10, 6, 10, 7);
+    }, function () {
+        const walkable = walkableFromParkEntrance();
+
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 6 }), true, "the queue is still joined to the walk");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 7 }), false,
+            "but the tile past the door is not, because the game took that edge away");
+    });
+});
+
+/**
+ * A guard against reading one stale bit as a doorway. The game keeps `edges` symmetric -
+ * measured over every footpath of a running park, not one pair disagreed - so a lone bit is
+ * a reading error, and inventing a route out of it is the failure that has to stay dead.
+ */
+test("a link only one side of it claims is not a link", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+        game.addPath(10, 6);
+        // Only the far tile forgets the link; the near one still points at it.
+        game.tile(10, 6).elements.forEach(function (element) {
+            if (element.type === "footpath") {
+                element.edges = (element.edges || 0) & ~(1 << 3);
+            }
+        });
+    }, function () {
+        const walkable = walkableFromParkEntrance();
+
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 5 }), true);
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 6 }), false,
+            "one side claiming a link the other does not is not a route guests can walk");
     });
 });
 
@@ -152,7 +210,15 @@ test("a guest can walk the length of a queue to its ride", function () {
     });
 });
 
-test("a queue is still not a shortcut between two paths", function () {
+/**
+ * The case the old rule was built to stop, and which the game simply allows. A queue with
+ * ordinary path on both ends is a corridor, and it was measured carrying traffic: with two
+ * such queues in the way the Merry-Go-Round behind them took 52 customers while the tool
+ * called its door unreachable.
+ *
+ * Only the tile a ride has claimed for its door dead-ends, and that is `severPath` above.
+ */
+test("a queue between two paths is a corridor, not a wall", function () {
     withGame(function (game) {
         game.addParkEntrance(10, 4);
         game.addPath(10, 5);
@@ -164,7 +230,33 @@ test("a queue is still not a shortcut between two paths", function () {
         const walkable = walkableFromParkEntrance();
 
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 7 }), true, "the queue itself");
-        assert.equal(tileIsWalkable(walkable, { x: 10, y: 8 }), false, "but not through it to open path");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 8 }), true, "and through it back onto open path");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 9 }), true);
+    });
+});
+
+/**
+ * The shape of a real ride's door: a queue joined to the walk at one end and ending at the
+ * entrance at the other, with the rest of the park past it. The queue is walkable for its
+ * whole length; the tile beyond the door is not.
+ */
+test("a queue that ends at a door carries guests in and stops there", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+        game.addPath(10, 6, true);
+        game.addPath(10, 7, true);   // the door tile: the ride's entrance is beside it
+        game.addRideEntrance(11, 7, 3, 2);
+        game.addPath(10, 8);
+        game.addPath(10, 9);
+        // What the entrance did to its own line, as measured in the running game.
+        game.severPath(10, 7, 10, 8);
+    }, function () {
+        const walkable = walkableFromParkEntrance();
+
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 6 }), true, "the near end of the queue");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 7 }), true, "and the door tile at the far end");
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 8 }), false, "but the line stops at the door");
         assert.equal(tileIsWalkable(walkable, { x: 10, y: 9 }), false);
     });
 });

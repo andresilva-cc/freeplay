@@ -631,9 +631,9 @@ export class McpServer {
                 description: "MCP bridge into a running OpenRCT2 game."
             },
             instructions: [
-                "Fourteen tools reach the running game.",
+                "Fifteen tools reach the running game.",
                 "`park_status` returns the whole park in one call;",
-                "`guest_feedback`, `list_ride_objects` and `find_build_sites` read further.",
+                "`guest_feedback`, `list_ride_objects`, `find_build_sites` and `view_map` read further.",
                 "`clear_scenery`, `build_flat_ride`, `build_path`, `remove_path`, `buy_land`, `operate_ride`,",
                 "`open_park`, `hire_staff` and `set_game_speed` act,",
                 "and answer once the work has landed a few ticks later.",

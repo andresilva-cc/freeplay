@@ -203,7 +203,78 @@ test("a queue the game has bound to the ride is still unreachable when nothing j
     });
 });
 
-test("an ordinary path at the door is not a queue, so guests still cannot board", function () {
+/**
+ * The failure this whole reachability rule was rewritten for, read at the surface the model
+ * actually sees.
+ *
+ * Ride 1's door is down the main walk, past a stretch that ride 0 has taken for its queue.
+ * The old flood refused to step off a queue tile onto ordinary path, so it stopped dead at
+ * ride 0's line and called ride 1 unreachable. The game does not stop there: in a running
+ * Forest Frontiers with exactly this shape, the ride behind the queue took 62 paying
+ * customers while `guestsCanReach` said false at every reading.
+ */
+test("a ride down the walk past another ride's queue is reachable, because guests walk over it", function () {
+    withPark(function (game) {
+        // Ride 0's queue occupies two tiles of the only walk south.
+        game.addPath(10, 8, true);
+        game.addPath(10, 9, true);
+        game.addRideEntrance(11, 9, 0, 2);
+        // Ride 1 is further down the same walk, with a queue of its own.
+        game.addPath(10, 14, true);
+        game.addRideEntrance(11, 14, 1, 2);
+        game.rides = [
+            ride(0, { x: 11, y: 9, direction: 2 }, null),
+            ride(1, { x: 11, y: 14, direction: 2 }, null)
+        ];
+    }, function (game) {
+        assert.equal(queueBinding(game, 10, 9), 0, "ride 0 owns the queue across the walk");
+        assert.equal(queueBinding(game, 10, 14), 1, "and ride 1 owns its own");
+
+        const walkable = walkableFromParkEntrance();
+
+        assert.equal(tileIsWalkable(walkable, { x: 10, y: 10 }), true,
+            "the walk continues past ride 0's queue, because the game left those edges alone");
+
+        assert.equal(summary(0).guestsCanReach, true, "the near ride is reachable");
+        assert.equal(summary(1).guestsCanReach, true,
+            "and so is the one beyond it: a queue in the way is a corridor, not a wall");
+    });
+});
+
+/**
+ * The same walk, with the one cut the game really does make: when a ride claims the queue at
+ * its door, the tile at the door loses its edge to whatever lies past it. Measured going
+ * both ways in a running park - stripping the queue back to ordinary path put the edge back
+ * and reopened the walk.
+ */
+test("a ride behind a door the game has dead-ended is not reachable", function () {
+    withPark(function (game) {
+        game.addPath(10, 8, true);
+        game.addPath(10, 9, true);
+        game.addRideEntrance(11, 9, 0, 2);
+        game.addPath(10, 14, true);
+        game.addRideEntrance(11, 14, 1, 2);
+        // Ride 0's line ends at its door: the game clears the bit on the far side of it.
+        game.severPath(10, 9, 10, 10);
+        game.rides = [
+            ride(0, { x: 11, y: 9, direction: 2 }, null),
+            ride(1, { x: 11, y: 14, direction: 2 }, null)
+        ];
+    }, function () {
+        assert.equal(summary(0).guestsCanReach, true, "the near ride still has its queue joined to the walk");
+        assert.equal(summary(1).guestsCanReach, false,
+            "but nothing past the dead-ended door can be walked to, and the report must say so");
+    });
+});
+
+/**
+ * The discriminator for the old rule, which ANDed `hasQueue` into `guestsCanReach`: a door
+ * on ordinary walkable path with no queue anywhere near it. The old rule called this
+ * unreachable; OpenRCT2's `PeepInteractWithEntrance` has an explicit branch for a guest
+ * arriving on ordinary path with no queue and puts them straight into queuing state, so it
+ * is reachable and boards one guest at a time.
+ */
+test("a door on walkable path with no queue is reachable, and says so separately from hasQueue", function () {
     withPark(function (game) {
         game.addPath(11, 6);
         game.rides = [ride(0, { x: 12, y: 6, direction: 2 }, null)];
@@ -215,13 +286,14 @@ test("an ordinary path at the door is not a queue, so guests still cannot board"
         const found = summary(0);
 
         assert.equal(found.hasQueue, false, "an ordinary footpath is not a queue");
-        assert.equal(found.guestsCanReach, false,
-            "guests crowd a door with no queue and never board, so this must not be reported as reachable");
+        assert.equal(found.guestsCanReach, true,
+            "a ride with no queue takes guests one at a time; calling it unreachable reported four rides"
+            + " false through 29 recorded boardings");
     });
 });
 
-/** A queue serving the ride next door is not a queue for this one. */
-test("a queue at the door bound to another ride does not serve this ride", function () {
+/** A queue serving the ride next door is not a queue for this one - but the door is still reachable. */
+test("a queue at the door bound to another ride is no queue for this ride, and does not hide the door", function () {
     withPark(function (game) {
         game.addPath(11, 6, true, 7);
         game.rides = [ride(0, { x: 12, y: 6, direction: 2 }, null)];
@@ -234,7 +306,9 @@ test("a queue at the door bound to another ride does not serve this ride", funct
 
         assert.deepEqual(found.entranceDoor, { x: 11, y: 6 }, "ride 0's door is still reported");
         assert.equal(found.hasQueue, false, "a queue bound to another ride is no queue for this one");
-        assert.equal(found.guestsCanReach, false, "so nobody boards ride 0");
+        assert.equal(found.guestsCanReach, true,
+            "guests reach ride 0's door on foot whatever that queue belongs to: hasQueue is the throughput"
+            + " signal, not the reachability one");
     });
 });
 
@@ -512,21 +586,59 @@ test("the reachable path count leaves out paths guests cannot get to", function 
     }, function () {
         const paths = readParkStatus().paths;
 
-        assert.deepEqual(paths.entrance.map(function (tile) { return tile.x; }), [10, 11, 12],
-            "the three tiles of the gate are the entrance");
+        assert.deepEqual(paths.gate.map(function (tile) { return tile.x; }), [10, 11, 12],
+            "the three tiles of the gate are the park's own entrance");
         assert.equal(paths.reachableTiles, 20, "only the twenty tiles of the main path are reachable");
 
-        const orphans = paths.reachableSample.filter(function (tile) { return tile.x >= 20; });
+        const orphans = paths.runs.filter(function (run) { return run.fromX >= 20 || run.toX >= 20; });
         assert.deepEqual(orphans, [], "the orphan block must not be offered as somewhere to build from");
+
+        const stranded = paths.islands.filter(function (island) { return island.fromX >= 20; });
+
+        assert.equal(stranded.length, 1,
+            "and it is named as an island, which the flat tile list had no way of saying at all");
+        assert.equal(stranded[0].tiles, 3);
     });
 });
 
+/** Every tile of every run, in the order the run lays them down. Runs are always straight. */
+function tilesOf(runs: { fromX: number; fromY: number; toX: number; toY: number; tiles: number }[]): string[] {
+    const covered: string[] = [];
+
+    for (let i = 0; i < runs.length; i++) {
+        const run = runs[i];
+        const dx = run.toX === run.fromX ? 0 : 1;
+        const dy = run.toY === run.fromY ? 0 : 1;
+
+        for (let step = 0; step < run.tiles; step++) {
+            covered.push(String(run.fromX + dx * step) + "," + String(run.fromY + dy * step));
+        }
+    }
+
+    return covered;
+}
+
+function totalRunTiles(runs: { tiles: number }[]): number {
+    let total = 0;
+
+    for (let i = 0; i < runs.length; i++) {
+        total += runs[i].tiles;
+    }
+
+    return total;
+}
+
 /**
- * A short network is reported whole. Handing back a thinned-out spread with nothing
- * saying so reads as the end of the path network, and the model aims a path at a tile
- * it has decided is unconnected.
+ * The arithmetic that replaces the flat tile list.
+ *
+ * The list existed so the model could answer "is this tile connected" by membership, and
+ * it could not do that reliably even with all 31 tiles in front of it. The runs answer the
+ * same question by covering every reachable tile exactly once - which makes `sum(run.tiles)
+ * === reachableTiles` a check the model can perform on the payload it was handed. If the
+ * runs ever stop covering the network exactly, that check goes on passing while the shape
+ * silently loses tiles, so it is asserted against the walk itself here.
  */
-test("a small path network is reported in full, and says that it is", function () {
+test("every reachable tile is on exactly one run, so sum(run.tiles) is reachableTiles", function () {
     withPark(function (game) {
         // Forty tiles: the size a park actually is while it still needs connecting up.
         for (let x = 11; x <= 30; x++) {
@@ -534,21 +646,18 @@ test("a small path network is reported in full, and says that it is", function (
         }
     }, function () {
         const paths = readParkStatus().paths;
-        const walkable = walkableFromParkEntrance();
-        const everyTile = Object.keys(walkable).sort();
-        const reported = paths.reachableSample.map(function (tile) {
-            return String(tile.x) + "," + String(tile.y);
-        }).sort();
+        const everyTile = Object.keys(walkableFromParkEntrance()).sort();
 
         assert.equal(everyTile.length, 40, "the main path and its branch are forty tiles");
-        assert.equal(paths.reachableSampleComplete, true, "forty tiles is nothing like a full park");
-        assert.deepEqual(reported, everyTile,
-            "every tile the game says guests can reach is listed, not a spread of them");
-        assert.equal(paths.reachableTiles, everyTile.length, "and the count agrees with the list");
+        assert.equal(paths.reachableTiles, everyTile.length, "and the count agrees with the walk");
+        assert.equal(totalRunTiles(paths.runs), paths.reachableTiles,
+            "sum(run.tiles) === reachableTiles: the check the model can make on what it was handed");
+        assert.deepEqual(tilesOf(paths.runs).sort(), everyTile,
+            "every tile the game says guests can reach is on a run, exactly once");
     });
 });
 
-test("a network too big to list says so, and still reports the true count", function () {
+test("a network too big for the old listing is still covered exactly, corridor by corridor", function () {
     withPark(function (game) {
         // A twenty by twenty square of path hanging off the gate: four hundred tiles.
         for (let y = 3; y <= 22; y++) {
@@ -563,11 +672,61 @@ test("a network too big to list says so, and still reports the true count", func
         const everyTile = Object.keys(walkableFromParkEntrance());
 
         assert.equal(everyTile.length, 400, "the square and the main path make four hundred reachable tiles");
-        assert.equal(paths.reachableTiles, 400, "the count is of the whole network, never of the listing");
-        assert.equal(paths.reachableSampleComplete, false, "and the listing says it is only a spread");
-        assert.ok(paths.reachableSample.length <= 250,
-            "which is capped, or park_status costs more context than it is worth");
-        assert.ok(paths.reachableSample.length >= 100, "but is still a usable spread of the network");
+        assert.equal(paths.reachableTiles, 400, "the count is of the whole network");
+        assert.equal(totalRunTiles(paths.runs), 400,
+            "all four hundred are covered - this is where the 250-tile listing had to start thinning out");
+        assert.ok(paths.runs.length < 60,
+            "and it costs corridors rather than tiles: " + String(paths.runs.length) + " of them");
+    });
+});
+
+/**
+ * The failure the whole report exists for: a ride that is built, has a queue, and that no
+ * guest can walk to. The flat list could only ever say which tiles were reachable, so a
+ * stranded ride was something the model had to notice by its absence.
+ */
+test("a ride door on a path the gate cannot reach is named in islands", function () {
+    withPark(function (game) {
+        // A queue and its ride, out in the corner, joined to nothing.
+        game.addPath(25, 25, true, 0);
+        game.addPath(25, 26, true, 0);
+        game.rides = [ride(0, { x: 25, y: 27, direction: 1 }, null)];
+    }, function () {
+        const status = readParkStatus();
+        const islands = status.paths.islands;
+
+        assert.equal(islands.length, 1, "the queue is a fragment the gate reaches nothing of");
+        assert.equal(islands[0].kind, "queue");
+        assert.deepEqual(islands[0].rides, [0]);
+        assert.deepEqual(islands[0].doors, [{ ride: 0, door: "entrance", x: 25, y: 26 }],
+            "the ride is built, it has a queue, and no guest can get to either");
+        assert.equal(status.rides[0].guestsCanReach, false, "which is what the ride's own line says too");
+    });
+});
+
+/**
+ * The census is emitted on every turn, so its resolution is a standing cost. Block 32 is
+ * the largest a 256-tile map can use and still fit inside MAX_CENSUS_BLOCKS, which is the
+ * difference between a complete census and a truncated one on a full-sized map.
+ */
+test("park_status counts the ground the park owns, in map-aligned blocks", function () {
+    withPark(function (game) {
+        game.addScenery(15, 15);
+        game.own(31, 31, false);
+    }, function () {
+        const ground = readParkStatus().ground;
+
+        assert.equal(ground.block, 32, "32 a side: a 256-tile map is 64 blocks, which is exactly the cap");
+        assert.equal(ground.owned, 32 * 32 - 1, "the one tile sold off is not the park's and is not counted");
+        assert.equal(ground.complete, true);
+        assert.equal(ground.blocks.length, 1, "a 32-tile park is one block");
+
+        const block = ground.blocks[0];
+        const counted = block.clear + block.scenery + block.sloped + block.water + block.path + block.built;
+
+        assert.equal(counted, ground.owned, "the six counts account for every owned tile exactly once");
+        assert.equal(block.scenery, 1, "the one tree");
+        assert.equal(block.path, 20, "and the twenty tiles of the main path");
     });
 });
 
@@ -1158,4 +1317,85 @@ test("the description says a null rating is a measurement that has not been take
     assert.match(text, /after it opens/, "and when the rating turns up");
     assert.match(text, /has not measured the ride yet/,
         "null is the absence of a measurement, not a low one");
+});
+
+/**
+ * The description has to describe the shape that is actually in the payload. It described
+ * a flat tile list for as long as one was sent, and the one thing that list could not say -
+ * which of the reachable tiles are queues - is a fact two build_path calls failed for want
+ * of. It is a measurement throughout: which run to use and which island to repair are the
+ * model's to decide.
+ */
+test("park_status describes the network it now sends, and recommends nothing about it", function () {
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "parkStatus";
+    });
+
+    const text = String(definitions[0].description);
+
+    assert.doesNotMatch(text, /reachableSample/,
+        "the flat tile list is gone from the payload, so describing one sends the model looking for it");
+    assert.match(text, /`runs` is every one\s+of those tiles, as straight lines/, "what a run is");
+    assert.match(text, /a `kind` of `path` or `queue`/,
+        "which tiles are queue: the fact the tile list could not carry, and two build_path calls failed on");
+    assert.match(text, /the `tiles` add up to `reachableTiles`/,
+        "the arithmetic that makes the shape checkable");
+    assert.match(text, /a tile is reachable exactly\s+when a run covers it/,
+        "and the membership rule the flat list used to answer");
+    assert.match(text, /`severingComputed` false means that was not worked out at all, which is\s+not the same as nothing severing/,
+        "a missing figure must never read as a zero");
+    assert.match(text, /`islands` are stretches of path the gate reaches none of/, "and what an island is");
+    assert.match(text, /a door there belongs to a ride that is built\s+and that no guest can walk to/,
+        "which is the whole failure the report exists to name");
+    assert.match(text, /`ground` counts owned land per map-aligned block/, "the census");
+    assert.match(text, /six add up to `owned`/, "and its own arithmetic");
+
+    assert.doesNotMatch(text, /\bshould\b|\brecommend|\badvis|\bfirst\b|\bprefer/i,
+        "which run to join, where to build and which island to repair are the model's decisions");
+});
+
+/**
+ * `guestsCanReach` no longer asks for a queue - it is the entrance door tile being walkable
+ * from the gate - which leaves `hasQueue` meaning exactly one thing, and the description
+ * never said what. Without a bound queue `PeepInteractWithEntrance` still puts a guest who
+ * walks up on ordinary path into queuing state, and `shouldGoOnRide` with `atQueue` false
+ * turns away anyone arriving while that guest is still there: one at a time. One run took 3
+ * customers on a ride with no queue against 16 on one with a queue.
+ */
+test("`hasQueue` is described as throughput, which is now the only thing it says", function () {
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "parkStatus";
+    });
+
+    assert.equal(definitions.length, 1, "park_status is registered once");
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /`hasQueue` is throughput, not reachability/,
+        "the field's one meaning, stated where the model reads it every turn");
+    assert.match(text, /without one a ride boards one guest at a time/,
+        "what a ride with no queue still does, so an absent queue is not an absent ride");
+    assert.match(text, /a bound queue lets several wait at once/, "and what binding one buys");
+    assert.match(text, /`guestsCanReach` is separate/,
+        "the two fields answer different questions and always did");
+});
+
+/**
+ * A run's severance is a count of what a ride's entrance claim would cost. Laying the queue
+ * is not what does it: a queue no ride owns changed no edge bit in the running game, so the
+ * trailing clause was naming the wrong action for a real number.
+ */
+test("`cutsIfBlocked` names the entrance claim as what stops a tile carrying traffic", function () {
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "parkStatus";
+    });
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /which is what a ride's entrance claiming a queue there does/,
+        "the action that actually severs an edge");
+    assert.doesNotMatch(text, /which is what laying a queue on it does/,
+        "laying one severs nothing; a ride owning the line is what does");
+    assert.doesNotMatch(text, /cannot walk through/,
+        "and the rule behind the old clause, which the game does not implement");
 });

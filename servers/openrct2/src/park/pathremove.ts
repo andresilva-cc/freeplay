@@ -207,7 +207,7 @@ function structureOnRun(tiles: Tile[]): string | null {
                 return "Tile " + tileName(tiles[i]) + " of this run is the park entrance BUILDING - the"
                     + " park's own gate, which belongs to no ride and is not a footpath. Nothing in this"
                     + " bridge removes it, and demolishing a ride will not: route around it instead."
-                    + " park_status gives the gate's own tiles as `paths.entrance`. Nothing was removed.";
+                    + " park_status gives the gate's own tiles as `paths.gate`. Nothing was removed.";
             }
 
             if (entrance.object !== RIDE_ENTRANCE && entrance.object !== RIDE_EXIT) {
@@ -273,8 +273,8 @@ function ridesServedByQueue(): Record<number, boolean> {
  *
  * Nothing else in this bridge removes a path. `build_path` can lay a path over a queue or
  * a queue over a path, and both of those are mistakes with no other remedy: an ordinary
- * path laid over a queue unbinds it from its ride, and a queue laid across a through route
- * splits the park, because guests cannot walk through one.
+ * path laid over a queue unbinds it from its ride, and a ride's entrance claiming a queue -
+ * not the queue itself - dead-ends the tile its door opens onto, cutting off whatever lay past it.
  *
  * Every count here comes from reading the map back a tick later, including whether a ride
  * still has the queue that served it, which is the damage that is otherwise invisible.

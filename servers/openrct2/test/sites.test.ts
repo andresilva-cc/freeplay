@@ -398,6 +398,104 @@ test("a door that a queue would join is marked with what it cuts off", function 
     }
 });
 
+/**
+ * The discriminator for the fallback this figure used to have: a door on BARE ground with
+ * the trunk path one tile away. The old code charged such a door the worst of its four
+ * neighbours, on the theory that the queue run to it would block the footpath it joined -
+ * so 11,9 came back 2 and 11,10 came back 1, telling the model that a ride beside the main
+ * path would cut the park up. It does not. A queue no ride has claimed is walked like any
+ * other path, the run to the door is new ground that carried nobody, and only the door
+ * tile itself dead-ends - and on bare ground there was no route through it to lose.
+ */
+test("a door on bare ground beside the trunk cuts nothing, whatever the trunk carries", function () {
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(9, 0);
+
+    for (let y = 1; y <= 11; y++) {
+        game.addPath(10, y);
+    }
+
+    // Owned land starts one tile east of the trunk, so every door lands on bare ground
+    // next to it rather than on it.
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            game.own(x, y, x >= 11 && x <= 16 && y >= 9 && y <= 11);
+        }
+    }
+
+    const restore = game.install();
+
+    try {
+        const sites = findBuildSites(0, 50, 0).sites || [];
+        assert.equal(sites.length, 1, "only one 3x3 site has room here");
+
+        const doors = sites[0].access.map(function (option) {
+            assert.ok(option.door, "a ride's access option must carry the door its queue goes on");
+            return { at: String(option.door.x) + "," + String(option.door.y), cuts: option.queueCutsOff };
+        });
+
+        assert.deepEqual(doors, [
+            { at: "11,9", cuts: 0 },
+            { at: "11,10", cuts: 0 },
+            { at: "11,11", cuts: 0 }
+        ], "each of these is one tile from a trunk tile whose own severance is 2, 1 and 0");
+
+        // The control: the trunk really does have something to lose, so the zeros above are
+        // the rule changing and not an empty park.
+        assert.equal(findBuildSites(0, 50, 0).sites?.length, 1);
+    } finally {
+        restore();
+    }
+});
+
+/**
+ * A door already carrying a queue no ride owns - what a demolished ride leaves behind, and
+ * a door the search offers as a finished one. Placing an entrance here claims that queue,
+ * which dead-ends the tile, so it can sever exactly like an ordinary path tile can. The
+ * old code returned 0 for any tile that was already a queue.
+ */
+test("a door on an unbound queue in the trunk is charged for dead-ending it", function () {
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(9, 0);
+
+    for (let y = 1; y <= 11; y++) {
+        game.addPath(10, y, y === 10);
+    }
+
+    for (let x = 0; x < 24; x++) {
+        for (let y = 0; y < 24; y++) {
+            game.own(x, y, x >= 10 && x <= 17 && y >= 9 && y <= 11);
+        }
+    }
+
+    const restore = game.install();
+
+    try {
+        const sites = findBuildSites(0, 50, 0).sites || [];
+        assert.equal(sites.length, 1);
+
+        const onTheQueue = sites[0].access.filter(function (option) {
+            return option.door && option.door.x === 10 && option.door.y === 10;
+        });
+
+        assert.equal(onTheQueue.length, 1, "a door on an unbound queue is still offered");
+        assert.equal(onTheQueue[0].door?.hasUnboundQueue, true);
+        assert.equal(onTheQueue[0].queueCutsOff, 1,
+            "an entrance here claims that queue and dead-ends 10,10, which strands 10,11");
+
+        const below = sites[0].access.filter(function (option) {
+            return option.door && option.door.x === 10 && option.door.y === 11;
+        });
+
+        assert.equal(below[0].queueCutsOff, 0,
+            "and the tile past it is still reachable today, which is what makes the 1 above a real loss");
+    } finally {
+        restore();
+    }
+});
+
 test("a queue that cuts nothing is never flagged", function () {
     // The flag has to be rare enough to mean something. A door with no footpath anywhere
     // near it has nothing to join and nothing to cut, and must come back 0 - otherwise the
@@ -1164,4 +1262,40 @@ test("`limit` says how big a site is and never how few to ask for", function () 
     assert.match(limit, /default 3, max 50/, "and so do the bounds");
     assert.doesNotMatch(limit, /ask for more only|only when you need/,
         "how many alternatives to look at is the model's call");
+});
+
+/**
+ * Measured against the running game: turning two path tiles into a queue changed no edge
+ * bit at all (51,24 and 51,25 of Forest Frontiers, `edges` 10 before and 10 after), so the
+ * reason this description gave for `queueCutsOff` - that guests cannot walk through a queue -
+ * was false, and it painted every door beside the trunk path as a park cut in two. What
+ * severs is a ride claiming the tile its door opens onto.
+ *
+ * The absence of the old sentence is pinned as hard as the presence of the new one. A
+ * falsehood this old comes back from a stale branch or a half-remembered paragraph, and the
+ * description is read on every turn the tool is in play.
+ */
+test("find_build_sites says what actually severs a route, and not that a queue does", function () {
+    const definitions = getMcpToolDefinitions(SiteTools).filter(function (definition) {
+        return definition.handlerName === "findBuildSites";
+    });
+
+    assert.equal(definitions.length, 1, "find_build_sites is registered once");
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /Guests walk a queue like any other path/,
+        "a queue is ordinary walkable path, which is the measured fact");
+    assert.match(text, /a ride claiming one, which dead-ends the single tile its door opens onto/,
+        "and the one thing that does sever a route");
+    assert.match(text, /a door on bare ground is 0/,
+        "so the queue run to a door on new ground carries nobody away");
+    assert.match(text, /only a door whose `isExistingPath` is true .* can be above 0/,
+        "and the only doors the figure can charge");
+    assert.doesNotMatch(text, /cannot walk through/,
+        "the disproven rule, which converting a path to a queue in the running game refuted");
+    assert.doesNotMatch(text, /cuts that many tiles off the park/,
+        "and the claim it was used to make about every positive number");
+    assert.doesNotMatch(text, /matters most/,
+        "no door is weighted: the ordering is distance to a path and the choice is the model's");
 });

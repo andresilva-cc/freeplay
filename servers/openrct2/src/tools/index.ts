@@ -4,6 +4,7 @@ import { ClearTools } from "./clear.js";
 import { EvalTools } from "./eval.js";
 import { GameSpeedTools } from "./gameSpeed.js";
 import { LandTools } from "./land.js";
+import { MapViewTools } from "./mapView.js";
 import { OpenParkTools } from "./openPark.js";
 import { OperateTools } from "./operate.js";
 import { PathTools } from "./path.js";
@@ -25,6 +26,7 @@ export function getMcpToolControllers(): McpToolClass[] {
         EvalTools,
         GameSpeedTools,
         LandTools,
+        MapViewTools,
         OpenParkTools,
         OperateTools,
         PathTools,

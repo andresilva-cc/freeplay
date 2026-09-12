@@ -30,7 +30,9 @@ export class PathTools {
             "Aim at the tile a door opens onto, never at the entrance or exit building itself — park_status gives",
             "those tiles as `entranceDoor` and `exitDoor`. A path cannot be laid on a building.",
             "`connectedToPark: false` means one end is an island: the tiles guests can really walk to are",
-            "park_status `paths.reachableSample`, and a tile being paved does not make it one of them.",
+            "the ones park_status covers with `paths.runs`, and a tile being paved does not make it one of",
+            "them. Each run carries a `kind`, so which of those tiles are queue and which are ordinary path",
+            "is something you read rather than guess.",
             "Every result has the same shape — `ok`, `tilesPlaced`, `tilesRouted`, `route`, `connectedToPark`",
             "and `detail` — including refusals, where `detail` says what was wrong.",
             "Where paths go is your decision — this only handles the placement."
@@ -59,7 +61,7 @@ export class PathTools {
                 },
                 queue: { type: "boolean", description: "Build a queue line rather than an ordinary path. Default false." },
                 surfaceObject: { type: "integer", minimum: 0, description: "Footpath surface style, from context.getAllObjects(\"footpath_surface\"). Queue styles are separate objects. Defaults to a plain path, or a blue queue." },
-                railingsObject: { type: "integer", minimum: 0, description: "Railing style, from context.getAllObjects(\"footpath_railings\"). Default 0." }
+                railingsObject: { type: "integer", minimum: 0, description: "Railing style, from `footpath_railings` the same way. Default 0." }
             },
             required: [],
             additionalProperties: false

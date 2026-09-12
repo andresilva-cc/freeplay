@@ -268,14 +268,24 @@ test("a price is in tenths, and the number sent is the number the ride ends up c
     }
 });
 
-test("the tool says prices are tenths, in both the description and the argument", function () {
+/**
+ * The money unit and the seven inspection intervals were in this tool's description AND on
+ * the two arguments that take them, so both were paid for twice on every turn. The argument
+ * is the copy that survives: it is the text being read at the moment the number is chosen,
+ * and a wrong number is refused by the schema only after that turn is already spent.
+ */
+test("prices are tenths on the argument that takes them, and nowhere else in this tool", function () {
     const definition = toolDefinition();
     const properties = definition.inputSchema.properties || {};
+    const price = String(properties.price.description);
 
-    assert.match(String(definition.description), /tenths/,
+    assert.match(price, /tenths/,
         "a model that does not know the unit charges a hundred times too little");
-    assert.match(String(definition.description), /1000 means 100\.00/);
-    assert.match(String(properties.price.description), /tenths/);
+    assert.match(price, /1000 means 100\.00/);
+    assert.doesNotMatch(String(definition.description), /tenths/,
+        "the tool description's copy was cut; `price` states it where the price is chosen");
+    assert.doesNotMatch(String(definition.description), /every 10 minutes/,
+        "and so was its copy of the interval table, which `inspectionInterval` states");
 });
 
 test("a ride that is not finished is reported still closed, with the reason", function () {
@@ -759,4 +769,37 @@ test("opening and pricing a ride are untouched by the pause, because the game al
     } finally {
         restore();
     }
+});
+
+/**
+ * The seven inspection intervals were written out in three places at once - this tool's
+ * description, this argument, and `build_flat_ride.inspectionInterval` - and every tool
+ * description is in the model's context on every turn of every run, so the table was
+ * charged three times a turn to say one thing.
+ *
+ * One copy survives, here, on the argument that takes the number. What stays at
+ * `build_flat_ride` is the trap rather than the table: "not a number of minutes" is what
+ * stops a wrong value being sent, and it has to be at the point the value is chosen because
+ * the schema refuses a wrong one only after the turn that sent it is spent. The numbers
+ * themselves are a lookup, and both tools are in the same list when the model reads either.
+ */
+test("the seven inspection intervals are written out once, on the argument that takes them", function () {
+    const properties = toolDefinition().inputSchema.properties || {};
+    const here = String(properties.inspectionInterval.description);
+
+    assert.match(here, /0 is every 10 minutes, 1 every 20, 2 every 30, 3 every 45/, "the surviving table");
+    assert.match(here, /6 never/);
+    assert.match(here, /thirty minutes is 2, not 30/,
+        "and the sentence that would have saved the run that sent 30 meaning thirty minutes");
+
+    const build = String(((getMcpToolDefinitions(BuildTools).filter(function (definition) {
+        return definition.handlerName === "buildFlatRide";
+    })[0].inputSchema.properties || {}).inspectionInterval as { description?: string }).description);
+
+    assert.doesNotMatch(build, /every 10 minutes|every 45|6 never/,
+        "build_flat_ride's second table was the duplicate; it names this argument instead");
+    assert.match(build, /NOT a number of minutes/,
+        "but the trap itself stays where a wrong number would be sent, because the refusal costs the turn");
+    assert.match(build, /`operate_ride`'s `inspectionInterval`/, "and it says where the seven are listed");
+    assert.match(build, /Default 2/, "with the default, which is this tool's own and nowhere else");
 });

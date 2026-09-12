@@ -104,17 +104,75 @@ export function findParkEntranceTiles(): Tile[] {
 }
 
 /**
+ * The four directions in OpenRCT2's own order, so the index is the bit position in a
+ * footpath's `edges`: 0 is -x, 1 is +y, 2 is +x, 3 is -y. This is `CoordsDirectionDelta`.
+ *
+ * Kept separate from `NEIGHBOURS`, whose order is arbitrary and which several callers walk
+ * for reasons that have nothing to do with edge bits.
+ */
+const EDGE_DIRECTIONS = [{ dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }];
+
+/** The bit in `edges` that points the other way down the same link. */
+function opposite(direction: number): number {
+    return (direction + 2) % 4;
+}
+
+/**
+ * Which sides of this tile a guest may step off, as the game itself records it: the
+ * `edges` bitfield of the footpaths on it, OR'd together. -1 where there is no path at all.
+ *
+ * OR'd rather than taking the first element because a tile can carry more than one footpath
+ * (a bridge over a path), and the pair-wise check in `walkableFromParkEntrance` means an
+ * over-generous OR on one tile still cannot invent a link the neighbour does not also
+ * claim.
+ */
+function pathEdges(x: number, y: number): number {
+    if (x < 0 || y < 0 || x >= map.size.x || y >= map.size.y) {
+        return -1;
+    }
+
+    const tile = map.getTile(x, y);
+    let edges = -1;
+
+    for (let i = 0; i < tile.numElements; i++) {
+        const element = tile.getElement(i);
+
+        if (element.type !== "footpath") {
+            continue;
+        }
+
+        // Only the low nibble is the four orthogonal edges; the high nibble is corners.
+        edges = (edges < 0 ? 0 : edges) | ((element as FootpathElement).edges & 0x0f);
+    }
+
+    return edges;
+}
+
+/**
  * Every path tile guests can walk to from the park entrance.
  *
- * Queues are one-way in a particular sense: a guest walks the length of a queue to reach
- * the ride at the end of it, but cannot cut through one to get anywhere else. So a queue
- * tile expands only to other queue tiles — following the line to its door — and never
- * back out onto ordinary path.
+ * This walks the game's own footpath graph: OpenRCT2 stores on every footpath element the
+ * sides a guest may leave it by, and `PathGetPermittedEdges` - the one function the guest
+ * pathfinder asks which way it may go - returns exactly that bitfield. So the edges are not
+ * a hint about connectivity, they *are* the connectivity, and reading them is the only way
+ * to be right about it that does not involve reimplementing the game.
  *
- * Getting this wrong in either direction is expensive. Treating a queue as ordinary path
- * marks everything behind it reachable when it is not; refusing to expand from it at all
- * marks every ride with more than a one-tile queue unreachable, which is worse, because
- * that is the normal case.
+ * What this replaced was a hand-rolled rule: "a queue tile expands only to other queue
+ * tiles", on the theory that a guest cannot cut through a queue to get anywhere else.
+ * Measured against a running game, that is not what happens. Turning two path tiles into a
+ * queue changed no edge bit at all (51,24 and 51,25 of Forest Frontiers, `edges` 10 before
+ * and 10 after), so guests walked straight over it. What does cut the line is *binding* a
+ * queue to a ride: when the entrance claimed that queue, the game cleared the bit on the
+ * far side of the tile at the door - 51,25 went 10 to 9 and the tile past it, 51,26, went
+ * 10 to 3 - leaving the queue a cul-de-sac ending at the door. So the game severs one
+ * specific edge, and only when a ride owns the line; the old rule severed every edge off
+ * every queue tile, which is why it under-reported. Mid-line queue tiles keep their edges
+ * to ordinary path and were measured doing so (51,27, bound to a ride, `edges` 10, joined
+ * to the plain path at 51,26).
+ *
+ * Both sides of a link have to claim it. The game keeps them symmetric - across every
+ * footpath in the measured park there was not one pair where only one side agreed - so
+ * requiring both costs nothing and refuses to invent a link out of one stale bit.
  */
 export function walkableFromParkEntrance(): Record<string, boolean> {
     const gate = findParkEntranceTiles();
@@ -135,17 +193,23 @@ export function walkableFromParkEntrance(): Record<string, boolean> {
 
     while (queue.length > 0) {
         const current = queue.shift() as Tile;
-        const alongQueue = isQueue(current.x, current.y);
+        const from = pathEdges(current.x, current.y);
 
-        for (let i = 0; i < NEIGHBOURS.length; i++) {
-            const x = current.x + NEIGHBOURS[i].dx;
-            const y = current.y + NEIGHBOURS[i].dy;
-
-            if (seen[key(x, y)] || !isPath(x, y)) {
+        for (let d = 0; d < EDGE_DIRECTIONS.length; d++) {
+            if ((from & (1 << d)) === 0) {
                 continue;
             }
 
-            if (alongQueue && !isQueue(x, y)) {
+            const x = current.x + EDGE_DIRECTIONS[d].dx;
+            const y = current.y + EDGE_DIRECTIONS[d].dy;
+
+            if (seen[key(x, y)]) {
+                continue;
+            }
+
+            const to = pathEdges(x, y);
+
+            if (to < 0 || (to & (1 << opposite(d))) === 0) {
                 continue;
             }
 

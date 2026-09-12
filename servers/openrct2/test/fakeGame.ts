@@ -19,6 +19,12 @@ export interface FakeElement {
     forSale?: boolean;
     slope?: number;
     isQueue?: boolean;
+    /**
+     * Footpath only: the sides a guest may leave this tile by, as OpenRCT2 stores them.
+     * Bit 0 is -x, 1 is +y, 2 is +x, 3 is -y, matching `CoordsDirectionDelta`. The guest
+     * pathfinder reads this and nothing else, so it is what decides reachability.
+     */
+    edges?: number;
     ride?: number | null;
     station?: number | null;
     surfaceObject?: number | null;
@@ -313,8 +319,104 @@ export class FakeGame {
 
     public addPath(x: number, y: number, queue = false, ride: number | null = null): void {
         this.tile(x, y).elements.push({
-            type: "footpath", baseZ: 96, isQueue: queue, ride: ride, surfaceObject: queue ? 11 : 0
+            type: "footpath", baseZ: 96, isQueue: queue, ride: ride, surfaceObject: queue ? 11 : 0, edges: 0
         });
+        this.connectEdgesAround(x, y);
+    }
+
+    /**
+     * Join every footpath here to the footpaths and doorways beside it, in both directions.
+     *
+     * The game keeps `edges` symmetric - measured across every footpath of a running park,
+     * there was not one pair where only one side claimed the link - so this sets both. A
+     * queue is joined exactly like ordinary path, because that is what the game does:
+     * turning two path tiles into a queue changed no edge bit at all.
+     *
+     * Deliberately not a model of OpenRCT2's edge bookkeeping, which is several hundred
+     * lines and the thing whose reimplementation caused the bug this replaced. It lays down
+     * the ordinary case; a test that needs a link the game would have cut says so with
+     * `severPath`, the way the real API hands that state over as data.
+     */
+    private connectEdgesAround(x: number, y: number): void {
+        for (let i = -1; i <= 1; i++) {
+            for (let j = -1; j <= 1; j++) {
+                if (i !== 0 && j !== 0) {
+                    continue;
+                }
+
+                if (this.inBounds(x + i, y + j)) {
+                    this.recomputeEdges(x + i, y + j);
+                }
+            }
+        }
+    }
+
+    private recomputeEdges(x: number, y: number): void {
+        const directions = [{ dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }];
+        let edges = 0;
+
+        for (let d = 0; d < directions.length; d++) {
+            const nx = x + directions[d].dx;
+            const ny = y + directions[d].dy;
+
+            if (!this.inBounds(nx, ny)) {
+                continue;
+            }
+
+            const neighbours = this.tile(nx, ny).elements;
+
+            for (let i = 0; i < neighbours.length; i++) {
+                // A doorway counts: guests step between a path and the building it serves.
+                if (neighbours[i].type === "footpath" || neighbours[i].type === "entrance") {
+                    edges |= 1 << d;
+                    break;
+                }
+            }
+        }
+
+        const elements = this.tile(x, y).elements;
+
+        for (let i = 0; i < elements.length; i++) {
+            if (elements[i].type === "footpath") {
+                elements[i].edges = edges;
+            }
+        }
+    }
+
+    /**
+     * Cut the link between two neighbouring tiles, both ways, leaving the paths in place.
+     *
+     * This is the state a ride entrance puts its own queue into: the game clears the bit on
+     * the far side of the queue tile at the door, so the line dead-ends there instead of
+     * carrying traffic past it. Measured in a running park - the tile at the door went from
+     * `edges` 10 to 9 and the tile beyond it from 10 to 3 - and set here as data rather than
+     * derived, because deriving it is what went wrong before.
+     */
+    public severPath(ax: number, ay: number, bx: number, by: number): void {
+        const directions = [{ dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }];
+
+        for (let d = 0; d < directions.length; d++) {
+            if (ax + directions[d].dx !== bx || ay + directions[d].dy !== by) {
+                continue;
+            }
+
+            this.clearEdge(ax, ay, d);
+            this.clearEdge(bx, by, (d + 2) % 4);
+            return;
+        }
+
+        throw new Error(String(ax) + "," + String(ay) + " and " + String(bx) + "," + String(by)
+            + " are not neighbours, so there is no link between them to cut");
+    }
+
+    private clearEdge(x: number, y: number, direction: number): void {
+        const elements = this.tile(x, y).elements;
+
+        for (let i = 0; i < elements.length; i++) {
+            if (elements[i].type === "footpath") {
+                elements[i].edges = (elements[i].edges || 0) & ~(1 << direction);
+            }
+        }
     }
 
     /**
@@ -327,6 +429,7 @@ export class FakeGame {
         this.tile(x, y).elements.push({
             type: "entrance", baseZ: 96, object: isExit ? 1 : 0, sequence: 0, ride: ride, direction: direction
         });
+        this.connectEdgesAround(x, y);
         this.updateQueueChains();
     }
 
@@ -345,6 +448,7 @@ export class FakeGame {
             this.tile(x + i, y).elements.push({
                 type: "entrance", baseZ: 96, object: 2, sequence: i, ride: 0
             });
+            this.connectEdgesAround(x + i, y);
         }
     }
 
@@ -599,10 +703,15 @@ export class FakeGame {
                 existing.surfaceObject = args.object as number;
             } else {
                 tile.elements.push({
-                    type: "footpath", baseZ: 96, isQueue: isQueue, ride: null, surfaceObject: args.object as number
+                    type: "footpath", baseZ: 96, isQueue: isQueue, ride: null,
+                    surfaceObject: args.object as number, edges: 0
                 });
             }
 
+            // The game rebuilds a tile's edges and its neighbours' whenever a path lands or
+            // leaves. Without this a tile the plugin laid itself carries no edges at all and
+            // reads as an island, which is not what the game hands back.
+            this.connectEdgesAround(tileX, tileY);
             this.updateQueueChains();
             return { error: 0 };
         }
@@ -610,6 +719,7 @@ export class FakeGame {
         if (action.name === "footpathremove") {
             const tile = this.tile(tileX, tileY);
             tile.elements = tile.elements.filter(function (e) { return e.type !== "footpath"; });
+            this.connectEdgesAround(tileX, tileY);
             this.updateQueueChains();
             return { error: 0 };
         }

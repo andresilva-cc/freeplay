@@ -16,6 +16,13 @@ const MAX_INSPECTION_INTERVAL = 6;
 /**
  * The mapping, spelled out wherever the model can read it. It is the whole content of the
  * trap: the values look like minutes and are not, so thirty minutes is 2 and 30 is nothing.
+ *
+ * The ONE model-facing copy is `inspectionInterval`'s own `description` below. It was in
+ * this tool's description as well, and `build_flat_ride` carried a second table of its own,
+ * so the seven intervals were paid for three times on every turn of every run. The property
+ * is the copy that survives because it is the text being read at the moment the number is
+ * chosen, and the schema's refusal for a wrong one arrives only after that turn is spent.
+ * `build_flat_ride.inspectionInterval` now names this argument instead of restating it.
  */
 const INSPECTION_INTERVAL_HELP = "0 is every 10 minutes, 1 every 20, 2 every 30, 3 every 45,"
     + " 4 every hour, 5 every 2 hours, 6 never; so thirty minutes is 2, not 30";
@@ -73,9 +80,9 @@ export class OperateTools {
         description: [
             "Open, close, reprice, reschedule inspections for, or remove a ride that already exists,",
             "by its `ride` id from `park_status`.",
-            "`price` is in tenths of a currency unit: 1000 means 100.00.",
-            "`inspectionInterval` is an index from 0 to 6 and not a number of minutes:",
-            INSPECTION_INTERVAL_HELP + ".",
+            // The money unit and the interval table were here as well as on the two
+            // arguments that take them. The arguments keep them: that is the text read
+            // while the number is being chosen.
             "`price`, `open` and `inspectionInterval` can be changed in one call.",
             "`demolish` must be sent on its own; combined with `price` or `open` the call is refused.",
             "The result reports what the ride is actually doing afterwards, which is not always what you asked:",

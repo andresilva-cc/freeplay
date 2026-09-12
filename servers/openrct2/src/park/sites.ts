@@ -36,11 +36,13 @@ export interface AccessOption {
     /** Tiles from the door to the nearest existing footpath. 0 means it is already on one.
      *  -1 when the park has no footpath at all. */
     pathDistance: number;
-    /** How many path tiles stop being reachable from the park entrance once a queue
-     *  reaches `door`. A queue does not stop at the door: build_path lays it onto the
-     *  footpath it joins, and guests cannot walk through a queue, so joining a tile that
-     *  carries a through route splits the park in two. 0 means a queue here cuts nothing.
-     *  A measurement of what would happen, not a ranking: the list is not reordered by it. */
+    /** How many path tiles stop being reachable from the park entrance once an entrance
+     *  here claims a queue on `door`. A ride claiming a queue dead-ends the one tile its
+     *  door opens onto, so this is what the park loses if that tile stops carrying traffic
+     *  through. A door on bare ground is 0: the queue tiles leading to it are new ground
+     *  that carried nobody before. The rest of a queue line is walked like any other path
+     *  and cuts nothing. A measurement of what would happen, not a ranking: the list is not
+     *  reordered by it. */
     queueCutsOff: number;
 }
 
@@ -204,23 +206,23 @@ function nearestPathDistance(paths: { x: number; y: number }[], x: number, y: nu
 const NEIGHBOURS = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
 
 /**
- * Path tiles guests can walk to from the park entrance, optionally with one tile treated
- * as a queue that is not one yet.
+ * Path tiles guests can walk to from the park entrance, optionally with one named tile
+ * treated as a dead end: reachable, but carrying nobody through to the far side.
  *
- * Same walk as paths.ts `walkableFromParkEntrance`, over the cached grid rather than the
- * live map so it can be re-run cheaply with a hypothetical queue in place. The queue rule
- * is the one that matters: a guest walks the length of a queue to reach the ride at the
- * end, but cannot cut through it to get anywhere else, so a queue tile expands only to
- * other queue tiles.
+ * Over the cached grid rather than the live map, so it can be re-run cheaply once per
+ * footpath tile with a hypothetical in place. paths.ts `walkableFromParkEntrance` reads
+ * the game's own `edges` bitfield, which the grid does not carry; here the flood is plain
+ * adjacency over footpath tiles, which is the same answer wherever the game has not cut a
+ * link, and `deadEnd` is how the one cut that matters is asked about.
+ *
+ * A queue is walked like any other path. The rule that stood here - a queue tile expands
+ * only to other queue tiles - is not what the game does: turning path into queue moves no
+ * edge bit at all. A ride's entrance claiming a queue is what severs, and it dead-ends the
+ * single tile the door opens onto, which is exactly what `deadEnd` models.
  */
-function walkableFrom(grid: MapGrid, gate: { x: number; y: number }[], asQueue: string | null): Record<string, boolean> {
+function walkableFrom(grid: MapGrid, gate: { x: number; y: number }[], deadEnd: string | null): Record<string, boolean> {
     const seen: Record<string, boolean> = {};
     const frontier: { x: number; y: number }[] = [];
-
-    const queueAt = function (x: number, y: number): boolean {
-        const cell = grid.at(x, y);
-        return (cell !== undefined && cell.queue) || key(x, y) === asQueue;
-    };
 
     for (let g = 0; g < gate.length; g++) {
         for (let i = 0; i < NEIGHBOURS.length; i++) {
@@ -237,7 +239,11 @@ function walkableFrom(grid: MapGrid, gate: { x: number; y: number }[], asQueue: 
 
     while (frontier.length > 0) {
         const current = frontier.shift() as { x: number; y: number };
-        const alongQueue = queueAt(current.x, current.y);
+
+        // Reached, and that is as far as it goes: a claimed door tile is where the line ends.
+        if (key(current.x, current.y) === deadEnd) {
+            continue;
+        }
 
         for (let i = 0; i < NEIGHBOURS.length; i++) {
             const x = current.x + NEIGHBOURS[i].dx;
@@ -245,10 +251,6 @@ function walkableFrom(grid: MapGrid, gate: { x: number; y: number }[], asQueue: 
             const cell = grid.at(x, y);
 
             if (seen[key(x, y)] || !cell || !cell.path) {
-                continue;
-            }
-
-            if (alongQueue && !queueAt(x, y)) {
                 continue;
             }
 
@@ -376,14 +378,16 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
 
     // The answer is a property of the footpath tile, not of the door, and thousands of
     // doors share a handful of footpaths, so it is measured once per tile and kept. Only
-    // a tile that already carries ordinary path can cut anything: a queue laid on bare
-    // ground adds to the network and takes no route out of it.
+    // a tile that already carries a path can cut anything: a queue laid on bare ground
+    // adds to the network and takes no route out of it. A tile already carrying a queue
+    // counts - an entrance placed here claims that queue and dead-ends this tile, which is
+    // the `hasUnboundQueue` door the search offers as a finished one.
     const severance: Record<string, number> = {};
 
-    const severanceOfPathTile = function (x: number, y: number): number {
+    const costOfDeadEnding = function (x: number, y: number): number {
         const cell = grid.at(x, y);
 
-        if (gate.length === 0 || !cell || !cell.path || cell.queue) {
+        if (gate.length === 0 || !cell || !cell.path) {
             return 0;
         }
 
@@ -406,31 +410,18 @@ export function findBuildSites(rideObjectIndex: number, limit: number, rotation?
         return lost;
     };
 
-    // A queue does not stop at the door. build_path lays it onto the footpath it joins,
-    // and that tile stops carrying ordinary traffic. So the cost of queueing this door is
-    // the worst of the footpaths it touches - the tiles a queue could join - which is the
-    // measurement that was missing when the model queued the trunk path and cut the park
-    // in half. Reported, never used to reorder: which tile to use is the player's call.
+    // An entrance built here claims whatever queue reaches its door, and claiming it
+    // dead-ends that one tile. So the cost is the door tile's own, and nothing else's.
+    //
+    // This used to charge a door standing on bare ground for the worst of its four
+    // neighbours, on the theory that the queue run to it would block the footpath it
+    // joined. It does not: a queue no ride has claimed is walked like any other path, and
+    // the tiles the run adds are new ground that carried nobody before. That door is 0 -
+    // measured, not assumed - and the old figure told the model that putting a ride beside
+    // the trunk path would cut the park in half. Reported, never used to reorder: which
+    // tile to use is the player's call.
     const queueCutsOffAt = function (x: number, y: number): number {
-        const cell = grid.at(x, y);
-
-        // A door already on the network is where the queue joins it, full stop. Looking at
-        // its neighbours as well would charge this door for a tile the queue never reaches.
-        if (cell && cell.path) {
-            return severanceOfPathTile(x, y);
-        }
-
-        let worst = 0;
-
-        for (let i = 0; i < NEIGHBOURS.length; i++) {
-            const lost = severanceOfPathTile(x + NEIGHBOURS[i].dx, y + NEIGHBOURS[i].dy);
-
-            if (lost > worst) {
-                worst = lost;
-            }
-        }
-
-        return worst;
+        return costOfDeadEnding(x, y);
     };
 
     // A square footprint occupies the same tiles either way round, so searching both

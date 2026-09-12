@@ -210,11 +210,32 @@ function description(): string {
 
 /** The `paused` argument's description, which the MCP schema carries alongside it. */
 function pausedArgumentDescription(): string {
+    return argumentDescription("paused");
+}
+
+/** An argument's own description. The properties are where a fact the model needs to avoid an
+ *  error belongs: a refusal only arrives after the turn that earned it is already spent. */
+function argumentDescription(name: string): string {
     const properties = getMcpToolDefinitions(GameSpeedTools)[0].inputSchema.properties as
         Record<string, { description: string }>;
 
-    return properties.paused.description;
+    assert.equal(typeof properties[name].description, "string", name + " has to carry a description");
+    return properties[name].description;
 }
+
+test("the speed scale is stated once, on the argument that takes it", function () {
+    // It used to be in three places at once - here, in `park_status`, and in the prompt - which
+    // is ~350 tokens of the window spent on one four-item list, re-read on every single turn.
+    // The argument is the copy that survives, because a bad `speed` is refused after the turn
+    // is already spent: this is the text that has to stop that happening.
+    const scale = /1 is normal, 2 runs the simulation twice as fast, 3 four times, 4 eight times/;
+
+    assert.match(argumentDescription("speed"), scale,
+        "the scale has to live on `speed` itself, which is the last place read before a call is made");
+    assert.doesNotMatch(description(), scale, "and nowhere else on this tool");
+    assert.match(argumentDescription("speed"), /not multipliers, so eight times normal is 4 and there is no 8/,
+        "the trap is the point of stating the scale at all");
+});
 
 test("the description does not promise that game actions work while paused", function () {
     // Measured false against the running game: `buy_land` while paused came back
@@ -232,7 +253,11 @@ test("the description states the rule the game actually applies while paused", f
     // OpenRCT2 GameActionRunner.cpp `CheckActionInPausedMode`: while paused an action is
     // refused unless its GetActionFlags() carries Flags::AllowWhilePaused. Of what this
     // bridge fires, the map-changing ones do not carry it and the settings ones do.
-    const text = description();
+    //
+    // This is read off `paused` rather than off the tool description: the tool description
+    // carried a word-for-word second copy of the same list, and the argument is the copy that
+    // has to survive, because it is what is read at the moment the call is being written.
+    const text = pausedArgumentDescription();
     const refused = ["build_path", "remove_path", "buy_land", "clear_scenery", "build_flat_ride"];
 
     assert.match(text, /Construction not possible while game is paused/,
@@ -297,9 +322,9 @@ test("the description no longer says a paused build_flat_ride strands a ride rec
 
     assert.doesNotMatch(text, /ride record behind/, "nothing is left behind any more");
     assert.doesNotMatch(text, /cannot be demolished until you unpause/);
-    assert.match(description(), /build_flat_ride/,
+    assert.match(pausedArgumentDescription(), /build_flat_ride/,
         "the refusal is still a fact about the game and has to be stated");
-    assert.match(description(), /refuses the whole call while the game is paused/,
+    assert.match(pausedArgumentDescription(), /refuses the whole call while the game is paused/,
         "and what it actually does now is what the model needs to know");
 });
 
@@ -312,15 +337,17 @@ test("the descriptions say what the game does and never say when to pause", func
     assert.doesNotMatch(text, /Unpause before you build/, "that is an instruction, not a fact");
     assert.doesNotMatch(text, /pause to read and decide/, "and so is this one");
     assert.doesNotMatch(text, /unpause to build/i);
-    assert.match(description(), /When to run fast, when to run slow, and when to pause are your decisions\./,
-        "the tool still has to say plainly whose decision it is");
+    assert.doesNotMatch(text, /when to (?:pause|run fast)/i,
+        "the sentence that named whose decision it was has gone with the rest of the tool"
+            + " description: it stated no fact about the game, and the doesNotMatch guards above"
+            + " are what actually keep the steer out.");
 });
 
 test("every tool the description names as refused is a tool that reports that refusal", function () {
     // The description is a promise about four other tools. Pinning only its wording lets the
     // wording and the tools drift apart, which is how it came to describe an orphaned ride
     // that no longer happens.
-    const text = description();
+    const text = pausedArgumentDescription();
     const reporting = ["build_path", "remove_path", "buy_land", "clear_scenery"];
 
     for (let i = 0; i < reporting.length; i++) {

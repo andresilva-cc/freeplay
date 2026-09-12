@@ -93,7 +93,11 @@ export class BuildTools {
                     minimum: 0,
                     maximum: MAX_INSPECTION_INTERVAL,
                     enum: [0, 1, 2, 3, 4, 5, 6],
-                    description: "How often mechanics inspect. An index into the game's seven inspection intervals, NOT a number of minutes: 0 every 10 minutes, 1 every 20, 2 every 30, 3 every 45, 4 every hour, 5 every two hours, 6 never. Default 2, which is the interval OpenRCT2 itself gives a newly built ride."
+                    // The seven intervals are listed once, on `operate_ride.inspectionInterval`,
+                    // which is in the same tool list the model is reading. What stays here is the
+                    // trap itself - these are not minutes - because this is where a wrong number
+                    // would be sent, and the schema's refusal costs the turn that sent it.
+                    description: "How often mechanics inspect. The same index `operate_ride`'s `inspectionInterval` describes, and NOT a number of minutes. Default 2, which is the interval OpenRCT2 itself gives a newly built ride."
                 }
             },
             required: ["rideObject", "x", "y", "rotation", "price", "open"],
