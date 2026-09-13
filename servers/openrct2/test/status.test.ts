@@ -593,7 +593,9 @@ test("the reachable path count leaves out paths guests cannot get to", function 
         const orphans = paths.runs.filter(function (run) { return run.fromX >= 20 || run.toX >= 20; });
         assert.deepEqual(orphans, [], "the orphan block must not be offered as somewhere to build from");
 
-        const stranded = paths.islands.filter(function (island) { return island.fromX >= 20; });
+        const stranded = paths.islands.filter(function (island) {
+            return island.runs.filter(function (run) { return run.fromX >= 20; }).length > 0;
+        });
 
         assert.equal(stranded.length, 1,
             "and it is named as an island, which the flat tile list had no way of saying at all");
@@ -696,7 +698,8 @@ test("a ride door on a path the gate cannot reach is named in islands", function
         const islands = status.paths.islands;
 
         assert.equal(islands.length, 1, "the queue is a fragment the gate reaches nothing of");
-        assert.equal(islands[0].kind, "queue");
+        assert.deepEqual(islands[0].runs,
+            [{ fromX: 25, fromY: 25, toX: 25, toY: 26, tiles: 2, kind: "queue", ride: 0 }]);
         assert.deepEqual(islands[0].rides, [0]);
         assert.deepEqual(islands[0].doors, [{ ride: 0, door: "entrance", x: 25, y: 26 }],
             "the ride is built, it has a queue, and no guest can get to either");

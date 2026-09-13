@@ -39,8 +39,8 @@ wall and sell nothing.
 only; `isFlatRide: false` is a tracked ride, laid piece by piece with `evaluate`.
 
 A placement is three things: which ride, which tile is its origin, and which way round it
-faces. Nothing here searches for one. The ground is in `view_map`, which draws it a
-character a tile, and in `park_status`, whose ground census counts what kind of ground the
+faces. Nothing here searches for one. The ground is in `view_map`, which reads it tile by
+tile, and in `park_status`, whose ground census counts what kind of ground the
 park owns block by block and whose `paths` say what joins what; the tile is yours to name.
 
 How the ride's own tiles fall around that origin is the game's doing and is not a formula:
@@ -108,8 +108,8 @@ not a reachable one unless a run in `paths.runs` covers it.
 
 - `park_status`'s `ground` census counts the park's own tiles block by block, and
   `complete` false says the park holds more blocks than the call reported.
-- `view_map` draws the window you asked for and no more of the park; `clipped` says the
-  map's edge cut it down.
+- `view_map` reads the window you asked for and no more of the park; `clipped` says the
+  map's edge cut it down, and its `rows` then end with a line saying what was read instead.
 - `describe_placement` is the exception among the readers: its `access` is every door
   position that placement has, not a window on them.
 - `paths.runs` is the other one: every reachable tile is on exactly one run, and their
@@ -162,17 +162,17 @@ by a written summary, and the summaries are additive: each carries the last one'
 forward and has no way to say that one of them has stopped being true. A ride demolished and
 rebuilt elsewhere still reads at its first coordinates there, and a step written down as in
 progress stays in progress after it is finished. Nothing in a summary was read from the park.
-A tool result is not summarised at all but dropped whole, so a `view_map` grid read five
+A tool result is not summarised at all but dropped whole, so a `view_map` reading taken five
 times over a run is gone from the turn after it, with nothing in its place. The tools re-read
-the park on every call and a recollection of one does not, so a tile named with no grid in
-context is recalled rather than seen — one run recalled a path tile as empty ground and a
+the park on every call and a recollection of one does not, so a tile named with no reading of
+it in context is recalled rather than seen — one run recalled a path tile as empty ground and a
 ride's track three tiles from where it stood, and every route it weighed after that was
 blocked by an obstacle that was not there.
 
 `park_status` also carries the scenario objective and how far along it is, and `messages`,
 the game naming problems in its own words. `guest_feedback` reports what guests think, once
-there are guests to ask. `view_map` draws a window of ground as a grid of one character per
-tile — the only picture of the park there is, and its size in tiles is its price.
+there are guests to ask. `view_map` reads a window of ground tile by tile — the only picture
+of the park there is, and its size in tiles is its price.
 
 Which tool changes what: `open_park` for the gate or the admission price, `build_path` for
 anything guests cannot reach, `remove_path` to take a footpath or queue back up,

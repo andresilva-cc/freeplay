@@ -87,7 +87,7 @@ const FACTS: { fact: string; why: string }[] = [
     { fact: "A ride demolished and rebuilt elsewhere still reads at its first coordinates there", why: "the exact measured failure: a Pirate Ship built at (56,26), demolished, rebuilt at (54,31), still summarised at (56,26)" },
     { fact: "Nothing in a summary was read from the park", why: "the fact that settles which text is evidence, with no procedure attached to it" },
     { fact: "A tool result is not summarised at all but dropped whole", why: "the other half of what a summary does, and the silent half: the additive-staleness rule above describes facts that are carried and wrong, this one describes readings that are simply gone. Five `view_map` results were dropped by one compaction while seventeen routine turns were kept" },
-    { fact: "a tile named with no grid in context is recalled rather than seen", why: "what the model was doing on the turn after that compaction - it invented a path tile as empty and a ride's track three tiles off, walled off its own only fix, and spent the whole output budget with zero tool calls. States which text is an observation; the decision to go and look is left to it" }
+    { fact: "a tile named with no reading of it in context is recalled rather than seen", why: "what the model was doing on the turn after that compaction - it invented a path tile as empty and a ride's track three tiles off, walled off its own only fix, and spent the whole output budget with zero tool calls. States which text is an observation; the decision to go and look is left to it" }
 ];
 
 /**
@@ -184,6 +184,39 @@ test("park_status does not restate the speed scale a third time", function () {
         "which fields they are, and which tool sets them, stays");
     assert.doesNotMatch(text, /1 is normal|2 twice|four times|eight times/,
         "the scale belongs to `set_game_speed.speed`, and a third copy is a third payment for it");
+});
+
+/**
+ * `view_map` stopped drawing a grid of one character per tile and now reads each row as runs
+ * of `<firstX>-<lastX><kind>`, because on session 01a09887 the grid's two-row coordinate
+ * header produced 13 wrong tile claims out of 27 and a third of the output budget spent on
+ * column arithmetic.
+ *
+ * The kinds and the shape of a run are stated once, in the tool's own description, which is
+ * the text in context on the turn a window is being read. The prompt says what the tool
+ * answers and what it costs - the cost is the part no description carries - and the grid's
+ * vocabulary must not survive in it, because a picture the prompt promises and the tool does
+ * not draw is a falsehood the model reads every single turn and cannot check.
+ */
+test("the map's kinds are stated once, in view_map's description and not in the prompt", function () {
+    const tools = getMcpTools();
+    const view = tools.filter(function (tool) { return tool.name === "view_map"; })[0];
+
+    assert.ok(view, "view_map is registered");
+
+    const text = String(view.description);
+
+    assert.match(text, /<firstX>-<lastX><kind>/, "the shape of a run lives here");
+    assert.match(text, /`U` not\s+the park's land/, "and so do the kinds");
+
+    const prompt = readPrompt();
+
+    assert.doesNotMatch(prompt, /one character per tile|character a tile|a text grid|`view_map` grid/i,
+        "the prompt promised a grid; it is not a grid any more, and the prompt is read every turn");
+    assert.doesNotMatch(prompt, /<firstX>|`UP`|`UQ`|first of these kinds/,
+        "the run format and the kind list belong to the description, and a second copy is a second payment for them");
+    assert.ok(prompt.indexOf("the only picture of the park there is, and its size in tiles is its price") >= 0,
+        "what stays in the prompt is the cost, which no tool description states");
 });
 
 test("the footprint geometry clear_scenery dropped still stands in describe_placement", function () {

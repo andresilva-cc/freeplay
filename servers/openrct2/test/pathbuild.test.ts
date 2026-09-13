@@ -566,6 +566,71 @@ test("a queue the ride claims at its door reports how much of the park it cut of
     });
 });
 
+/**
+ * `detail` is the whole of what gets read. Measured over a session: `tilesPlaced`,
+ * `tilesTargeted`, `connectedToPark` and `ridesLeftWithoutQueue` drew 0 mentions between
+ * them while `detail` was quoted back turn after turn. The counts and the lost queues were
+ * already in the sentence; whether guests can get to the run was only ever a boolean, so a
+ * run that worked said nothing at all about the one thing a new run is laid to achieve.
+ *
+ * The assertion is against `connectedToPark` itself rather than a fixed string, so a
+ * sentence that stops tracking the field fails rather than drifting away from it.
+ */
+test("a run guests can reach says so in the sentence, not only in a field", function () {
+    withGame(parkWithSpine, function () {
+        const outcome = lay(line({ x: 11, y: 8 }, { x: 14, y: 8 }));
+
+        assert.equal(outcome.connectedToPark, true, outcome.detail);
+        assert.match(outcome.detail, /Guests can walk to this run from the park entrance\./,
+            "the field said it and nothing read the field");
+        assert.match(outcome.detail, /4 path tiles/,
+            "and the count is in the sentence too, which is why tilesPlaced never had to be read");
+
+        const island = lay(line({ x: 3, y: 20 }, { x: 5, y: 20 }));
+
+        assert.equal(island.connectedToPark, false, island.detail);
+        assert.doesNotMatch(island.detail, /Guests can walk to this run/,
+            "a stub joined to nothing must not claim it: the sentence follows the measurement");
+    });
+});
+
+/**
+ * The tile the ride claims is the price, not the damage, and it used to be counted twice.
+ *
+ * `describe_placement` predicted `queueCutsOff: 5` for a door and build_path measured "6
+ * path tiles are no longer reachable" for that same event, because the prediction counts
+ * what is lost BESIDE the claimed tile and the measurement counted the claimed tile too.
+ * The same message already excuses that tile from `connectedToPark` for exactly this
+ * reason, and `describe_placement` already prices it separately in the same breath ("the
+ * queue takes x,y"), so counting it here said one cost twice and made the two numbers
+ * disagree by one on every build. The prediction is the one that has to be able to read 0 -
+ * that is how the model is told there is a way round - so the measurement moved.
+ *
+ * The fixture is the one where the two answers differ, which the corridor tests above are
+ * not: the queue runs AWAY from the gate, so the game's cut falls on the door tile's link
+ * back to the entrance and the door tile drops out of the walk along with everything past
+ * it. Five tiles stop being reachable and four of them are damage; revert the fix and this
+ * reads 5. `readPathNetwork` counts the same way - a five-tile corridor reports
+ * `cutsIfBlocked` 4 - so the prediction and the measurement are one convention now.
+ */
+test("a tile the ride claimed is not counted among the tiles that were cut off", function () {
+    withGame(corridorWithADoorOnIt, function (game) {
+        const outcome = layAndLetTheRideClaimIt(game, [{ x: 10, y: 8 }, { x: 10, y: 9 }], function () {
+            // The queue chain runs south, so the link the game dead-ends is the one north,
+            // back towards the gate.
+            game.severPath(10, 8, 10, 7);
+        });
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(outcome.connectedToPark, false,
+            "the whole queue is on the far side of the cut, which is a different fact from the count");
+        assert.match(outcome.detail, /WARNING: 4 path tiles are no longer reachable/,
+            "10,9 through 10,12: the claimed door tile at 10,8 is the tile handed to the ride, not damage");
+        assert.doesNotMatch(outcome.detail, /WARNING: 5 path tiles/,
+            "counting the claimed tile is what made this disagree with describe_placement by one");
+    });
+});
+
 test("a queue no ride owns cuts nothing, and the run says so", function () {
     withGame(function (game) {
         parkWithGate(game);

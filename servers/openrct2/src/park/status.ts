@@ -93,8 +93,8 @@ export interface ParkStatus {
     scenario: { name: string; objective: object; status: string };
     /**
      * Where guests come in and what joins what: the gate, how many path tiles it reaches,
-     * every one of those tiles as a straight run, the junctions and dead ends, and the
-     * fragments of path it reaches nothing of. A new path has to join a run.
+     * every one of those tiles as a straight run with the runs that run touches, the dead
+     * ends, and the fragments of path it reaches nothing of. A new path has to join a run.
      */
     paths: PathNetworkShape;
     /** How much of what kind of ground the park owns, per map-aligned block. */

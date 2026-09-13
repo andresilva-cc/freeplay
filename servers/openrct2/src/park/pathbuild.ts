@@ -774,10 +774,26 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
         // totals instead double-counted: laying an unconnected stub left the totals equal
         // and reported the whole run as "cut off", telling the model to move a queue that
         // had broken nothing.
+        //
+        // A tile a ride's entrance has claimed is not one of them, for the same reason
+        // `connectedToPark` two clauses up already excuses it: the game dead-ends it on
+        // purpose and it is the tile the caller handed to the ride, not damage beside it.
+        // Counting it made this call disagree by exactly one with the prediction
+        // `describe_placement` had given for the same event - `queueCutsOff` 5 against
+        // "6 path tiles are no longer reachable" - and `describe_placement` prices that tile
+        // separately in the same breath ("the queue takes x,y"), so counting it here states
+        // one cost twice. Its own severance figure is the one that has to be able to read 0,
+        // which is how the model is told there is a way round.
         let lost = 0;
 
         for (const tile in reachableBefore) {
-            if (reachableBefore[tile] && !walkable[tile]) {
+            if (!reachableBefore[tile] || walkable[tile]) {
+                continue;
+            }
+
+            const at = tile.split(",");
+
+            if (rideClaimingDoorTile({ x: Number(at[0]), y: Number(at[1]) }) === null) {
                 lost++;
             }
         }
@@ -875,6 +891,15 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
                     ? " These tiles are " + String(pieces.length) + " separate runs rather than one line -"
                         + " " + nameTiles(pieces) + " are each on a different one - so a guest standing on one"
                         + " cannot walk to another."
+                    : "")
+                // The good outcome said out loud, because `connectedToPark` is a field and
+                // the fields of this result go unread: `tilesPlaced`, `tilesTargeted`,
+                // `connectedToPark` and `ridesLeftWithoutQueue` drew 0 mentions between them
+                // across a whole session while `detail` was quoted back every turn. The
+                // counts and the lost queues were already in the sentence; whether guests
+                // can get here was the one that was only ever a boolean.
+                + (connected && placed > 0
+                    ? " Guests can walk to this run from the park entrance."
                     : "")
                 // `placed === 0` is a run with no tile of it on the ground, so there is
                 // nothing for guests to walk and nothing to connect. Saying it is cut off

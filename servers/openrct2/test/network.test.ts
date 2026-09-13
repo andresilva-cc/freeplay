@@ -145,9 +145,8 @@ test("a ride claiming a queue dead-ends the one tile its door opens onto", funct
         assert.equal(shape.reachableTiles, 2, "10,5 and the door tile; the queue past it carries nobody");
         assert.equal(shape.islands.length, 1);
         assert.equal(shape.islands[0].tiles, 2);
-        assert.deepEqual(
-            { fromX: shape.islands[0].fromX, fromY: shape.islands[0].fromY, toX: shape.islands[0].toX, toY: shape.islands[0].toY },
-            { fromX: 10, fromY: 7, toX: 10, toY: 8 });
+        assert.deepEqual(shape.islands[0].runs,
+            [{ fromX: 10, fromY: 7, toX: 10, toY: 8, tiles: 2, kind: "queue", ride: 0 }]);
     });
 });
 
@@ -167,8 +166,10 @@ test("a straight corridor is one run, and the runs add up to the reachable count
 
         assert.equal(shape.runs.length, 1, "sixteen tiles in a line are one corridor, not sixteen facts");
         assert.deepEqual(shape.runs[0], {
-            fromX: 10, fromY: 5, toX: 10, toY: 20, tiles: 16, kind: "path",
-            cutsIfBlocked: 15
+            index: 0, fromX: 10, fromY: 5, toX: 10, toY: 20, tiles: 16, kind: "path",
+            touches: [], cutsIfBlocked: 15,
+            cuts: "If a ride's entrance claims a queue on the worst tile of this run,"
+                + " 15 tiles of path lose their route to the park entrance."
         });
 
         let total = 0;
@@ -204,8 +205,10 @@ test("path and queue are never the same run, and a queue names its ride", functi
         assert.equal(paths.length, 1);
         assert.equal(queues.length, 1);
         assert.deepEqual(queues[0], {
-            fromX: 10, fromY: 10, toX: 10, toY: 12, tiles: 3, kind: "queue", ride: 3,
-            cutsIfBlocked: 2
+            index: 1, fromX: 10, fromY: 10, toX: 10, toY: 12, tiles: 3, kind: "queue",
+            touches: [0], ride: 3, cutsIfBlocked: 2,
+            cuts: "If a ride's entrance claims a queue on the worst tile of this run,"
+                + " 2 tiles of path lose their route to the park entrance."
         });
         assert.equal(typeof paths[0].ride, "undefined", "an ordinary path belongs to no ride and says nothing");
     });
@@ -238,10 +241,10 @@ test("a corner is two straight runs, because a bend describes no shape", functio
 });
 
 // ---------------------------------------------------------------------------
-// Junctions, dead ends and severance.
+// What touches what, dead ends, and severance.
 // ---------------------------------------------------------------------------
 
-test("a T junction is reported as a junction and its ends as dead ends", function () {
+test("the stem and the crossbar of a T touch, and its ends are dead ends", function () {
     withGame(function (game) {
         game.addParkEntrance(10, 4);
 
@@ -255,9 +258,95 @@ test("a T junction is reported as a junction and its ends as dead ends", functio
     }, function () {
         const shape = readPathNetwork();
 
-        assert.deepEqual(shape.junctions, [{ x: 10, y: 8 }]);
+        assert.equal(shape.runs.length, 2, "the stem and the crossbar");
+        assert.deepEqual(shape.runs[0].touches, [1], "the stem meets the crossbar at 10,8");
+        assert.deepEqual(shape.runs[1].touches, [0], "and says so from the other end too");
         assert.deepEqual(shape.deadEnds, [{ x: 14, y: 8 }, { x: 10, y: 12 }],
             "the two loose ends, and not 10,5 - that one has the gate on its other side");
+    });
+});
+
+/**
+ * The defect this field was added for, as its own fixture.
+ *
+ * Verbatim from the session that found it: "(50, 28) and (51, 28) are adjacent tiles but
+ * they're not connected because there's no path between them" - of two paved, reachable,
+ * touching tiles that happened to lie on two different runs. It paved them again, was told
+ * it had joined tiles that were already path, never resolved the contradiction, and spent
+ * three build_path calls laying zero tiles.
+ *
+ * So the fixture holds both answers at once: a corner, whose two legs touch at exactly such
+ * a pair of adjacent tiles on different runs, and a spur off the same gate that touches
+ * neither. A `touches` that reported the connected component - every run here is reachable
+ * from the gate - would name the spur from all three, and this fails.
+ */
+test("two runs that touch name each other, and one that touches nothing says so", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+
+        // The corner: down from the gate, then east along y 10.
+        for (let y = 5; y <= 10; y++) {
+            game.addPath(10, y);
+        }
+
+        for (let x = 11; x <= 16; x++) {
+            game.addPath(x, 10);
+        }
+
+        // A stub hanging off the far tile of the same gate, joined to nothing else.
+        for (let y = 5; y <= 7; y++) {
+            game.addPath(12, y);
+        }
+    }, function () {
+        const shape = readPathNetwork();
+        const down = shape.runs.filter(function (run) { return run.fromX === 10 && run.fromY === 5; })[0];
+        const across = shape.runs.filter(function (run) { return run.fromY === 10 && run.toY === 10; })[0];
+        const stub = shape.runs.filter(function (run) { return run.fromX === 12 && run.fromY === 5; })[0];
+
+        assert.ok(down && across && stub, JSON.stringify(shape.runs));
+        assert.deepEqual(down.touches, [across.index],
+            "10,10 and 11,10 are adjacent, both paved, both reachable, and on two different runs");
+        assert.deepEqual(across.touches, [down.index], "and the link is claimed from both ends");
+        assert.deepEqual(stub.touches, [],
+            "the stub reaches the gate and nothing else: reachable is not the same as joined");
+        assert.equal(down.touches.indexOf(stub.index), -1, "nothing steps from the corner onto the stub");
+        assert.equal(across.touches.indexOf(stub.index), -1);
+    });
+});
+
+/**
+ * Adjacency has to be the game's edges and not the tile grid, because the one link the game
+ * actually cuts is between two tiles that still sit side by side. Here that cut is stated
+ * as data with `severPath`, the way the API hands it over, and both runs stay reachable by
+ * another route - so a `touches` built on plain adjacency passes every other test in this
+ * file and fails only this one.
+ */
+test("two runs that only look adjacent do not touch, because the game cut the link", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+
+        for (let y = 5; y <= 8; y++) {
+            game.addPath(10, y);
+        }
+
+        // The other way round to 11,8: down the far side of the gate and back along y 8.
+        for (let y = 5; y <= 8; y++) {
+            game.addPath(12, y);
+        }
+
+        game.addPath(11, 8);
+        game.severPath(10, 8, 11, 8);
+    }, function () {
+        const shape = readPathNetwork();
+        const west = shape.runs.filter(function (run) { return run.fromX === 10 && run.fromY === 5; })[0];
+        const east = shape.runs.filter(function (run) { return run.fromX === 12 && run.fromY === 5; })[0];
+        const middle = shape.runs.filter(function (run) { return run.tiles === 1; })[0];
+
+        assert.ok(west && east && middle, JSON.stringify(shape.runs));
+        assert.equal(shape.reachableTiles, 9, "the cut took no tile out of the network, only one link");
+        assert.deepEqual(west.touches, [],
+            "10,8 and 11,8 are neighbours on the map and the game has cut the edge between them");
+        assert.deepEqual(middle.touches, [east.index], "11,8 is reached the long way round, off 12,8");
     });
 });
 
@@ -275,6 +364,67 @@ test("a single-file corridor reports what blocking its worst tile costs", functi
         assert.equal(shape.runs.length, 1);
         assert.equal(shape.runs[0].cutsIfBlocked, 4,
             "blocking the tile nearest the gate strands the other four");
+        assert.equal(shape.runs[0].tiles, 5,
+            "five tiles, four stranded: the tile that stops carrying traffic is not itself in the count");
+    });
+});
+
+/**
+ * The number is correct and was read zero times in a whole session, on every run of every
+ * turn, answering the exact question that broke the park it was reported in. The precedent
+ * for the fix is measured rather than guessed: `describe_placement`'s `queueCutsOff` went
+ * from 3 mentions against `pathDistance`'s 77 to a 4.6:1 ratio when the same figure was put
+ * into a prose sentence, and was weighed out loud for the first time.
+ *
+ * So the sentence has to carry the figure itself, not a word standing in for it: the
+ * assertion reads the number back out of the prose and demands it equal `cutsIfBlocked`. A
+ * sentence that said "some tiles" or that hard-coded a count fails. And it appears only
+ * where there is a price - a run with a way round every tile of it says 0 and stops, which
+ * is the other half, asserted on the ring below.
+ */
+test("a run that severs says so in a sentence, with the figure in it", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+
+        for (let y = 5; y <= 9; y++) {
+            game.addPath(10, y);
+        }
+    }, function () {
+        const run = readPathNetwork().runs[0];
+        const said = /(\d+) tiles of path lose their route to the park entrance/.exec(run.cuts || "");
+
+        assert.ok(said, "the severance figure is not in the sentence at all: " + String(run.cuts));
+        assert.equal(Number(said[1]), run.cutsIfBlocked,
+            "the sentence and the field have to be the same measurement");
+        assert.match(run.cuts || "", /ride's entrance claims a queue/,
+            "and it names what does the blocking, which is the part the field could never say");
+    });
+});
+
+test("a run with a way round every tile of it states no price", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+
+        for (let x = 9; x <= 12; x++) {
+            game.addPath(x, 6);
+            game.addPath(x, 9);
+        }
+
+        for (let y = 7; y <= 8; y++) {
+            game.addPath(9, y);
+            game.addPath(12, y);
+        }
+    }, function () {
+        const shape = readPathNetwork();
+        const loop = shape.runs.filter(function (run) { return run.cutsIfBlocked === 0; });
+
+        assert.ok(loop.length > 0, "the ring's own sides cut nothing off");
+
+        for (let i = 0; i < loop.length; i++) {
+            assert.equal(typeof loop[i].cuts, "undefined",
+                "a run that costs nothing is not worth a sentence every turn: " + JSON.stringify(loop[i]));
+        }
     });
 });
 
@@ -326,6 +476,8 @@ test("severance is skipped rather than guessed at when the network is too large"
         assert.equal(shape.severingComputed, false);
         assert.equal(typeof shape.runs[0].cutsIfBlocked, "undefined",
             "no figure at all beats a 0 that would read as `there is a way round`");
+        assert.equal(typeof shape.runs[0].cuts, "undefined",
+            "and no sentence either: a sentence with nothing measured behind it is the same lie");
     }, 64);
 });
 
@@ -352,7 +504,8 @@ test("a path laid to nowhere is an island, with the ride doors standing on it", 
 
         const island = shape.islands[0];
         assert.equal(island.tiles, 2);
-        assert.equal(island.kind, "queue");
+        assert.deepEqual(island.runs,
+            [{ fromX: 25, fromY: 25, toX: 25, toY: 26, tiles: 2, kind: "queue", ride: 1 }]);
         assert.deepEqual(island.rides, [1]);
         assert.deepEqual(island.doors, [{ ride: 1, door: "entrance", x: 25, y: 26 }],
             "the ride is built, it has a queue, and no guest can get to either");
@@ -371,10 +524,68 @@ test("an island of ordinary path with no door on it is still reported", function
         const shape = readPathNetwork();
 
         assert.equal(shape.islands.length, 1);
-        assert.equal(shape.islands[0].kind, "path");
         assert.equal(shape.islands[0].tiles, 5);
+        assert.deepEqual(shape.islands[0].runs,
+            [{ fromX: 20, fromY: 30, toX: 24, toY: 30, tiles: 5, kind: "path" }]);
         assert.deepEqual(shape.islands[0].doors, []);
         assert.deepEqual(shape.islands[0].rides, []);
+    });
+});
+
+/**
+ * The shape defect that cost the model its longest turn of a session, 1,793 tokens.
+ *
+ * An island was min/max over an arbitrary blob and reported in a line's four names, so this
+ * six-tile L came back as `fromX:20, fromY:20, toX:22, toY:22` - a 3x3 box holding six
+ * tiles. `build_path`'s own message tells the model that "a run covers every tile between
+ * its `fromX`,`fromY` and its `toX`,`toY`", and applying that rule to the box produced a
+ * tile that was on the reachable network instead, a contradiction the model never resolved
+ * and a no-op as its last action of the run.
+ *
+ * So the test is that rule, run against the island: expand every run the way the model is
+ * told runs expand, and the tiles that come out have to be the tiles that are there. The
+ * box fails it on both counts - it claims 21,20 and 22,20, which carry nothing at all.
+ */
+test("an island that bends is straight runs, and never claims a tile it does not hold", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+
+        // An L: three tiles down x 20, then three more east along y 22.
+        for (let y = 20; y <= 22; y++) {
+            game.addPath(20, y);
+        }
+
+        for (let x = 21; x <= 23; x++) {
+            game.addPath(x, 22);
+        }
+    }, function (game) {
+        const island = readPathNetwork().islands[0];
+        const covered: string[] = [];
+
+        for (let i = 0; i < island.runs.length; i++) {
+            const run = island.runs[i];
+            const dx = Math.sign(run.toX - run.fromX);
+            const dy = Math.sign(run.toY - run.fromY);
+
+            assert.ok(dx === 0 || dy === 0, "a run that bends describes no shape: " + JSON.stringify(run));
+
+            for (let step = 0; step < run.tiles; step++) {
+                const x = run.fromX + dx * step;
+                const y = run.fromY + dy * step;
+                const path = game.tile(x, y).elements.filter(function (e) { return e.type === "footpath"; });
+
+                assert.equal(path.length, 1, "the island claims " + String(x) + "," + String(y)
+                    + ", which carries no path at all");
+                covered.push(String(x) + "," + String(y));
+            }
+        }
+
+        assert.equal(island.tiles, 6);
+        assert.equal(covered.length, 6, "and it claims no more tiles than it holds");
+        assert.deepEqual(covered.sort(),
+            ["20,20", "20,21", "20,22", "21,22", "22,22", "23,22"].sort(),
+            "every tile of the L exactly once");
     });
 });
 

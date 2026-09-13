@@ -17,7 +17,19 @@ interface ArgumentFailure {
     error: string;
 }
 
-function isFailure(value: TileRect | ArgumentFailure): value is ArgumentFailure {
+/**
+ * The ground to read, and separately the corners the caller itself named.
+ *
+ * They differ only when `margin` grew the rectangle, and keeping them apart is the whole
+ * point: the result reports `requested` as "the window asked for", and the margin-grown
+ * rectangle is not a window anybody asked for.
+ */
+interface ViewWindow {
+    window: TileRect;
+    requested: TileRect;
+}
+
+function isFailure(value: ViewWindow | ArgumentFailure): value is ArgumentFailure {
     return (value as ArgumentFailure).ok === false;
 }
 
@@ -35,6 +47,11 @@ function whole(args: Record<string, unknown>, name: string, fallback: number): n
     return typeof args[name] === "number" ? Math.floor(args[name] as number) : fallback;
 }
 
+/** A square form names its own window exactly, so nothing was added to it. */
+function asItself(area: TileRect): ViewWindow {
+    return { window: area, requested: area };
+}
+
 /**
  * Which window was asked for, or what was missing or contradictory about it.
  *
@@ -43,7 +60,7 @@ function whole(args: Record<string, unknown>, name: string, fallback: number): n
  * form takes. A call with neither form is the commonest one there is - "show me the park" -
  * and answering it from the gate costs the model nothing to get right.
  */
-function areaFromArgs(args: Record<string, unknown>): TileRect | ArgumentFailure {
+function areaFromArgs(args: Record<string, unknown>): ViewWindow | ArgumentFailure {
     const square = given(args, SQUARE_ARGS);
     const rect = given(args, RECT_ARGS);
 
@@ -73,12 +90,21 @@ function areaFromArgs(args: Record<string, unknown>): TileRect | ArgumentFailure
         }
 
         const margin = whole(args, "margin", DEFAULT_VIEW_MARGIN);
+        const corners: TileRect = {
+            left: Math.min(args.fromX as number, args.toX as number),
+            top: Math.min(args.fromY as number, args.toY as number),
+            right: Math.max(args.fromX as number, args.toX as number),
+            bottom: Math.max(args.fromY as number, args.toY as number)
+        };
 
         return {
-            left: Math.min(args.fromX as number, args.toX as number) - margin,
-            top: Math.min(args.fromY as number, args.toY as number) - margin,
-            right: Math.max(args.fromX as number, args.toX as number) + margin,
-            bottom: Math.max(args.fromY as number, args.toY as number) + margin
+            window: {
+                left: corners.left - margin,
+                top: corners.top - margin,
+                right: corners.right + margin,
+                bottom: corners.bottom + margin
+            },
+            requested: corners
         };
     }
 
@@ -96,7 +122,7 @@ function areaFromArgs(args: Record<string, unknown>): TileRect | ArgumentFailure
     }
 
     if (hasX && hasY) {
-        return centredSquare(args.x as number, args.y as number, size);
+        return asItself(centredSquare(args.x as number, args.y as number, size));
     }
 
     const gate = parkGateCentre();
@@ -110,7 +136,7 @@ function areaFromArgs(args: Record<string, unknown>): TileRect | ArgumentFailure
         };
     }
 
-    return centredSquare(gate.x, gate.y, size);
+    return asItself(centredSquare(gate.x, gate.y, size));
 }
 
 @mcpToolController
@@ -118,37 +144,41 @@ export class MapViewTools {
     @mcpTool({
         name: "View the map",
         description: [
-            "Draw a window of the park as a text grid, so the SHAPE of the ground is something you",
+            "Read a window of the park tile by tile, so the SHAPE of the ground is something you",
             "read rather than work out from coordinates. It reports; it recommends nothing.",
             "Use it when you are siting something and need to see how much room is where.",
-            "For what joins what, read `park_status`: a grid is the weaker way to answer that.",
-            "Called with no arguments at all it draws a",
+            "For what joins what, read `park_status`: this is the weaker way to answer that.",
+            "Called with no arguments at all it reads a",
             String(DEFAULT_VIEW_SIZE) + "x" + String(DEFAULT_VIEW_SIZE),
             "square around the park's own gate.",
             "TO SEE A PLACEMENT AND ITS SURROUNDINGS, pass `fromX`, `fromY`, `toX` and `toY` copied",
             "straight off a `footprint` from `describe_placement` - the same four names - and `margin` tiles",
-            "of ground are drawn around them, " + String(DEFAULT_VIEW_MARGIN) + " unless you say otherwise.",
+            "of ground are read around them, " + String(DEFAULT_VIEW_MARGIN) + " unless you say otherwise.",
             "TO SEE AROUND A TILE, pass `x`, `y` and `size`: a square of `size` tiles centred there,",
             "the same form `clear_scenery` takes. Any tile another tool reported works - a ride's",
             "`x`,`y`, a door tile, the park gate.",
-            "ONE CHARACTER IS ONE TILE and there are no gaps between them. A tile shows the first of",
-            "these that applies to it: `G` the park's gate, `N` a ride's entrance building, `X` a",
-            "ride's exit building, a lowercase letter for ride track - `rides` says which ride each",
-            "letter is - `#` track belonging to a ride numbered past z, `Q` queue and `P` footpath on",
-            "the park's land, `:` and `=` those same two on land it does not own,",
-            "`%` something this map cannot name, `?` no surface could be read, `~` water, `-` not",
-            "the park's land, `^` the park's but sloped, which nothing here levels, `*` the park's",
-            "and flat with scenery on it, which `clear_scenery` takes down, and `.` the park's,",
+            "`rows` IS ONE LINE PER `y`, in ascending `y`. A line is `y` and that row's y and a colon,",
+            "then that row's tiles as runs, each written `<firstX>-<lastX><kind>` with both ends",
+            "always given, so a single tile is `51-51P`. The runs of a line are contiguous and",
+            "ascending: the first starts at `area.fromX`, each starts one past where the one before",
+            "it ended, and the last ends at `area.toX`. So every tile of the window is in exactly one",
+            "run, no tile's coordinate is ever counted off a column, and ground that carries on from",
+            "one row to the next is runs whose spans overlap on neighbouring lines.",
+            "A TILE IS THE FIRST OF THESE KINDS THAT APPLIES TO IT: `G` the park's gate, `N` a ride's",
+            "entrance building, `X` a ride's exit building, `r` and a number for track belonging to",
+            "that ride - `r3` is the ride `park_status` reports as id 3 - `Q` queue and `P` footpath",
+            "on the park's land, `UQ` and `UP` those same two on land it does not own,",
+            "`!` something this map cannot name, `?` no surface could be read, `~` water, `U` not",
+            "the park's land, `^` the park's but sloped, which nothing here levels, `S` the park's",
+            "and flat with scenery on it, which `clear_scenery` takes down, and `E` the park's,",
             "flat and empty. So a tree on sloped ground reads as `^`: clearing it would not make",
-            "that tile buildable, and a scenario's entrance corridor reads as `=`: guests walk it and",
-            "the park can neither pave onto it nor usually buy it. The `legend` in each result explains",
-            "every character that render actually used, and no character it did not.",
-            "The rows above the grid give each column's `x`, one digit place per row, so a column's",
-            "digits read downwards; each row is labelled with its `y` on the left.",
-            "`area` is the ground drawn and `requested` the window asked for; they differ when the",
-            "map's edge cut it down, and `clipped` is then true and `note` says so. `area` is a view",
-            "box and not a ride's footprint: never hand it to `clear_scenery`, which would clear",
-            "every tile in the picture.",
+            "that tile buildable, and a scenario's entrance corridor reads as `UP`: guests walk it and",
+            "the park can neither pave onto it nor usually buy it.",
+            "`area` is the ground read, margin included, and `requested` the corners you named before",
+            "any margin was added around them. `clipped` is true when the map's edge cut the window",
+            "down, and `rows` then ends with one more line, starting `cut:`, saying what was read",
+            "instead. `area` is a view box and not a ride's footprint: never hand it to",
+            "`clear_scenery`, which would clear every tile in it.",
             "At most " + String(MAX_VIEW_SIDE) + " tiles on a side."
         ].join(" "),
         inputSchema: {
@@ -182,9 +212,10 @@ export class MapViewTools {
                     type: "integer",
                     minimum: 0,
                     maximum: MAX_VIEW_MARGIN,
-                    description: "Rectangle form: extra tiles drawn on every side of it, 0 to "
+                    description: "Rectangle form: extra tiles read on every side of it, 0 to "
                         + String(MAX_VIEW_MARGIN) + ". Default " + String(DEFAULT_VIEW_MARGIN)
                         + ". A ride's own ground tells you nothing about what it would sit next to."
+                        + " `area` grows by it; `requested` stays the corners you named."
                 }
             },
             additionalProperties: false
@@ -197,12 +228,12 @@ export class MapViewTools {
         }
     })
     public viewMap(args: Record<string, unknown>): MapViewOutcome | ArgumentFailure {
-        const area = areaFromArgs(args);
+        const asked = areaFromArgs(args);
 
-        if (isFailure(area)) {
-            return area;
+        if (isFailure(asked)) {
+            return asked;
         }
 
-        return renderMapView(area);
+        return renderMapView(asked.window, asked.requested);
     }
 }

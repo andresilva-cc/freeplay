@@ -9,10 +9,21 @@
  * in front of it still could not do set membership over them, and said so: "(51,26) and
  * (52,26) are BOTH in the reachableSample! Why are they not connected?"
  *
- * So this reports the shape rather than the membership: straight runs with their ends,
- * the junctions and dead ends, how much each run holds together, and the stranded islands
- * with the ride doors sitting on them. All of it measurement - `cutsIfBlocked` is a count
- * of what stops being reachable, not a recommendation about where to build.
+ * So this reports the shape rather than the membership: straight runs with their ends, the
+ * runs each one touches, the dead ends, how much each run holds together, and the stranded
+ * islands with the ride doors sitting on them. All of it measurement - `cutsIfBlocked` is a
+ * count of what stops being reachable, not a recommendation about where to build.
+ *
+ * A run is a straight line of one kind of path and nothing more, and one run of this report
+ * was read as a connected component seven times over: "(50, 28) and (51, 28) are adjacent
+ * tiles but they're not connected because there's no path between them", of two paved,
+ * reachable, touching tiles that happened to lie on different runs. Three build_path calls
+ * went into repairing a break that was not there. So every run now names the runs it
+ * touches, by their `index` here, over the game's own footpath edges - which answers the
+ * question that was actually being asked, and which nothing in the report could answer
+ * before. `junctions` went with it: three corridors meeting was the same fact said at a
+ * tile rather than at a run, it was measured by plain adjacency while everything beside it
+ * walks the game's edges, and across the whole run it was read zero times.
  *
  * Severance is reported per run rather than per tile on purpose. Every tile of a single-file
  * corridor severs something, so the tile list for a twenty-two tile park was nineteen
@@ -62,7 +73,8 @@ interface PathTile {
     edges: number;
 }
 
-export interface PathRun {
+/** One straight line of one kind of path: the shape, with nothing said about the network. */
+export interface PathRunLine {
     fromX: number;
     fromY: number;
     toX: number;
@@ -72,6 +84,25 @@ export interface PathRun {
     kind: string;
     /** Set only on a queue: the ride it is bound to, or null when it is bound to nothing. */
     ride?: number | null;
+}
+
+export interface PathRun extends PathRunLine {
+    /** This run's position in `runs`, so `touches` can name runs without counting them. */
+    index: number;
+    /**
+     * The `index` of every run a guest can step onto from a tile of this one, lowest first.
+     *
+     * Walked over the game's own footpath edges with both ends of a link required to claim
+     * it, exactly as `reachableFromGate` walks them, so a link the game has cut is not
+     * offered here: the tile a ride's entrance has claimed keeps its edge back along its own
+     * queue and has lost the one to whatever lay past it.
+     *
+     * Two runs can touch and still be two runs - a corner, a junction, a queue meeting the
+     * path it hangs off - and separate runs were read as separate networks seven times in
+     * one session. Empty means nothing steps off this run at all, which for a reachable run
+     * happens only where the gate is its single link.
+     */
+    touches: number[];
     /**
      * The most tiles that stop being reachable from the gate when one tile of this run stops
      * carrying traffic - which is what a ride's entrance claiming a queue on it does: the
@@ -79,10 +110,25 @@ export interface PathRun {
      * queue no ride owns is walked like any other path. 0 means no tile of this run cuts
      * anything off, so there is a way round all of it. A higher figure is the worst tile of
      * the run, usually its end nearest the gate; `describe_placement` gives the exact figure
-     * for one particular tile, as an access option's `queueCutsOff`. Absent when
-     * `severingComputed` is false.
+     * for one particular tile, as an access option's `queueCutsOff`. The tile that is
+     * claimed is not itself in the count: it is the tile handed to the ride rather than
+     * something lost beside it, which is the same tile `describe_placement` prices
+     * separately as "the queue takes x,y". Absent when `severingComputed` is false.
      */
     cutsIfBlocked?: number;
+    /**
+     * `cutsIfBlocked` said as a sentence, and present only where the figure is above 0.
+     *
+     * The field has been correct and unread since it shipped: 0 mentions across a whole
+     * session, on every run of every turn, answering the exact question that broke the park
+     * it was reported in. There is a measured precedent for the fix rather than a guess -
+     * `describe_placement`'s `queueCutsOff` sat at 3 mentions against `pathDistance`'s 77,
+     * was put into a prose `cost` sentence, and the ratio moved to 4.6:1 with the number
+     * weighed out loud for the first time. It states a price and stops: no run is ordered,
+     * marked or left out by it, and whether the price is worth paying is not this report's
+     * to say.
+     */
+    cuts?: string;
 }
 
 export interface StrandedDoor {
@@ -94,13 +140,21 @@ export interface StrandedDoor {
 }
 
 export interface PathIsland {
-    fromX: number;
-    fromY: number;
-    toX: number;
-    toY: number;
+    /** Path tiles on it. The `runs` below cover exactly these. */
     tiles: number;
-    /** "path", "queue", or "path+queue". */
-    kind: string;
+    /**
+     * The island as straight lines, the same shape `runs` takes, and for the same reason.
+     *
+     * This used to be `fromX`,`fromY`,`toX`,`toY`: min and max over an arbitrary blob, so a
+     * six-tile L reported the 3x4 box around it. Meanwhile `build_path` tells the model in
+     * its own words that "a run covers every tile between its `fromX`,`fromY` and its
+     * `toX`,`toY`", and a model that applied that rule to an island concluded a tile was on
+     * it that was on the reachable network instead, then spent its longest turn of the
+     * session - 1,793 tokens - on the contradiction and issued a no-op. Two tool messages
+     * asserting incompatible things about one field shape is the defect; a box is not a
+     * line, so it is not written in a line's four names.
+     */
+    runs: PathRunLine[];
     /** Rides whose queues are on this island. */
     rides: number[];
     /** Ride doors standing on it. These rides are built and cannot be reached. */
@@ -114,8 +168,6 @@ export interface PathNetworkShape {
     reachableTiles: number;
     /** Straight lines of one kind of path. Both ends included, so `tiles` adds up to `reachableTiles`. */
     runs: PathRun[];
-    /** Reachable tiles with three or more ways off them. The gate counts as one way off. */
-    junctions: Tile[];
     /** Reachable tiles with one way off them or none. The gate counts as one way off. */
     deadEnds: Tile[];
     /**
@@ -260,6 +312,13 @@ function runKind(tile: PathTile): string {
     return tile.queue ? "queue" : "path";
 }
 
+/** One straight line, with the tiles on it, so adjacency and severance can be worked out. */
+interface RunTiles {
+    line: PathRunLine;
+    /** The key of every tile the line covers. */
+    members: string[];
+}
+
 /**
  * Straight lines, greedily and longest-first per tile, covering each tile exactly once.
  *
@@ -267,21 +326,26 @@ function runKind(tile: PathTile): string {
  * the reader can picture, while a run that bends twice is a tile count and two endpoints
  * that describe no shape at all. Covering each tile once means `tiles` across the runs adds
  * up to `reachableTiles`, which is a check the reader can actually perform.
+ *
+ * `include` rather than the whole map decides which tiles are on the table, and the order
+ * is read off it rather than off a sweep of every tile there is, because this is now called
+ * once per island as well as once for the network and a 256-tile map is 65,536 cells a
+ * side. Sorting by y and then x is the sweep's own order, so the runs come out unchanged.
  */
-function straightRuns(tiles: Record<string, PathTile>, include: Record<string, boolean>,
-    severance: Record<string, number> | null): PathRun[] {
+function straightRuns(tiles: Record<string, PathTile>, include: Record<string, boolean>): RunTiles[] {
     const assigned: Record<string, boolean> = {};
     const ordered: PathTile[] = [];
+    const names = Object.keys(include);
 
-    for (let y = 0; y < map.size.y; y++) {
-        for (let x = 0; x < map.size.x; x++) {
-            const tile = tiles[key(x, y)];
+    for (let i = 0; i < names.length; i++) {
+        const tile = tiles[names[i]];
 
-            if (tile && include[key(x, y)]) {
-                ordered.push(tile);
-            }
+        if (tile && include[names[i]]) {
+            ordered.push(tile);
         }
     }
+
+    ordered.sort(function (a, b) { return a.y === b.y ? a.x - b.x : a.y - b.y; });
 
     const reach = function (seed: PathTile, dx: number, dy: number): number {
         let steps = 0;
@@ -302,7 +366,7 @@ function straightRuns(tiles: Record<string, PathTile>, include: Record<string, b
         }
     };
 
-    const runs: PathRun[] = [];
+    const runs: RunTiles[] = [];
 
     for (let i = 0; i < ordered.length; i++) {
         const seed = ordered[i];
@@ -327,11 +391,15 @@ function straightRuns(tiles: Record<string, PathTile>, include: Record<string, b
         const toX = seed.x + dx * after;
         const toY = seed.y + dy * after;
 
+        const members: string[] = [];
+
         for (let step = -before; step <= after; step++) {
-            assigned[key(seed.x + dx * step, seed.y + dy * step)] = true;
+            const at = key(seed.x + dx * step, seed.y + dy * step);
+            assigned[at] = true;
+            members.push(at);
         }
 
-        const run: PathRun = {
+        const line: PathRunLine = {
             fromX: fromX,
             fromY: fromY,
             toX: toX,
@@ -341,23 +409,77 @@ function straightRuns(tiles: Record<string, PathTile>, include: Record<string, b
         };
 
         if (seed.queue) {
-            run.ride = seed.ride;
+            line.ride = seed.ride;
         }
 
-        if (severance) {
-            let worst = 0;
-
-            for (let step = -before; step <= after; step++) {
-                worst = Math.max(worst, severance[key(seed.x + dx * step, seed.y + dy * step)] || 0);
-            }
-
-            run.cutsIfBlocked = worst;
-        }
-
-        runs.push(run);
+        runs.push({ line: line, members: members });
     }
 
     return runs;
+}
+
+/**
+ * For each run, the runs a guest can step onto from it, by position in the same list.
+ *
+ * The game's own edges, both ends of a link required to claim it, which is the rule
+ * `reachableFromGate` and `walkableFromParkEntrance` walk. Plain adjacency would be cheaper
+ * and would report the one link the game actually cuts - the tile a ride's entrance has
+ * claimed, to whatever lay past it - as a road still open, which is the failure this whole
+ * module exists to stop.
+ */
+function runAdjacency(tiles: Record<string, PathTile>, runs: RunTiles[]): number[][] {
+    const owner: Record<string, number> = {};
+    const touches: number[][] = [];
+    const seen: Record<string, boolean>[] = [];
+
+    for (let i = 0; i < runs.length; i++) {
+        touches.push([]);
+        seen.push({});
+
+        for (let m = 0; m < runs[i].members.length; m++) {
+            owner[runs[i].members[m]] = i;
+        }
+    }
+
+    for (let i = 0; i < runs.length; i++) {
+        for (let m = 0; m < runs[i].members.length; m++) {
+            const tile = tiles[runs[i].members[m]];
+
+            for (let d = 0; d < EDGE_DIRECTIONS.length; d++) {
+                if ((tile.edges & (1 << d)) === 0) {
+                    continue;
+                }
+
+                const at = key(tile.x + EDGE_DIRECTIONS[d].dx, tile.y + EDGE_DIRECTIONS[d].dy);
+                const other = tiles[at];
+                const j = owner[at];
+
+                if (!other || typeof j !== "number" || j === i || seen[i][String(j)]) {
+                    continue;
+                }
+
+                if ((other.edges & (1 << opposite(d))) === 0) {
+                    continue;
+                }
+
+                seen[i][String(j)] = true;
+                touches[i].push(j);
+            }
+        }
+
+        touches[i].sort(function (a, b) { return a - b; });
+    }
+
+    return touches;
+}
+
+/** The severance figure said in words, where there is one to say. */
+function cutsSentence(cutsIfBlocked: number): string {
+    return "If a ride's entrance claims a queue on the worst tile of this run, "
+        + (cutsIfBlocked === 1
+            ? "1 tile of path loses its route"
+            : String(cutsIfBlocked) + " tiles of path lose their route")
+        + " to the park entrance.";
 }
 
 /**
@@ -451,7 +573,6 @@ export function readPathNetwork(): PathNetworkShape {
         }
     }
 
-    const junctions: Tile[] = [];
     const deadEnds: Tile[] = [];
     const gateTiles: Record<string, boolean> = {};
 
@@ -467,11 +588,7 @@ export function readPathNetwork(): PathNetworkShape {
                 continue;
             }
 
-            const degree = degreeOf(tiles, gateTiles, tiles[at]);
-
-            if (degree >= 3) {
-                junctions.push({ x: x, y: y });
-            } else if (degree <= 1) {
+            if (degreeOf(tiles, gateTiles, tiles[at]) <= 1) {
                 deadEnds.push({ x: x, y: y });
             }
         }
@@ -497,44 +614,65 @@ export function readPathNetwork(): PathNetworkShape {
         }
     }
 
+    const found = straightRuns(tiles, reachable);
+    const touching = runAdjacency(tiles, found);
+    const runs: PathRun[] = [];
+
+    for (let i = 0; i < found.length; i++) {
+        const line = found[i].line;
+        const run: PathRun = {
+            index: i,
+            fromX: line.fromX,
+            fromY: line.fromY,
+            toX: line.toX,
+            toY: line.toY,
+            tiles: line.tiles,
+            kind: line.kind,
+            touches: touching[i]
+        };
+
+        if (typeof line.ride !== "undefined") {
+            run.ride = line.ride;
+        }
+
+        if (severance) {
+            let worst = 0;
+
+            for (let m = 0; m < found[i].members.length; m++) {
+                worst = Math.max(worst, severance[found[i].members[m]] || 0);
+            }
+
+            run.cutsIfBlocked = worst;
+
+            // Said only where there is a price to state. A run with a way round every tile
+            // of it reports 0 and stops, which is a sentence nobody has to read.
+            if (worst > 0) {
+                run.cuts = cutsSentence(worst);
+            }
+        }
+
+        runs.push(run);
+    }
+
     const doors = rideDoors();
     const islands: PathIsland[] = components(tiles, stranded).map(function (blob) {
-        let fromX = blob[0].x;
-        let toX = blob[0].x;
-        let fromY = blob[0].y;
-        let toY = blob[0].y;
-        let hasPath = false;
-        let hasQueue = false;
         const rides: number[] = [];
         const onIsland: Record<string, boolean> = {};
 
         for (let i = 0; i < blob.length; i++) {
-            fromX = Math.min(fromX, blob[i].x);
-            toX = Math.max(toX, blob[i].x);
-            fromY = Math.min(fromY, blob[i].y);
-            toY = Math.max(toY, blob[i].y);
             onIsland[key(blob[i].x, blob[i].y)] = true;
 
-            if (blob[i].queue) {
-                hasQueue = true;
-
-                if (typeof blob[i].ride === "number" && rides.indexOf(blob[i].ride as number) < 0) {
-                    rides.push(blob[i].ride as number);
-                }
-            } else {
-                hasPath = true;
+            if (blob[i].queue && typeof blob[i].ride === "number"
+                && rides.indexOf(blob[i].ride as number) < 0) {
+                rides.push(blob[i].ride as number);
             }
         }
 
         rides.sort(function (a, b) { return a - b; });
 
         return {
-            fromX: fromX,
-            fromY: fromY,
-            toX: toX,
-            toY: toY,
             tiles: blob.length,
-            kind: hasPath && hasQueue ? "path+queue" : (hasQueue ? "queue" : "path"),
+            runs: straightRuns(tiles, onIsland).map(function (run) { return run.line; }),
             rides: rides,
             doors: doors.filter(function (door) { return onIsland[key(door.x, door.y)] === true; })
         };
@@ -545,8 +683,7 @@ export function readPathNetwork(): PathNetworkShape {
     return {
         gate: gate,
         reachableTiles: reachableNames.length,
-        runs: straightRuns(tiles, reachable, severance),
-        junctions: junctions,
+        runs: runs,
         deadEnds: deadEnds,
         severingComputed: severingComputed,
         islands: islands
