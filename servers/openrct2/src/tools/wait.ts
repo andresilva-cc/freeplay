@@ -1,4 +1,6 @@
 import { mcpTool, mcpToolController } from "./decorators.js";
+import { dayNumber } from "../gameClock.js";
+import type { DateReading } from "../gameClock.js";
 import type { DeferredMcpResult } from "./types.js";
 
 /**
@@ -19,27 +21,11 @@ const MIN_SECONDS = 1;
  */
 const MAX_SECONDS = 20;
 
-/**
- * Days per month, March to October, as OpenRCT2's `days_in_month` in `Date.cpp`. The game
- * year is eight months long, so a date cannot be subtracted from another without it.
- */
-const DAYS_IN_MONTH = [31, 30, 31, 30, 31, 31, 30, 31];
-
-const DAYS_IN_YEAR = DAYS_IN_MONTH.reduce(function (total, days) {
-    return total + days;
-}, 0);
-
 /** The same dozen `park_status` reports, so a long wait does not out-cost a park report. */
 const MESSAGE_LIMIT = 12;
 
 export interface WaitRequest {
     seconds?: number;
-}
-
-export interface DateReading {
-    year: number;
-    month: number;
-    day: number;
 }
 
 export interface WaitOutcome {
@@ -110,17 +96,6 @@ function snapshot(): Snapshot {
         rating: park.rating,
         messages: readMessages()
     };
-}
-
-/** An absolute day number, so two dates can be subtracted across a month or a year. */
-function dayNumber(reading: DateReading): number {
-    let days = (reading.year - 1) * DAYS_IN_YEAR;
-
-    for (let month = 0; month < reading.month && month < DAYS_IN_MONTH.length; month++) {
-        days += DAYS_IN_MONTH[month];
-    }
-
-    return days + (reading.day - 1);
 }
 
 function dateText(reading: DateReading): string {

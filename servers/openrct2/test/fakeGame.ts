@@ -75,9 +75,16 @@ export interface FakeStaff {
     staffType: string;
 }
 
-/** A park notification, shaped as the game gives it: the text carries format codes. */
+/**
+ * A park notification, shaped as the game gives it: the text carries format codes, and the
+ * arrival is stamped as `month` - total elapsed months, the same basis as `date.monthsElapsed`
+ * - and `day`, the day within that month. The game records no finer resolution than the day,
+ * which is why nothing derived from this may claim one.
+ */
 export interface FakeMessage {
     text: string;
+    month: number;
+    day: number;
 }
 
 interface QueuedAction {
@@ -507,9 +514,17 @@ export class FakeGame {
         this.staff.push({ staffType: staffType });
     }
 
-    /** Add a park notification. Newest last, exactly as the game orders them. */
-    public addMessage(text: string): void {
-        this.messages.push({ text: text });
+    /**
+     * Add a park notification, stamped where the clock stands now. Newest last, exactly as
+     * the game orders them. `arrived` backdates one, so a test can hold two messages from
+     * different months without running the clock between them.
+     */
+    public addMessage(text: string, arrived?: { month: number; day: number }): void {
+        this.messages.push({
+            text: text,
+            month: arrived ? arrived.month : this.date.monthsElapsed,
+            day: arrived ? arrived.day : this.date.day
+        });
     }
 
     /** Fire every held watchdog, as if the work had never finished. */

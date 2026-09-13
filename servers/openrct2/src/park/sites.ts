@@ -108,6 +108,14 @@ function tiles(count: number): string {
  * It states a price and stops. No option is reordered, filtered, marked or recommended by
  * it; whether the price is worth paying is the caller's call, and this is the same list in
  * the same order it was before.
+ *
+ * The premise above is on notice. The same treatment was given to `park_status`'s
+ * `cutsIfBlocked` as a `cuts` sentence and did not replicate: 117 sentences across 12 calls,
+ * 0 mentions and 0 paraphrases, and `cost` read 0 times in that same run. `cuts` has been
+ * removed. This stays because the run that measured it read no door options at all - it
+ * abandoned every ride it described - so it is untested here rather than disproved, and the
+ * measurement behind it was taken on a different model. A run with completed builds, counting
+ * `cost` against `pathDistance` with the counting script kept, is what decides it.
  */
 function doorCost(door: DoorTile, pathDistance: number, queueCutsOff: number): string {
     const lay = pathDistance === 0

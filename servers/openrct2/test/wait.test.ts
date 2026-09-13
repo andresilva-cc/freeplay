@@ -328,12 +328,12 @@ test("the result is the change over the wait, which is what park_status cannot g
 
 test("only the messages that arrived during the wait come back", function () {
     withGame(function (game) {
-        game.messages.push({ text: "{RED}Guests are lost" });
+        game.addMessage("{RED}Guests are lost");
     }, function () {
         duringEachSecond(function (second) {
             if (second === 2) {
-                (globalThis as unknown as { park: { messages: { text: string }[] } })
-                    .park.messages.push({ text: "Merry-Go-Round has broken down" });
+                (globalThis as unknown as { park: { messages: { text: string; month: number; day: number }[] } })
+                    .park.messages.push({ text: "Merry-Go-Round has broken down", month: 0, day: 1 });
             }
         });
 
@@ -347,7 +347,9 @@ test("only the messages that arrived during the wait come back", function () {
 
 test("a news queue that has rotated still reports what arrived", function () {
     withGame(function (game) {
-        game.messages.push({ text: "one" }, { text: "two" }, { text: "three" });
+        game.addMessage("one");
+        game.addMessage("two");
+        game.addMessage("three");
     }, function (game) {
         duringEachSecond(function (second) {
             if (second === 2) {
@@ -356,7 +358,7 @@ test("a news queue that has rotated still reports what arrived", function () {
                 // messages by length difference reports none from here on - and that is
                 // the half of a scenario where breakdowns and complaints actually happen.
                 game.messages.shift();
-                game.messages.push({ text: "four" });
+                game.addMessage("four");
             }
         });
 

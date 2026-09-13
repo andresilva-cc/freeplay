@@ -1,6 +1,7 @@
 import type { HttpRequest, RequestContext } from "./http/types.js";
 import { HttpResponse } from "./http/response.js";
 import { BUILD_ID } from "./buildInfo.js";
+import { gameDaysBetween, readGameDayPosition } from "./gameClock.js";
 import { sanitizeToolResult } from "./scripting.js";
 import { getMcpTools, invokeMcpTool, isDeferredMcpResult } from "./tools/index.js";
 import type { DeferredMcpResult, McpToolDefinition, McpToolSchema } from "./tools/index.js";
@@ -10,6 +11,27 @@ const MCP_PROTOCOL_VERSION = "2025-11-25";
 
 /** A deferred tool that never resolves must not hold the socket open forever. */
 const DEFERRED_TIMEOUT_MS = 30000;
+
+/**
+ * Game time between the previous tool result and this call arriving, carried on every
+ * result that has a previous one to measure from.
+ *
+ * The game runs while the model thinks, so scenario time is spent between calls as well as
+ * inside `wait`, and only the waiting half was ever reported. Measured over one scenario
+ * year: seven `wait` calls took 62 of 248 days, and the other 186 elapsed between calls,
+ * where nothing said so. A player watching the screen gets this for free.
+ *
+ * It is measured from the previous RESULT rather than the previous call, so it and a
+ * `wait`'s own `gameDays` tile the timeline instead of overlapping: the wait reports the
+ * seconds it ran, this reports everything between two calls. A call answered without a tool
+ * result - arguments the schema refused, a deferred failure - takes no stamp, so its time
+ * folds into the next number rather than going unreported.
+ *
+ * It states a number and stops. Nothing here caps a wait, warns about the deadline or
+ * mentions the objective: spending the clock badly is a way to lose this game, and it is
+ * the model's to spend.
+ */
+const ELAPSED_FIELD = "gameDaysSinceLastCall";
 
 type DeferredFailureHandler = (error: unknown) => void;
 
@@ -110,6 +132,13 @@ interface JsonRpcResponseMessage {
 interface McpSession {
     protocolVersion: string;
     initialized: boolean;
+    /**
+     * Where the game clock stood when this session's last tool result was built, in days
+     * since the scenario began. Absent until the first result, which is why the first call
+     * of a session carries no elapsed figure: there is no previous call to measure from,
+     * and 0 would be a measurement rather than an absence.
+     */
+    lastResultAt?: number;
 }
 
 interface ValidationResult {
@@ -372,10 +401,40 @@ function validateAgainstSchema(value: unknown, schema: McpToolSchema): Validatio
  * OpenRCT2 objects expose their data through prototype getters and would otherwise
  * serialise as {}, silently emptying a field the model was told to rely on.
  */
-function createToolResult(rawResult: unknown): Record<string, unknown> {
+/**
+ * The bill for the turn that led to this call, in game days, or nothing on the first call of
+ * a session and on any client with no game clock to read.
+ */
+function gameDaysSinceLastCall(session: McpSession): number | undefined {
+    const now = readGameDayPosition();
+    const previous = session.lastResultAt;
+
+    if (typeof now !== "number" || typeof previous !== "number") {
+        return undefined;
+    }
+
+    return gameDaysBetween(previous, now);
+}
+
+/**
+ * Stamp the clock where this result leaves it, so the next call measures from here.
+ *
+ * Called for every tool result and nowhere else. A call answered without one - arguments the
+ * schema refused, a deferred failure, the watchdog - leaves the stamp where it was, so that
+ * turn's time comes back in the next figure instead of being dropped.
+ */
+function markToolResult(session: McpSession): void {
+    session.lastResultAt = readGameDayPosition();
+}
+
+function createToolResult(rawResult: unknown, sinceLastCall?: number): Record<string, unknown> {
     const result = sanitizeToolResult(rawResult);
 
     if (isRecord(result)) {
+        if (typeof sinceLastCall === "number") {
+            result[ELAPSED_FIELD] = sinceLastCall;
+        }
+
         return {
             content: [
                 createTextContent(JSON.stringify(result))
@@ -585,7 +644,7 @@ export class McpServer {
         }
 
         if (message.method === "tools/call") {
-            return this.handleToolCall(response, message, requestContext);
+            return this.handleToolCall(response, message, session, requestContext);
         }
 
         return this.setJsonRpcError(response, message.id, {
@@ -641,12 +700,20 @@ export class McpServer {
                 "`wait` lets the clock run for a few seconds without touching the park,",
                 "and reports what moved while it ran.",
                 "`evaluate` runs plugin-API JavaScript and is the escape hatch for what no typed tool covers,",
-                "such as tracked rides."
+                "such as tracked rides.",
+                "Every tool result carries `gameDaysSinceLastCall`: the game days that elapsed between the",
+                "previous result and this call arriving. The clock runs while you decide, so that is what the",
+                "turn itself cost. The first call of a session has no previous result and carries no figure."
             ].join(" ")
         });
     }
 
-    private handleToolCall(response: HttpResponse, message: JsonRpcRequestMessage, requestContext?: RequestContext): HttpResponse {
+    private handleToolCall(
+        response: HttpResponse,
+        message: JsonRpcRequestMessage,
+        session: McpSession,
+        requestContext?: RequestContext
+    ): HttpResponse {
         const params = message.params;
 
         if (!isRecord(params) || !isString(params.name)) {
@@ -676,13 +743,18 @@ export class McpServer {
             });
         }
 
+        // Read before the tool runs, not after: a deferred call spends up to twenty real
+        // seconds of game time inside itself, and that half of the clock is what `wait`
+        // already reports. This is the other half.
+        const sinceLastCall = gameDaysSinceLastCall(session);
         const result = invokeMcpTool(tool, (params.arguments as Record<string, unknown>) || {});
 
         if (isDeferredMcpResult(result)) {
-            return this.handleDeferredToolCall(response, message, tool, result, requestContext);
+            return this.handleDeferredToolCall(response, message, tool, result, session, sinceLastCall, requestContext);
         }
 
-        const resultPayload = createToolResult(result);
+        const resultPayload = createToolResult(result, sinceLastCall);
+        markToolResult(session);
         const outputFailure = checkToolOutput(tool, resultPayload);
 
         if (typeof outputFailure !== "undefined") {
@@ -697,6 +769,8 @@ export class McpServer {
         message: JsonRpcRequestMessage,
         tool: McpToolDefinition,
         deferred: DeferredMcpResult,
+        session: McpSession,
+        sinceLastCall: number | undefined,
         requestContext?: RequestContext
     ): HttpResponse {
         const channel = requestContext ? requestContext.connection.takeOver() : undefined;
@@ -769,7 +843,8 @@ export class McpServer {
 
         runAttributedToCall(fail, function () {
             deferred.start(function (value) {
-                const payload = createToolResult(value);
+                const payload = createToolResult(value, sinceLastCall);
+                markToolResult(session);
                 const outputFailure = checkToolOutput(tool, payload);
 
                 if (typeof outputFailure !== "undefined") {

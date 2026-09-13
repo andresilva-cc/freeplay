@@ -1,3 +1,4 @@
+import { currentDayNumber, dayNumberFromElapsedMonths } from "../gameClock.js";
 import { flatRideShape, shopServingTile } from "./flatRides.js";
 import { DIRECTION_VECTORS } from "./map.js";
 import { DEFAULT_CENSUS_BLOCK, readGroundCensus, readPathNetwork } from "./network.js";
@@ -121,8 +122,41 @@ export interface ParkStatus {
     monthlyProfit: number[];
     staff: Record<string, number>;
     /** The game's own notifications, newest last. It names problems before you find them. */
-    messages: string[];
+    messages: ParkMessageReading[];
     rides: RideSummary[];
+}
+
+/**
+ * One park notification, with when it arrived.
+ *
+ * The game keeps a bounded queue of these and the bridge reports the last dozen, newest
+ * last, and that was all it reported: a complaint raised in month 2 sat beside one raised in
+ * month 7 looking identical, because nothing in the result said when either arrived. A run
+ * read "Guests can't get to the entrance of Ferris Wheel 1!" on two turns after that ride's
+ * `exitConnected` had gone true and called it stale both times - correct, but reached by
+ * noticing a contradiction with another field, which only works while the contradiction is
+ * obvious. `wait` can report `newMessages` because it holds a before and an after; a single
+ * `park_status` call has no memory of the previous read, so the age has to be on the message.
+ *
+ * The stamp is an age rather than a date because the game records the arrival to the day
+ * anyway, and a date would leave the subtraction to the reader: OpenRCT2's year is eight
+ * months of unequal length, so "month 2 day 20 against month 7 day 3" is calendar arithmetic
+ * this bridge does everywhere else precisely so the model does not have to. It is also the
+ * same unit as `wait`'s `gameDays` and a result's `gameDaysSinceLastCall`, so game time has
+ * one denomination throughout.
+ *
+ * Nothing is filtered, reordered or marked by it. Whether a three-week-old complaint still
+ * stands is the reader's call - and it is a call the model got right, in the run above, as
+ * soon as it had the means to make it.
+ */
+export interface ParkMessageReading {
+    /**
+     * Whole game days between the day this arrived and today. 0 means today. The game
+     * records the arrival to the day and no finer, so this is counted in whole days and not
+     * rounded from something more precise.
+     */
+    gameDaysAgo: number;
+    text: string;
 }
 
 /**
@@ -216,14 +250,21 @@ function queueServes(entrance: CoordsXYZD | null, rideId: number): boolean {
 }
 
 /** The last few park notifications, most recent last. */
-function recentMessages(count: number): string[] {
+function recentMessages(count: number): ParkMessageReading[] {
     const all = park.messages;
     const start = Math.max(0, all.length - count);
-    const out: string[] = [];
+    const today = currentDayNumber();
+    const out: ParkMessageReading[] = [];
 
     for (let i = start; i < all.length; i++) {
-        // Messages carry colour and layout codes like {RED} and {NEWLINE}: noise to a reader.
-        out.push(all[i].text.replace(/\{[A-Z_]+\}/g, " ").replace(/\s+/g, " ").trim());
+        const message = all[i];
+        const arrived = dayNumberFromElapsedMonths(message.month, message.day);
+
+        out.push({
+            gameDaysAgo: Math.max(0, today - arrived),
+            // Messages carry colour and layout codes like {RED} and {NEWLINE}: noise to a reader.
+            text: message.text.replace(/\{[A-Z_]+\}/g, " ").replace(/\s+/g, " ").trim()
+        });
     }
 
     return out;

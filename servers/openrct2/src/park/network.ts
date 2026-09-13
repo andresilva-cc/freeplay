@@ -116,19 +116,6 @@ export interface PathRun extends PathRunLine {
      * separately as "the queue takes x,y". Absent when `severingComputed` is false.
      */
     cutsIfBlocked?: number;
-    /**
-     * `cutsIfBlocked` said as a sentence, and present only where the figure is above 0.
-     *
-     * The field has been correct and unread since it shipped: 0 mentions across a whole
-     * session, on every run of every turn, answering the exact question that broke the park
-     * it was reported in. There is a measured precedent for the fix rather than a guess -
-     * `describe_placement`'s `queueCutsOff` sat at 3 mentions against `pathDistance`'s 77,
-     * was put into a prose `cost` sentence, and the ratio moved to 4.6:1 with the number
-     * weighed out loud for the first time. It states a price and stops: no run is ordered,
-     * marked or left out by it, and whether the price is worth paying is not this report's
-     * to say.
-     */
-    cuts?: string;
 }
 
 export interface StrandedDoor {
@@ -473,15 +460,6 @@ function runAdjacency(tiles: Record<string, PathTile>, runs: RunTiles[]): number
     return touches;
 }
 
-/** The severance figure said in words, where there is one to say. */
-function cutsSentence(cutsIfBlocked: number): string {
-    return "If a ride's entrance claims a queue on the worst tile of this run, "
-        + (cutsIfBlocked === 1
-            ? "1 tile of path loses its route"
-            : String(cutsIfBlocked) + " tiles of path lose their route")
-        + " to the park entrance.";
-}
-
 /**
  * How many ways off this tile there are. The gate counts as one: the tile outside the park
  * entrance has a single footpath neighbour and is not a dead end, and reporting it as one
@@ -643,12 +621,6 @@ export function readPathNetwork(): PathNetworkShape {
             }
 
             run.cutsIfBlocked = worst;
-
-            // Said only where there is a price to state. A run with a way round every tile
-            // of it reports 0 and stops, which is a sentence nobody has to read.
-            if (worst > 0) {
-                run.cuts = cutsSentence(worst);
-            }
         }
 
         runs.push(run);

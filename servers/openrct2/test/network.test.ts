@@ -167,9 +167,7 @@ test("a straight corridor is one run, and the runs add up to the reachable count
         assert.equal(shape.runs.length, 1, "sixteen tiles in a line are one corridor, not sixteen facts");
         assert.deepEqual(shape.runs[0], {
             index: 0, fromX: 10, fromY: 5, toX: 10, toY: 20, tiles: 16, kind: "path",
-            touches: [], cutsIfBlocked: 15,
-            cuts: "If a ride's entrance claims a queue on the worst tile of this run,"
-                + " 15 tiles of path lose their route to the park entrance."
+            touches: [], cutsIfBlocked: 15
         });
 
         let total = 0;
@@ -206,9 +204,7 @@ test("path and queue are never the same run, and a queue names its ride", functi
         assert.equal(queues.length, 1);
         assert.deepEqual(queues[0], {
             index: 1, fromX: 10, fromY: 10, toX: 10, toY: 12, tiles: 3, kind: "queue",
-            touches: [0], ride: 3, cutsIfBlocked: 2,
-            cuts: "If a ride's entrance claims a queue on the worst tile of this run,"
-                + " 2 tiles of path lose their route to the park entrance."
+            touches: [0], ride: 3, cutsIfBlocked: 2
         });
         assert.equal(typeof paths[0].ride, "undefined", "an ordinary path belongs to no ride and says nothing");
     });
@@ -370,19 +366,19 @@ test("a single-file corridor reports what blocking its worst tile costs", functi
 });
 
 /**
- * The number is correct and was read zero times in a whole session, on every run of every
- * turn, answering the exact question that broke the park it was reported in. The precedent
- * for the fix is measured rather than guessed: `describe_placement`'s `queueCutsOff` went
- * from 3 mentions against `pathDistance`'s 77 to a 4.6:1 ratio when the same figure was put
- * into a prose sentence, and was weighed out loud for the first time.
+ * The severance figure was given the same prose treatment `describe_placement`'s
+ * `queueCutsOff` had been given - a `cuts` sentence beside the number - on the strength of a
+ * measurement that said prose got an unread field read. It did not replicate: 117 sentences
+ * across 12 `park_status` calls, every value above 0, 0 mentions in the model's reasoning
+ * and 0 paraphrases of it. The sentence is gone and the number stays.
  *
- * So the sentence has to carry the figure itself, not a word standing in for it: the
- * assertion reads the number back out of the prose and demands it equal `cutsIfBlocked`. A
- * sentence that said "some tiles" or that hard-coded a count fails. And it appears only
- * where there is a price - a run with a way round every tile of it says 0 and stops, which
- * is the other half, asserted on the ring below.
+ * This asserts the absence, because a removed field is exactly the kind of thing that comes
+ * back from a stale branch or a half-remembered paragraph - and it asserts it over a run
+ * that DOES sever, where the sentence used to appear, so a fixture that simply never
+ * severed could not pass it by accident. Every key of every run is checked rather than the
+ * one name, so the same sentence returning as `cutsText` or `severs` fails too.
  */
-test("a run that severs says so in a sentence, with the figure in it", function () {
+test("a severing run carries the figure and no prose beside it", function () {
     withGame(function (game) {
         game.addParkEntrance(10, 4);
 
@@ -391,17 +387,26 @@ test("a run that severs says so in a sentence, with the figure in it", function 
         }
     }, function () {
         const run = readPathNetwork().runs[0];
-        const said = /(\d+) tiles of path lose their route to the park entrance/.exec(run.cuts || "");
 
-        assert.ok(said, "the severance figure is not in the sentence at all: " + String(run.cuts));
-        assert.equal(Number(said[1]), run.cutsIfBlocked,
-            "the sentence and the field have to be the same measurement");
-        assert.match(run.cuts || "", /ride's entrance claims a queue/,
-            "and it names what does the blocking, which is the part the field could never say");
+        assert.equal(run.cutsIfBlocked, 4, "the run this is asserted on has to be one that severs");
+
+        const keys = Object.keys(run as unknown as Record<string, unknown>);
+
+        for (let i = 0; i < keys.length; i++) {
+            const value = (run as unknown as Record<string, unknown>)[keys[i]];
+
+            if (keys[i] === "kind") {
+                // `path` or `queue`: a category the game has, not a sentence about it.
+                continue;
+            }
+
+            assert.notEqual(typeof value, "string",
+                "a run carries numbers and lists, not a sentence: " + keys[i] + " = " + String(value));
+        }
     });
 });
 
-test("a run with a way round every tile of it states no price", function () {
+test("a run with a way round every tile of it reports 0 rather than nothing", function () {
     withGame(function (game) {
         game.addParkEntrance(10, 4);
         game.addPath(10, 5);
@@ -419,12 +424,7 @@ test("a run with a way round every tile of it states no price", function () {
         const shape = readPathNetwork();
         const loop = shape.runs.filter(function (run) { return run.cutsIfBlocked === 0; });
 
-        assert.ok(loop.length > 0, "the ring's own sides cut nothing off");
-
-        for (let i = 0; i < loop.length; i++) {
-            assert.equal(typeof loop[i].cuts, "undefined",
-                "a run that costs nothing is not worth a sentence every turn: " + JSON.stringify(loop[i]));
-        }
+        assert.ok(loop.length > 0, "the ring's own sides cut nothing off, and say so with a 0");
     });
 });
 
@@ -476,8 +476,6 @@ test("severance is skipped rather than guessed at when the network is too large"
         assert.equal(shape.severingComputed, false);
         assert.equal(typeof shape.runs[0].cutsIfBlocked, "undefined",
             "no figure at all beats a 0 that would read as `there is a way round`");
-        assert.equal(typeof shape.runs[0].cuts, "undefined",
-            "and no sentence either: a sentence with nothing measured behind it is the same lie");
     }, 64);
 });
 

@@ -1402,3 +1402,97 @@ test("`cutsIfBlocked` names the entrance claim as what stops a tile carrying tra
     assert.doesNotMatch(text, /cannot walk through/,
         "and the rule behind the old clause, which the game does not implement");
 });
+
+/* ---------------------------------------------------------------------------------------
+ * Park messages carry when they arrived.
+ *
+ * `messages` is the last dozen the game raised, newest last, and it said nothing about
+ * when: a complaint from month 2 sat beside one from month 7 looking identical. A run read
+ * "Guests can't get to the entrance of Ferris Wheel 1!" on two turns after that ride's
+ * `exitConnected` had gone true and correctly called it stale both times - but only by
+ * noticing it contradicted another field, which stops working the moment the contradiction
+ * is not obvious.
+ *
+ * `wait` can report `newMessages` because it holds a before and an after. One `park_status`
+ * call has no memory of the previous read, which is why the age has to travel on the
+ * message itself.
+ *
+ * These are asserted across a month boundary on purpose. OpenRCT2's months are 31, 30, 31
+ * days, so an implementation that assumed a fixed month length gets a different figure here
+ * and a fixture inside one month could not tell the two apart.
+ */
+
+/** One month of the fake's clock: `monthProgress` climbs 4 a tick and turns over at 65536. */
+const TICKS_PER_MONTH = 16384;
+
+/** Move the clock to May (month 2), day 10 - two whole months and part of a third. */
+function toMayTenth(game: FakeGame): void {
+    game.advanceTicks(TICKS_PER_MONTH * 2 + 5000);
+
+    assert.equal(game.date.month, 2, "the fixture has to be in May for the arithmetic below");
+    assert.equal(game.date.day, 10, "and on the tenth");
+}
+
+test("each park message says how many game days ago it arrived", function () {
+    withPark(function () { /* no rides needed */ }, function (game) {
+        toMayTenth(game);
+
+        // March 20th: 19 whole days into a 31 day month. Today is 31 + 30 + 9 = day 70.
+        game.addMessage("{RED}Guests can't get to the entrance of Ferris Wheel 1!", { month: 0, day: 20 });
+        game.addMessage("Merry-Go-Round has broken down");
+
+        const messages = readParkStatus().messages;
+
+        assert.equal(messages.length, 2);
+        assert.equal(messages[0].gameDaysAgo, 51,
+            "March 20th to May 10th is 51 days: 11 left in March, 30 in April, 10 into May");
+        assert.equal(messages[1].gameDaysAgo, 0, "one raised today is 0 days old, not 1");
+    });
+});
+
+test("two messages months apart do not read the same", function () {
+    withPark(function () { /* no rides needed */ }, function (game) {
+        toMayTenth(game);
+
+        game.addMessage("old complaint", { month: 0, day: 20 });
+        game.addMessage("recent complaint", { month: 2, day: 8 });
+
+        const messages = readParkStatus().messages;
+
+        assert.equal(messages[0].gameDaysAgo, 51);
+        assert.equal(messages[1].gameDaysAgo, 2,
+            "the age is per message, not one number for the whole list");
+    });
+});
+
+test("nothing is dropped, reordered or marked by how old it is", function () {
+    withPark(function () { /* no rides needed */ }, function (game) {
+        toMayTenth(game);
+
+        game.addMessage("{RED}oldest{NEWLINE}one", { month: 0, day: 1 });
+        game.addMessage("middle", { month: 1, day: 1 });
+        game.addMessage("newest");
+
+        const messages = readParkStatus().messages;
+
+        assert.deepEqual(messages.map(function (message) { return message.text; }),
+            ["oldest one", "middle", "newest"],
+            "arrival order, still newest last, with the game's format codes still stripped");
+
+        for (let i = 0; i < messages.length; i++) {
+            assert.deepEqual(Object.keys(messages[i]).sort(), ["gameDaysAgo", "text"],
+                "an age and the words: nothing saying stale, resolved or worth reading");
+        }
+    });
+});
+
+test("a message the clock has not caught up with reads 0 rather than a negative age", function () {
+    withPark(function () { /* no rides needed */ }, function (game) {
+        toMayTenth(game);
+        game.addMessage("from a reloaded save", { month: 5, day: 1 });
+
+        assert.equal(readParkStatus().messages[0].gameDaysAgo, 0,
+            "a save loaded backwards leaves messages stamped ahead of the clock, and"
+                + " a negative age is a number nothing downstream knows what to do with");
+    });
+});

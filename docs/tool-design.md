@@ -396,6 +396,12 @@ lay, the tile the queue takes and what stands on it, and what loses its route to
 It states a price and stops — nothing is reordered, filtered, marked or recommended by it,
 and the list is the same list in the same order it was before.
 
+That the sentence is what got the number read is the part that did not hold up. The same
+treatment on `cutsIfBlocked` produced 117 sentences and 0 reads, and `cost` itself read 0 in
+that run. See "A prose sentence is not what made the number get read" below: the defect
+named here is real, the fix named here is not established, and `cost` stays only until a run
+with completed builds settles it.
+
 So the rule at the top of this page needs a third clause beside advice and ranking. A tool
 can be entirely accurate and still hold the decision: by having already made it, or by
 putting the fact the decision needs somewhere nobody looks. Being right is not the test.
@@ -686,6 +692,69 @@ bridge's job is to report what the game says, and agreement between our own comp
 not a reading of the game. Six copies of an unmeasured claim are one claim, and the thing
 that would have caught it — asking the game — was available the whole time.
 
+### A prose sentence is not what made the number get read
+
+The fix this page recommends twice above is the same one. `queueCutsOff` was correct and
+unread, so the three figures it sat among were said again as a `cost` sentence, in the place
+the reading actually happens — and the mentions moved from 3 against `pathDistance`'s 77 to a
+4.6:1 ratio, with the number weighed out loud for the first time. That was the clearest
+measured win the project had. `cutsIfBlocked` was the same defect one tool along, so it got
+the same treatment: a `cuts` sentence beside the figure, on every run of every `park_status`.
+
+**It did not replicate.** In one run: 117 sentences delivered across 12 `park_status` calls,
+every one of them carrying a figure above 0, and 0 mentions in the model's reasoning — plus 0
+paraphrases, with "lose their route", "cut off", "sever" and "disconnect" all at zero. That is
+15,327 bytes of result JSON, roughly 2,500 tokens, for nothing. In the same run `cost` got 0
+reads as well. What the model read was `pathDistance`, 23 times, and it wrote its own sentence
+around it unprompted: *"These all have pathDistance 3, meaning I need to lay 3 tiles of
+path."*
+
+So the honest statement is narrower than the one written down. A short numeric field with a
+nameable key gets read; a pre-written sentence does not, whether it hangs off an access option
+or off a path run. The prose did not fix the unread-field defect. It doubled its token cost.
+
+This is a correction to the inference, not a retraction of the observation. `queueCutsOff` did
+go from 3 mentions to 5 and was weighed once; that happened. What does not survive is the rule
+drawn from it — that saying a number in words is what gets it read — because the same
+treatment on the same kind of field produced nothing at all, and the second measurement is the
+larger of the two.
+
+The first one also cannot be re-checked, which is its own finding. The script that produced it
+is gone. A single run, counted once, by a method nobody kept, is the same shape of evidence as
+the six components agreeing with each other above: one claim that reads like a result. **A
+result whose method was not kept is a result that cannot be checked**, and it should not have
+been load-bearing for a second change.
+
+So the `cuts` sentence is gone and `cutsIfBlocked` stays. `cost` is left standing for now, and
+deliberately rather than by omission. It is the larger of the two — a sentence per access
+option, and a 4x4 returns sixteen — but pulling it on this evidence would repeat the same
+mistake facing the other way: its supporting measurement was taken on a different model, and
+the run that gave it 0 reads is the run described below, where every ride that was described
+was then abandoned, so there was barely a door choice for it to be read for. What would settle
+it is a run with at least three completed builds on the model now in use, counting mentions and
+paraphrases of `cost`, `pathDistance` and `queueCutsOff` separately, with the counting script
+committed alongside the numbers. If `cost` reads 0 while `pathDistance` reads above 0 in the
+same results, it goes the way `cuts` went.
+
+### The sharpest thing in that run was not a tool failure
+
+Three rides that fitted were abandoned at the same step. The map was read correctly each time,
+`describe_placement` had answered, the ground took the ride, the door options were there, and
+the figures had already been copied out. Then, five times over and close to verbatim: *"this is
+getting too complicated. Let me wait a bit more."* The model made two `build_path` calls in the
+whole run, laid seven tiles, and both succeeded first time. Its own post-mortem blamed the path
+network for being small — describing its own inaction as a property of the park.
+
+Nothing in the tool layer should try to fix that, and it is recorded here rather than turned
+into a change. The test this section sets is *given exactly what it had been told at that
+moment, was this reasonable?*, and the answer is no. It had the measurement, it had the call,
+the call worked every time it made it, and it stopped. The capability was present, correct,
+read, and declined.
+
+That is a play failure, and it is the cleanest one the project has — nearly every other entry
+in this accounting is ours. This page says so plainly whenever the fault is the bridge's, so it
+has to say so here.
+
 ## The clock is the model's problem, and that is a reversal
 
 A local model takes seconds to tens of seconds per decision. If the game is running
@@ -718,3 +787,72 @@ and asking for 8 meaning eight times is out of range), and `pausetoggle` flips r
 sets, so asking to pause twice unpauses unless something reads the state first. Carrying
 those is mechanics. Saying when to use them would be playing, so the description says
 plainly that when to run fast, when to run slow and when to pause are the model's.
+
+### The bill for thinking was the half that went unreported
+
+The paragraph above claims mispacing "reads as one in the transcript". Measured, it did not.
+
+Over year one of a scenario that was lost on the clock: seven `wait` calls spent 62 of the
+year's 248 days — 25% — and the other 186 days, 75%, elapsed while the model was thinking. At
+speed 4 the clock runs about 0.6 game days per real second whether or not a wait is in
+progress, confirmed on three separate deliberation gaps: 20 real seconds bought 12 days, 16
+seconds bought 9, 69 seconds bought 43. After a single `set_game_speed 4` that was never reset,
+waiting cost 60 days and thinking cost 163 — 2.7 times as much scenario time as the tool whose
+whole job is to spend it.
+
+The model was not ignoring the clock. It noticed the deadline seventeen times and chose to wait
+anyway. What it could not see is which half of the bill was larger, because only one half was
+reported: `wait` returns `gameDays`, and thinking returned nothing. `park_status` gives the date
+and the speed as a level, never a rate, and nothing anywhere said how much time had passed since
+the last call. A person watching the screen gets that for free — they see the days tick past
+while they deliberate.
+
+So every tool result now carries `gameDaysSinceLastCall`. Arithmetic on two readings of a clock
+the bridge already had.
+
+It goes on every result rather than in one place, because every turn ends in a tool call and the
+figure is what that turn cost. On `park_status` alone it would silently aggregate several turns
+into one unattributable number, and `park_status` was 12 calls of a run with many more. It is
+measured from the previous *result* rather than from the previous call, so it and a `wait`'s own
+`gameDays` tile the timeline instead of overlapping — the wait reports the seconds it ran, this
+reports everything between two calls. It carries one decimal place, because a game day is about
+thirteen real seconds at speed 1 and whole days would read 0 for most turns at that speed: a
+number that is 0 whenever it is small teaches that thinking is free. The first call of a session
+carries no figure at all, because there is no previous result to measure from and 0 would be a
+measurement. It costs about eight tokens a call — against the ~2,500 a run the `cuts` sentence
+was costing for nothing.
+
+And it says nothing about itself. No cap, no warning, no mention of the objective, no refusal of
+a long wait. The clock was handed over on purpose and spending it badly is a legitimate way to
+lose; a model that noticed the deadline seventeen times does not need reminding of it. What it
+did not have was the bill.
+
+### The same missing sense, one field along: how old is this?
+
+`park_status` reports the last dozen park messages the game raised, newest last, and said nothing
+about when any of them arrived — so a complaint from month 2 sat beside one from month 7 looking
+identical. Both are the game naming a problem in its own words, and one of them may have been
+fixed months ago. In an earlier run the model read *"Guests can't get to the entrance of Ferris
+Wheel 1!"* on two separate turns after that ride's `exitConnected` had gone true, and called it
+stale both times. It was right — and it got there by noticing the message contradicted another
+field, which works while the contradiction is obvious and not otherwise.
+
+The game records the arrival itself: a `ParkMessage` carries `month`, total elapsed months, and
+`day` within that month. So the version of this that would have been disproportionate — the
+bridge remembering first-seen ticks per message, which is bridge-side state that outlives a
+read — was not needed and was not built.
+
+Each message now carries `gameDaysAgo`. An age rather than a date, for the reason `cutsIfBlocked`
+is a count rather than a pair of tile lists: a date leaves the subtraction to the reader, and
+OpenRCT2's year is eight months of unequal length, which is exactly the arithmetic this bridge
+does everywhere else so the model does not have to. Whole days, because the day is the resolution
+the game records and nothing may claim a finer one. Denominated in game days like `wait`'s
+`gameDays` and `gameDaysSinceLastCall`, so game time has one unit across the whole bridge.
+
+Nothing is filtered, reordered or marked by it, and no message is called stale or resolved.
+Whether a seven-week-old complaint still stands is the reader's call — and it is a call the model
+got right, in the run above, as soon as it had the means to make it.
+
+`wait` already does the "new since" version of this, with `newMessages`, and can, because it
+holds a before and an after. One `park_status` call has no memory of the previous read. That is
+precisely why a stamp on the message is the shape that fits and a delta is not.
