@@ -363,12 +363,22 @@ export function renderMapView(window: TileRect, requested?: TileRect): MapViewOu
     const viewHeight = area.bottom - area.top + 1;
 
     if (viewWidth > MAX_VIEW_SIDE || viewHeight > MAX_VIEW_SIDE) {
+        // The margin is the difference between the two rectangles, and saying only the grown
+        // size measures a window the caller never named: four corners well inside the cap can
+        // be refused by a number nothing in the call adds up to.
+        const around = named.left - asked.left;
+
         return {
             ok: false,
             error: "That window is " + String(viewWidth) + " by " + String(viewHeight)
                 + " tiles and view_map draws at most " + String(MAX_VIEW_SIDE) + " on a side."
-                + " Ask for a smaller rectangle, or pass `x`, `y` and `size` for a square"
-                + " centred somewhere inside it."
+                + (around > 0
+                    ? " The corners named are " + String(named.right - named.left + 1) + " by "
+                        + String(named.bottom - named.top + 1) + " tiles and `margin` read "
+                        + String(around) + " more on every side." : "")
+                + " Ask for a smaller rectangle"
+                + (around > 0 ? ", a smaller `margin`," : ",")
+                + " or pass `x`, `y` and `size` for a square centred somewhere inside it."
         };
     }
 

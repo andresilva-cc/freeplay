@@ -772,6 +772,189 @@ test("an x with no y is refused, and told about the gate-centred default", funct
     });
 });
 
+/**
+ * THE REFUSAL DESCRIBED SOMEBODY ELSE'S CALL.
+ *
+ * Session 01a098b4: the model called `view_map {"margin": 5}` and was told "A rectangle needs
+ * all four of `fromX`, `fromY`, `toX` and `toY`". `margin` is in RECT_ARGS, so passing it
+ * alone selected the rectangle form and then failed it, and the sentence that came back named
+ * four arguments the call had not sent and never once said the word `margin`. The model tried
+ * again with `margin` 10, got the same sentence, and had spent 2 of its 4 view_map calls
+ * before it stopped asking; it then planned ten mutating turns off a map it had never seen.
+ *
+ * So the property is not "a bad call is refused". It is that A REFUSAL NAMES THE CALL IT IS
+ * REFUSING: every argument that was actually passed, and the forms that would have worked.
+ * These assert the text, because the text is the whole of what the model gets.
+ */
+
+/** Every refusal that leaves the caller with no window has to say what would give it one. */
+function assertNamesTheForms(error: string): void {
+    assert.ok(error.indexOf("`fromX`, `fromY`, `toX` and `toY` as a rectangle") >= 0,
+        "the rectangle form is one of the three and has to be named: " + error);
+    assert.ok(error.indexOf("`x`, `y` and `size` as a square") >= 0,
+        "so is the square form: " + error);
+    assert.ok(error.indexOf("park's own gate") >= 0,
+        "and so is the gate-centred default: " + error);
+}
+
+test("`margin` on its own is refused by name, not as four corners it never mentioned", function () {
+    withGame(function () { /* empty */ }, function () {
+        for (const value of [0, 5, 10]) {
+            const outcome = callTool({ margin: value }) as ToolFailure;
+
+            assert.equal(outcome.ok, false);
+            assert.equal(outcome.error.indexOf("This call passed `margin`."), 0,
+                "the refusal opens with the argument the call actually carried: " + outcome.error);
+            assert.ok(outcome.error.indexOf("`margin` is the ground read around a rectangle and"
+                + " selects no window on its own") >= 0,
+                "and says what `margin` is and what it is not: " + outcome.error);
+            assert.ok(outcome.error.indexOf("applies only together with `fromX`, `fromY`, `toX`"
+                + " and `toY`") >= 0,
+                "and what it needs beside it: " + outcome.error);
+            assertNamesTheForms(outcome.error);
+
+            // The measured failure, asserted directly: being told four arguments were "left
+            // out" of a call that named none of them is an answer to a question nobody asked.
+            assert.ok(outcome.error.indexOf("left out") < 0,
+                "nothing was left out of a call that named no corners at all: " + outcome.error);
+            assert.ok(outcome.error.indexOf("A rectangle needs all four") < 0,
+                "and this call did not ask for a rectangle: " + outcome.error);
+        }
+    });
+});
+
+test("`margin` beside the square form is refused as a mixed call, with both names in it", function () {
+    withGame(function () { /* empty */ }, function () {
+        const centred = callTool({ x: 10, y: 10, size: 5, margin: 3 }) as ToolFailure;
+
+        assert.equal(centred.ok, false);
+        assert.equal(centred.error.indexOf("This call passed `x`, `y`, `size`, `margin`."), 0,
+            "every argument the call carried, in the refusal: " + centred.error);
+        assert.ok(centred.error.indexOf("`margin` to the rectangle form") >= 0, centred.error);
+        assert.ok(centred.error.indexOf("`x`, `y`, `size` belong to the square form") >= 0, centred.error);
+        assertNamesTheForms(centred.error);
+
+        // `size` alone is the gate-centred default, so `size` plus `margin` is that form and
+        // the rectangle form at once - and the refusal has to name `margin`, not just `size`.
+        const gateSized = callTool({ size: 7, margin: 3 }) as ToolFailure;
+
+        assert.equal(gateSized.ok, false);
+        assert.equal(gateSized.error.indexOf("This call passed `size`, `margin`."), 0, gateSized.error);
+        assert.ok(gateSized.error.indexOf("`size` belongs to the square form") >= 0, gateSized.error);
+        assert.ok(gateSized.error.indexOf("`margin` to the rectangle form") >= 0, gateSized.error);
+        assertNamesTheForms(gateSized.error);
+    });
+});
+
+test("`margin` with the rectangle it belongs to is the one call that draws ground", function () {
+    withGame(function () { /* empty */ }, function () {
+        const view = drawn(callTool({ fromX: 15, fromY: 15, toX: 18, toY: 18, margin: 2 }) as MapViewOutcome);
+
+        assert.deepEqual(view.area, { fromX: 13, fromY: 13, toX: 20, toY: 20 },
+            "the only form `margin` means anything in, and it means this");
+        assert.deepEqual(view.requested, { fromX: 15, fromY: 15, toX: 18, toY: 18 });
+    });
+});
+
+test("a partial rectangle names what was passed as well as what was missing", function () {
+    withGame(function () { /* empty */ }, function () {
+        const opposite = callTool({ fromX: 4, toY: 8 }) as ToolFailure;
+
+        assert.equal(opposite.ok, false);
+        assert.equal(opposite.error.indexOf("This call passed `fromX`, `toY`."), 0,
+            "the two corners it did name: " + opposite.error);
+        assert.ok(opposite.error.indexOf("`fromY` and `toX` were left out") >= 0,
+            "and the two it did not, read as a sentence: " + opposite.error);
+        assertNamesTheForms(opposite.error);
+
+        const three = callTool({ fromX: 4, fromY: 4, toX: 8 }) as ToolFailure;
+
+        assert.equal(three.ok, false);
+        assert.equal(three.error.indexOf("This call passed `fromX`, `fromY`, `toX`."), 0, three.error);
+        assert.ok(three.error.indexOf("`toY` was left out") >= 0, three.error);
+
+        // A margin on a half-written rectangle: the corner is still what is missing, and the
+        // argument that was sent still has to be accounted for rather than passed over.
+        const margined = callTool({ fromX: 4, fromY: 4, toX: 8, margin: 3 }) as ToolFailure;
+
+        assert.equal(margined.ok, false);
+        assert.equal(margined.error.indexOf("This call passed `fromX`, `fromY`, `toX`, `margin`."), 0,
+            margined.error);
+        assert.ok(margined.error.indexOf("`toY` was left out") >= 0, margined.error);
+        assert.ok(margined.error.indexOf("`margin` is the ground read around those four and does"
+            + " not stand in for one of them") >= 0,
+            "the call sent `margin`, so the refusal says what it did and did not buy: " + margined.error);
+    });
+});
+
+test("an x with no y is refused in terms of the whole call, not just the x", function () {
+    withGame(function () { /* empty */ }, function () {
+        const sized = callTool({ x: 10, size: 7 }) as ToolFailure;
+
+        assert.equal(sized.ok, false);
+        assert.equal(sized.error.indexOf("This call passed `x`, `size`."), 0,
+            "`size` was passed too, and a refusal saying the call passed `only x` is wrong about"
+            + " the call it is refusing: " + sized.error);
+        assert.ok(sized.error.indexOf("only `x` of the two") >= 0, sized.error);
+        assertNamesTheForms(sized.error);
+    });
+});
+
+test("an empty call on a park with no gate says it passed nothing, and offers what is left", function () {
+    withGame(function () { /* no entrance anywhere */ }, function () {
+        const empty = callTool({}) as ToolFailure;
+
+        assert.equal(empty.ok, false);
+        assert.equal(empty.error.indexOf("This call passed no arguments at all."), 0,
+            "the call named no window, and the refusal says so rather than inventing one: " + empty.error);
+        assert.ok(empty.error.indexOf("this park has no gate on the map") >= 0, empty.error);
+        assert.ok(empty.error.indexOf("Pass `fromX`, `fromY`, `toX` and `toY` for a rectangle") >= 0,
+            empty.error);
+        assert.ok(empty.error.indexOf("`x`, `y` and `size` for a square") >= 0, empty.error);
+
+        // The gate-centred square is the form that just failed. Offering it back is the same
+        // defect as the `margin` refusal: a shape named to a caller it cannot work for.
+        assert.ok(empty.error.indexOf("as a square around the park's own gate") < 0,
+            "the gate form cannot be the way out of there being no gate: " + empty.error);
+
+        const sized = callTool({ size: 7 }) as ToolFailure;
+
+        assert.equal(sized.ok, false);
+        assert.equal(sized.error.indexOf("This call passed `size`."), 0,
+            "`size` selected the gate-centred square, and the refusal names it: " + sized.error);
+    });
+});
+
+/**
+ * Four corners inside the cap, refused by a number the call does not add up to. The margin is
+ * the difference and the caller cannot see it from the size alone.
+ */
+test("a window the margin pushed over the cap says so, and by how much", function () {
+    withGame(function () { /* empty */ }, function () {
+        const outcome = callTool({ fromX: 5, fromY: 5, toX: 40, toY: 9, margin: 4 }) as ToolFailure;
+
+        assert.equal(outcome.ok, false);
+        assert.ok(outcome.error.indexOf("That window is 44 by 13") >= 0, outcome.error);
+        assert.ok(outcome.error.indexOf("The corners named are 36 by 5 tiles and `margin` read 4"
+            + " more on every side") >= 0,
+            "36 is inside the cap and 44 is not, so the refusal has to name the margin that"
+            + " made the difference: " + outcome.error);
+        assert.ok(outcome.error.indexOf("a smaller `margin`") >= 0, outcome.error);
+    }, 64);
+});
+
+test("a rectangle over the cap on its own says nothing about a margin it never had", function () {
+    withGame(function () { /* empty */ }, function () {
+        const outcome = callTool({ fromX: 5, fromY: 5, toX: 55, toY: 9, margin: 0 }) as ToolFailure;
+
+        assert.equal(outcome.ok, false);
+        assert.ok(outcome.error.indexOf("That window is 51 by 5") >= 0, outcome.error);
+        assert.ok(outcome.error.indexOf("`margin`") < 0,
+            "the margin was 0 and had nothing to do with it: " + outcome.error);
+        assert.ok(outcome.error.indexOf("The corners named") < 0, outcome.error);
+    }, 64);
+});
+
 test("a rectangle plus its margin can outgrow the cap, and is refused by measurement", function () {
     withGame(function () { /* empty */ }, function () {
         const outcome = callTool({ fromX: 5, fromY: 5, toX: 45, toY: 9, margin: 3 }) as ToolFailure;
