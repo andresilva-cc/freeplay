@@ -4,7 +4,7 @@ import test from "node:test";
 import { FakeGame } from "./fakeGame.ts";
 import type { FakeRide } from "./fakeGame.ts";
 import { readGuestFeedback, readParkStatus } from "../src/park/status.ts";
-import type { RideSummary } from "../src/park/status.ts";
+import type { RideObjectInfo, RideSummary } from "../src/park/status.ts";
 import { tileIsWalkable, walkableFromParkEntrance } from "../src/park/paths.ts";
 import { StatusTools } from "../src/tools/status.ts";
 import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
@@ -810,16 +810,74 @@ test("the ride object list keeps its count and its contents in step", function (
         const tools = new StatusTools();
         const all = tools.listRideObjects({});
 
-        assert.equal(all.totalAvailable, 40, "forty objects exist");
+        assert.equal(all.totalLoaded, 40, "forty objects exist");
         assert.equal(all.count, 40);
         assert.equal(all.objects.length, 40, "the whole list comes back, nothing is trimmed off the end");
 
         const flat = tools.listRideObjects({ flatRidesOnly: true });
 
-        assert.equal(flat.totalAvailable, 40, "the total is of everything, before the filter");
+        assert.equal(flat.totalLoaded, 40, "the total is of everything, before the filter");
         assert.equal(flat.count, 20, "half of them go up in one action");
         assert.equal(flat.objects.length, flat.count, "the count is of the list that was actually returned");
         assert.equal(flat.objects[0].footprint, "3x3", "and each one says how much room it needs");
+    });
+});
+
+/**
+ * A scenario loads every ride object it may ever offer and unlocks them over the years,
+ * posting "X is now available" as each one lands. Reading the loaded list as the buildable
+ * list is what put a model on a ride the game had not given it yet.
+ *
+ * The indices have gaps on purpose. Position 1 is index 7, so a `researched` taken from the
+ * object's position rather than its `.index` marks the wrong row; a hardcoded one marks
+ * every row the same. Either way `researchedCount` comes back 3 rather than 2.
+ */
+test("a ride still behind research is listed, and marked as not researched", function () {
+    withPark(function (game) {
+        game.rideObjects = [
+            { index: 3, name: "Merry-Go-Round", rideType: [33] },
+            { index: 7, name: "Ferris Wheel", rideType: [37] },
+            { index: 11, name: "Dodgems", rideType: [25] }
+        ];
+        game.uninventedRideObjects[7] = true;
+    }, function () {
+        const result = new StatusTools().listRideObjects({});
+        const byIndex: Record<number, RideObjectInfo> = {};
+
+        result.objects.forEach(function (object) {
+            byIndex[object.index] = object;
+        });
+
+        assert.equal(result.objects.length, 3, "the locked one is listed too - nothing is filtered out");
+        assert.equal(result.count, 3);
+        assert.equal(byIndex[7].researched, false, "the ferris wheel is the one the scenario is still holding back");
+        assert.equal(byIndex[3].researched, true, "and the other two say the opposite, so the field is read and not stamped");
+        assert.equal(byIndex[11].researched, true);
+        assert.equal(result.researchedCount, 2, "two of the three are researched");
+        assert.equal(result.totalLoaded, 3, "and the total is of what is loaded, locked or not");
+    });
+});
+
+/**
+ * The one filter this tool has must not become a second one. A locked flat ride is a flat
+ * ride, and dropping it here would hide the ride the model is waiting for from the only call
+ * that would tell it the wait is over.
+ */
+test("the flat-ride filter does not drop a ride that is behind research", function () {
+    withPark(function (game) {
+        game.rideObjects = [
+            { index: 0, name: "Merry-Go-Round", rideType: [33] },
+            { index: 1, name: "Ferris Wheel", rideType: [37] }
+        ];
+        game.uninventedRideObjects[1] = true;
+    }, function () {
+        const flat = new StatusTools().listRideObjects({ flatRidesOnly: true });
+
+        assert.equal(flat.count, 2, "both go up in one action, so both come back");
+        assert.deepEqual(flat.objects.map(function (object) { return object.researched; }), [true, false],
+            "the locked one is in the list and marked, rather than filtered out of it");
+        assert.equal(flat.researchedCount, 1, "and the count of researched rows is of the filtered list");
+        assert.equal(flat.totalLoaded, 2);
     });
 });
 

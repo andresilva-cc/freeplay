@@ -51,7 +51,7 @@ path does not.
 |---|---|---|
 | `park_status` | What the game shows on screen: money, rating, guests, every ride, and which tiles a door actually opens onto | What any of it means, and what to do |
 | `guest_feedback` | What guests are complaining about | Which complaint is worth acting on |
-| `list_ride_objects` | What exists, its footprint, whether it builds in one action | What is worth building |
+| `list_ride_objects` | What exists, its footprint, whether it builds in one action, and whether research has unlocked it | What is worth building, and whether to wait for a ride or build what is already there |
 | `describe_placement` | For the one origin and rotation it was asked about: the ground the ride would stand on, what stops it, how far each door is from a path, and what an entrance at that door would dead-end | Where to put the ride, which way round, which doors, whether to build at all |
 | `clear_scenery` | Removing scenery from a named patch of ground | Whether felling it is worth the money and the rating |
 | `build_flat_ride` | The create/place/entrance/exit sequence, with correct arguments | What, where, which way round, which doors, what price, whether to open |

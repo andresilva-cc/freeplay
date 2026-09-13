@@ -65,7 +65,7 @@ what each one does is in its own description, which is what the model reads.
 |---|---|
 | `park_status` | Objective, money, rating, guests, staff, park messages, the walkable path network as runs, junctions, dead ends and stranded islands, a per-block census of the ground the park owns, and every ride: its doors, the tiles those doors open onto, whether a queue is bound to it, and whether guests can reach it |
 | `guest_feedback` | Guest thoughts, counted over a sample |
-| `list_ride_objects` | What can be built, with footprints |
+| `list_ride_objects` | Every ride the scenario has loaded, with footprints and whether research has unlocked it |
 | `describe_placement` | What one ride at one tile at one rotation would be: the ground it would stand on, whether that ground takes it, and every door position it would have. It searches for nothing |
 | `view_map` | Draw a window of the park as a text grid, one character per tile, with a legend for every character that window used. It is the only picture of the park there is, and what it costs scales with the window asked for |
 | `clear_scenery` | Strip a rectangle of ground, or a square centred on a tile |

@@ -1,6 +1,7 @@
 import { DIRECTION_VECTORS, directionBetween, readMapGrid } from "./map.js";
 import { findParkEntranceTiles } from "./paths.js";
 import { flatRideShape, footprintOffsets, perimeterOffsets, shopServingTile } from "./flatRides.js";
+import { rideObjectResearched } from "./research.js";
 import type { MapGrid } from "./map.js";
 import type { FlatRideShape, Offset } from "./flatRides.js";
 
@@ -195,8 +196,10 @@ export interface Footprint {
 export interface PlacementResult {
     ok: boolean;
     /** What was asked about. `width` and `depth` are the ride's size for reference only:
-     *  the ground it stands on is `footprint`, never a rectangle worked out from these two. */
-    ride?: { name: string; rideType: number; width: number; depth: number; isShop: boolean };
+     *  the ground it stands on is `footprint`, never a rectangle worked out from these two.
+     *  `researched` is whether the scenario has unlocked this ride yet; the placement is
+     *  described either way, because whether to wait for it is the caller's decision. */
+    ride?: { name: string; rideType: number; width: number; depth: number; isShop: boolean; researched: boolean };
     /** The origin and rotation asked about, echoed, so the answer reads on its own and the
      *  three values that go to build_flat_ride are in the result that describes them. */
     x?: number;
@@ -985,7 +988,10 @@ export function describePlacement(rideObjectIndex: number, cx: number, cy: numbe
 
     return {
         ok: true,
-        ride: { name: rideObject.name, rideType: rideType, width: shape.width, depth: shape.depth, isShop: shape.isShop },
+        ride: {
+            name: rideObject.name, rideType: rideType, width: shape.width, depth: shape.depth,
+            isShop: shape.isShop, researched: rideObjectResearched(rideObject.index)
+        },
         x: cx,
         y: cy,
         rotation: rotation,

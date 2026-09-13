@@ -3,6 +3,7 @@ import { flatRideShape, shopServingTile } from "./flatRides.js";
 import { DIRECTION_VECTORS } from "./map.js";
 import { DEFAULT_CENSUS_BLOCK, readGroundCensus, readPathNetwork } from "./network.js";
 import type { GroundCensus, PathNetworkShape } from "./network.js";
+import { rideObjectResearched } from "./research.js";
 import { tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
 import type { Tile } from "./paths.js";
 
@@ -421,6 +422,10 @@ export interface RideObjectInfo {
     /** Flat rides go up in one action with build_flat_ride. */
     isFlatRide: boolean;
     footprint: string | null;
+    /** False while the scenario still has this one behind research. Read per object rather
+     *  than filtered on: which rides exist and which are locked are both facts, and dropping
+     *  the locked ones would decide what the park can be planned towards. */
+    researched: boolean;
 }
 
 export function listRideObjects(): RideObjectInfo[] {
@@ -433,7 +438,8 @@ export function listRideObjects(): RideObjectInfo[] {
             name: object.name,
             rideType: rideType,
             isFlatRide: typeof shape !== "undefined",
-            footprint: typeof shape === "undefined" ? null : String(shape.width) + "x" + String(shape.depth)
+            footprint: typeof shape === "undefined" ? null : String(shape.width) + "x" + String(shape.depth),
+            researched: rideObjectResearched(object.index)
         };
     });
 }

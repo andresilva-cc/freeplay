@@ -1859,3 +1859,45 @@ test("the rotation argument says it is required and says why there is no default
     assert.match(properties.rotation.description, /for a shop it is the whole of it/,
         "and the one case where rotation means something other than a footprint");
 });
+
+
+/**
+ * The placement is described for a locked ride exactly as for any other. Whether to wait for
+ * research or build what the scenario has already given is the model's decision, and refusing
+ * to describe it would make it here instead.
+ *
+ * Indices with gaps again: 9 is position 1, so a `researched` read off the position rather
+ * than the `.index` reports the merry-go-round's state for the ferris wheel and the locked
+ * case reads back true.
+ */
+test("a placement reports whether the ride is behind research, and is described either way", function () {
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [
+        { index: 5, name: "Merry-Go-Round", rideType: [33] },
+        { index: 9, name: "Ferris Wheel", rideType: [37] }
+    ];
+    game.uninventedRideObjects[9] = true;
+    game.addParkEntrance(10, 0);
+
+    for (let y = 1; y <= 20; y++) {
+        game.addPath(10, y);
+    }
+
+    const restore = game.install();
+
+    try {
+        const locked = describePlacement(9, 14, 10, 0);
+
+        assert.equal(locked.ok, true, "a ride behind research is described, not refused");
+        assert.equal(locked.ride?.researched, false, "and it says which it is");
+        assert.equal(locked.fits, true, "the ground is measured the same as for any other ride");
+        assert.ok(access(locked).length > 0, "and the doors are offered, so nothing was withheld");
+
+        const unlocked = describePlacement(5, 14, 10, 0);
+
+        assert.equal(unlocked.ride?.researched, true,
+            "while the one the scenario has unlocked reads the other way, from the same call");
+    } finally {
+        restore();
+    }
+});

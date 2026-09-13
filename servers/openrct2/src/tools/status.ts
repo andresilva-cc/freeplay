@@ -111,10 +111,13 @@ export class StatusTools {
     @mcpTool({
         name: "List ride objects",
         description: [
-            "Every ride and stall this scenario lets you build, with the index `describe_placement` and",
+            "Every ride and stall this scenario has loaded, with the index `describe_placement` and",
             "`build_flat_ride` expect. `isFlatRide` true means it goes up in one action; false means it is a",
             "tracked ride that has to be built piece by piece with evaluate. `footprint` is its size in tiles.",
-            "`count` is how many came back, `totalAvailable` how many exist before any filter."
+            "`researched` false means the scenario still has it behind research and has not announced it as",
+            "available yet; locked ones are listed all the same and nothing is filtered out.",
+            "`count` is how many came back, `researchedCount` how many of those are researched,",
+            "`totalLoaded` how many exist before any filter."
         ].join(" "),
         inputSchema: {
             type: "object",
@@ -136,6 +139,14 @@ export class StatusTools {
             ? all.filter(function (object) { return object.isFlatRide; })
             : all;
 
-        return { count: objects.length, totalAvailable: all.length, objects: objects };
+        // `totalAvailable` was this figure's name until research was read: a scenario loads
+        // every object it may ever offer, so the count of loaded objects is not the count of
+        // available ones and calling it that was the same unread-claim defect as the list.
+        return {
+            count: objects.length,
+            researchedCount: objects.filter(function (object) { return object.researched; }).length,
+            totalLoaded: all.length,
+            objects: objects
+        };
     }
 }

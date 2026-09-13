@@ -1304,3 +1304,33 @@ test("build_flat_ride's description states that a paused game builds nothing", f
         "the description never says a paused game cannot build");
     assert.match(String(definition.description), /set_game_speed/, "nor names what starts the clock");
 });
+
+
+/**
+ * A pin on a deliberate non-decision. `RideCreateAction::Query` and `TrackPlaceAction::Query`
+ * carry no invention check - only the new-ride window and the track-design actions do - so the
+ * game does not refuse the two actions a flat-ride build fires for a ride still behind
+ * research. `list_ride_objects` reports the state and this tool acts on the request it was
+ * given; a refusal added here would be a rule the game does not have, and it would be
+ * unreachable in the real game either way.
+ *
+ * This bites only against a change, which is the point: it is the same build as the first
+ * test in this file with the ride locked, so the day a research gate is added to build.ts,
+ * this is what fails.
+ */
+test("a ride behind research is built, not refused", function () {
+    const { game, restore } = park();
+    game.uninventedRideObjects[0] = true;
+
+    try {
+        const outcome = build({});
+
+        assert.equal(outcome.ok, true, "research is measured elsewhere and not enforced here");
+        assert.deepEqual(outcome.steps.map(function (s) { return s.step; }),
+            ["ridecreate", "trackplace", "entrance/exit", "access", "price", "open"],
+            "every step runs, and no step of its own is added for research");
+        assert.equal(game.rides.length, 1, "and the ride is in the park");
+    } finally {
+        restore();
+    }
+});

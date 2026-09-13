@@ -52,7 +52,7 @@ session state, and the connected client's session id becomes unknown.
 |---|---|---|
 | `park_status` | `tools/status.ts` | Objective, money, rating, guests, staff, park messages, the walkable path network as runs, junctions, dead ends and islands, a per-block ground census, and every ride with its doors, door tiles and whether guests can reach it |
 | `guest_feedback` | `tools/status.ts` | Guest thoughts, counted |
-| `list_ride_objects` | `tools/status.ts` | What can be built, with footprints |
+| `list_ride_objects` | `tools/status.ts` | Every ride the scenario has loaded, with footprints and research state |
 | `describe_placement` | `tools/sites.ts` | One ride at one tile at one rotation: the ground it would stand on, what stops it, and every door position |
 | `view_map` | `tools/mapView.ts` | Draw a window of the park as a text grid, one character per tile, with a legend for the characters that window used |
 | `clear_scenery` | `tools/clear.ts` | Strip a rectangle of ground, or a square centred on a tile |

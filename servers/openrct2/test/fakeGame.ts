@@ -213,6 +213,13 @@ export class FakeGame {
     public readonly width: number;
     public readonly height: number;
     public rideObjects: { index: number; name: string; rideType: number[] }[] = [];
+    /**
+     * Ride objects the scenario still has behind research, keyed by the object's own `.index`
+     * - the number `getAllObjects` reports, which is not its position in `rideObjects`.
+     * `park.research.isObjectResearched` reads this. An index that is not in here is
+     * researched, which is the scenario every suite predating research was written against.
+     */
+    public readonly uninventedRideObjects: Record<number, boolean> = {};
     public rides: FakeRide[] = [];
     /** Actions accepted but not yet applied. */
     public readonly pending: QueuedAction[] = [];
@@ -1154,6 +1161,20 @@ function installGlobals(game: FakeGame): () => void {
         },
         getMonthlyExpenditure: function (stream: string) {
             return game.expenditure[stream] || [0, 0, 0, 0];
+        },
+        research: {
+            /**
+             * The game answers this for every object type; only rides are modelled here, and
+             * anything else throws rather than reading back true, so a caller that asks about
+             * the wrong object type fails here instead of being told everything is unlocked.
+             */
+            isObjectResearched: function (type: string, index: number) {
+                if (type !== "ride") {
+                    throw new Error("the fake models research for ride objects only, not " + type);
+                }
+
+                return game.uninventedRideObjects[index] !== true;
+            }
         }
     };
 
