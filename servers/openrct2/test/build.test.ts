@@ -1232,6 +1232,230 @@ test("an ordinary path at the door, with no queue on it, is still not reachable"
     }
 });
 
+/** A footpath on ground raised to `baseZ`, which is a step the game joins nothing across. */
+function addPathAtHeight(game: FakeGame, x: number, y: number, baseZ: number): void {
+    game.tile(x, y).elements[0].baseZ = baseZ;
+    game.addPath(x, y);
+
+    const elements = game.tile(x, y).elements;
+
+    for (let i = 0; i < elements.length; i++) {
+        if (elements[i].type === "footpath") {
+            elements[i].baseZ = baseZ;
+        }
+    }
+}
+
+/**
+ * The most repeated failure message in the recorded runs: "NO QUEUE at the entrance -
+ * guests cannot board" appears 45 times across 10 of 19 of them, and not once did it say
+ * what was standing on the tiles around that door. A model that had just built a ride was
+ * told its doors did not work and left to plan from its own memory of the map - and those
+ * same runs show it planning from maps several turns old and guessing coordinates rather
+ * than reading them back. What is beside that door is knowable only here: this call read
+ * those tiles to reach its verdict, and nothing in the result carried the answer.
+ */
+test("a door with nothing round it names every neighbour and what each one is", function () {
+    const { restore } = park();
+
+    try {
+        const outcome = build({ x: 20, y: 15, entrance: { x: 18, y: 15 }, exit: { x: 22, y: 15 } });
+        const detail = step(outcome, "access");
+
+        assert.equal(outcome.ok, true, "the ride itself was built");
+        assert.match(detail, /NO QUEUE at the entrance - guests cannot board/, "the verdict itself stands");
+        assert.match(detail, /17,15, the tile the entrance door opens onto, is bare ground the park owns\./,
+            "what the door tile itself carries is the first thing this message never said");
+        assert.match(detail,
+            /The tiles beside it were read: 18,15 is the entrance BUILDING of ride 0, whose door opens onto 17,15\. 16,15 17,16 17,14 are bare ground the park owns\./,
+            "and then every tile beside it, by name, with what was found on each");
+        assert.match(detail, /23,15, the tile the exit door opens onto, is bare ground the park owns\./,
+            "the exit failed too, and its door is a different tile with its own four neighbours");
+        assert.match(detail, /22,15 is the exit BUILDING of ride 0, whose door opens onto 23,15/);
+    } finally {
+        restore();
+    }
+});
+
+test("a door tile carrying ordinary path reads as that, not as the bare ground it used to look like", function () {
+    // Bare ground and ordinary-path-but-no-queue produced the same 120 characters before
+    // this, and they need opposite answers: one wants a queue laid, the other wants the
+    // path that is already there taken up first. The tool read both and reported neither.
+    const { game, restore } = park();
+
+    game.addPath(11, 10);
+
+    for (let x = 10; x <= 17; x++) {
+        game.addPath(x, 14);
+    }
+    for (let y = 10; y <= 14; y++) {
+        game.addPath(17, y);
+    }
+
+    try {
+        const outcome = build({});
+        const walkable = walkableFromParkEntrance();
+        const detail = step(outcome, "access");
+        const door = game.tile(11, 10).elements.filter(function (e) { return e.type === "footpath"; })[0];
+
+        assert.ok(door, "the fixture has to leave a footpath on the door tile");
+        assert.notEqual(door.isQueue, true, "and it has to be ordinary path, not a queue");
+        assert.equal(tileIsWalkable(walkable, { x: 11, y: 10 }), true, "which guests really can walk to");
+
+        assert.match(detail, /NO QUEUE at the entrance - guests cannot board/);
+        assert.match(detail,
+            /11,10, the tile the entrance door opens onto, is a footpath guests can reach from the park entrance\./,
+            "the tile carries path and guests reach it: both halves are read here and nowhere else");
+        assert.match(detail,
+            /10,10 is a footpath guests can reach from the park entrance, joined to 11,10 by the edge bits the game keeps on both tiles/,
+            "the game's own edge bits, through the same test the walk out of the gate floods with");
+        assert.doesNotMatch(detail, /the tile the exit door opens onto/,
+            "the exit reaches the park's paths, so there is nothing about it that only this call read");
+    } finally {
+        restore();
+    }
+});
+
+test("an exit door beside path the gate cannot reach is told which tile that is, and that guests cannot reach it", function () {
+    const { game, restore } = park();
+
+    // A queue at the entrance door, so the entrance half passes and the exit half is what
+    // this measures. The path at 18,10 touches nothing the park entrance connects to.
+    game.addPath(11, 10, true);
+    game.addPath(18, 10);
+    game.addPath(18, 11);
+
+    try {
+        const outcome = build({});
+        const walkable = walkableFromParkEntrance();
+        const detail = step(outcome, "access");
+
+        assert.ok(game.tile(18, 10).elements.some(function (e) { return e.type === "footpath"; }),
+            "18,10 has to carry a real footpath, or this is the bare-ground case again");
+        assert.equal(tileIsWalkable(walkable, { x: 18, y: 10 }), false,
+            "and the park entrance has to have no walk to it");
+
+        assert.match(detail, /A queue serves the entrance; the exit is not connected\./);
+        assert.match(detail, /17,10, the tile the exit door opens onto, is bare ground the park owns\./);
+        assert.match(detail, /18,10 is a footpath guests cannot reach from the park entrance either/,
+            "path that leads nowhere reads nothing like bare ground, and the verdict alone cannot tell them apart");
+        assert.doesNotMatch(detail, /the tile the entrance door opens onto/,
+            "the entrance has its queue, so its four tiles are nobody's question");
+    } finally {
+        restore();
+    }
+});
+
+test("a neighbour that carries path at another height is named with both heights", function () {
+    const { game, restore } = park();
+
+    game.addPath(11, 10, true);
+    addPathAtHeight(game, 18, 10, 112);
+
+    try {
+        const outcome = build({});
+        const detail = step(outcome, "access");
+
+        assert.equal(game.tile(18, 10).elements[0].baseZ, 112, "the fixture has to raise the ground under that path");
+        assert.equal(game.tile(17, 10).elements[0].baseZ, 96, "and leave the door tile where the ride is");
+
+        assert.match(detail, /the exit is not connected\./);
+        assert.match(detail,
+            /18,10 is a footpath guests cannot reach from the park entrance either, at ground height 112 against 17,10's 96\./,
+            "a path the game will not join across a step is not a path that is missing, and the two heights are the fact");
+    } finally {
+        restore();
+    }
+});
+
+/**
+ * The park's own gate carries a raw ride index of 0 - the plugin API hands the field over
+ * unused rather than null - so anything that reads `ride` instead of `object` calls the
+ * gate the entrance of ride 0. Ride 0 is built here first, so that mistake would name a
+ * ride that really exists and read as a fact rather than as nonsense.
+ */
+test("the park's own gate beside a door is named as the gate, not as some ride's entrance", function () {
+    const { game, restore } = park();
+
+    try {
+        build({ x: 20, y: 15, entrance: { x: 18, y: 15 }, exit: { x: 22, y: 15 } });
+
+        const gate = game.tile(11, 2).elements.filter(function (e) { return e.type === "entrance"; })[0];
+
+        assert.ok(gate, "the gate has to be standing on 11,2");
+        assert.equal(gate.ride, 0, "carrying a raw ride index of 0, or this test proves nothing");
+        assert.ok(game.rides.some(function (r) { return r.id === 0; }), "and ride 0 has to exist by now");
+
+        const outcome = build({ x: 14, y: 3, entrance: { x: 12, y: 3 }, exit: { x: 16, y: 3 } });
+        const detail = step(outcome, "access");
+
+        assert.equal(outcome.rideId, 1, "the ride under test is ride 1, so \"ride 0\" here could only be the gate");
+        assert.match(detail, /11,2 is the park entrance BUILDING/, "the one thing the gate is");
+        assert.match(detail, /12,3 is the entrance BUILDING of ride 1, whose door opens onto 11,3/,
+            "and a real ride door beside the same tile is still named, ride and all");
+        assert.doesNotMatch(detail, /BUILDING of ride 0/, "the gate belongs to no ride and cannot be described as one");
+    } finally {
+        restore();
+    }
+});
+
+test("a stall nobody can buy from says what its counter tile is and what is beside it", function () {
+    const { game, restore } = park();
+
+    // Rotation 2 faces +x, so the stall at 11,10 is served from 12,10 and nowhere else.
+    // The path stops one tile short, at 13,10.
+    for (let x = 11; x <= 13; x++) {
+        game.addPath(x, 13);
+    }
+    for (let y = 10; y <= 12; y++) {
+        game.addPath(13, y);
+    }
+
+    try {
+        const outcome = build({ rideObject: 1, x: 11, y: 10, rotation: 2, entrance: undefined, exit: undefined });
+        const detail = step(outcome, "access");
+
+        assert.match(detail, /NO PATH guests can reach at 12,10/);
+        assert.match(detail, /12,10, the counter tile, is bare ground the park owns\./,
+            "whether the counter is bare or carries path that leads nowhere is read here and nowhere else");
+        assert.match(detail, /13,10 is a footpath guests can reach from the park entrance/,
+            "the path one tile short of the counter is the tile the model most needs named");
+        assert.match(detail, /11,10 is carrying track/, "and the stall itself is on the other side");
+        assert.ok(detail.indexOf("12,10, the counter tile") < detail.indexOf("That one tile is the counter"),
+            "what this call read comes before the standing explanation, which the model already has");
+    } finally {
+        restore();
+    }
+});
+
+test("a ride guests can board and leave is given no neighbour reading at all", function () {
+    // Nothing failed, so there is nothing here the caller did not already know it asked
+    // for. Reading four tiles round a working door and reporting them is the shape that
+    // turns every successful build into a paragraph nobody needs.
+    const { game, restore } = park();
+
+    game.addPath(11, 10, true);
+
+    for (let x = 10; x <= 17; x++) {
+        game.addPath(x, 14);
+    }
+    for (let y = 10; y <= 14; y++) {
+        game.addPath(17, y);
+    }
+
+    try {
+        const outcome = build({});
+        const detail = step(outcome, "access");
+
+        assert.equal(outcome.reachable, true, "queue in, path out: this ride works");
+        assert.match(detail, /A queue serves the entrance; the exit reaches the park's paths\.$/,
+            "the step ends at the verdict");
+        assert.doesNotMatch(detail, /The tiles beside it were read/);
+    } finally {
+        restore();
+    }
+});
+
 test("a stall is judged by its counter, not by a tile next to its counter", function () {
     const { game, restore } = park();
 

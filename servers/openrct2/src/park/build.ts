@@ -3,6 +3,7 @@ import {
     PARK_ENTRANCE, queuePathServes, RIDE_ENTRANCE, RIDE_EXIT, tileIsWalkable, walkableFromParkEntrance
 } from "./paths.js";
 import { flatRideShape, footprintOffsets, shopServingTile } from "./flatRides.js";
+import { neighboursOf, tileName, tileState } from "./neighbours.js";
 import type { MapGrid } from "./map.js";
 
 /** Game actions apply on a later tick, so every step waits before verifying. */
@@ -425,6 +426,32 @@ const WHAT_A_DOOR_IS = " A `door` is the tile behind the building, one step furt
     + " why it does not touch the footprint: the queue runs to it and the building stands between it and"
     + " the ride. Every `access` option carries both tiles - its `x`,`y` is what these four arguments take,"
     + " and its `door` is the tile that option's queue would run to.";
+
+/**
+ * The tile an access verdict is about, and what is standing on the four tiles around it.
+ *
+ * `build_path` says this much about a run that failed to join the network. The verdict
+ * here said none of it: "NO QUEUE at the entrance - guests cannot board" is the most
+ * repeated failure message in the recorded runs - 45 times across 10 of 19 - and it never
+ * once named a tile beside that door. A model that had just built a ride was told its
+ * doors did not work and left to plan from its own memory of the map, which the same runs
+ * show it does from a map several turns out of date.
+ *
+ * Only what was read. Where a queue should go is the player's decision and this tool lays
+ * no path, so nothing here ranks a tile, picks one, or offers to take the ride back out.
+ *
+ * The same words `src/park/pathbuild.ts` uses, out of the same function, because the same
+ * ground described twice in two vocabularies reads as two different maps.
+ */
+function readingOf(
+    grid: MapGrid, walkable: Record<string, boolean>, tile: { x: number; y: number }, what: string
+): string {
+    const subject = tileName(tile);
+    const beside = neighboursOf(grid, walkable, [tile], {}, subject);
+
+    return " " + subject + ", " + what + ", is " + tileState(grid, walkable, null, tile, subject) + "."
+        + (beside === "" ? "" : " The tiles beside it were read: " + beside);
+}
 
 export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: BuildOutcome) => void): void {
     const steps: BuildStep[] = [];
@@ -851,6 +878,21 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                     // Report, do not fix: where paths go is the player's decision.
                     const nowWalkable = walkableFromParkEntrance();
                     let reachable: boolean;
+                    /**
+                     * The map as it stands now, read once and only where a verdict failed.
+                     *
+                     * Not the `grid` this build opened with: that was read before the track
+                     * and the doors went up, and a sentence about what is beside a door has
+                     * to describe the ground the door is standing in now.
+                     */
+                    let ground: MapGrid | null = null;
+                    const groundNow = function (): MapGrid {
+                        if (!ground) {
+                            ground = readMapGrid();
+                        }
+
+                        return ground;
+                    };
 
                     if (access) {
                         const entranceDoor = apronTile(access.entrance);
@@ -868,6 +910,17 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                                 + (queued ? "A queue serves the entrance" : "NO QUEUE at the entrance - guests cannot board")
                                 + "; " + (exitOk ? "the exit reaches the park's paths" : "the exit is not connected")
                                 + "."
+                                // Each failing half brings its own reading, and a half that
+                                // passed brings none: a working door has nothing here that
+                                // the caller did not already know it asked for.
+                                + (queued
+                                    ? ""
+                                    : readingOf(groundNow(), nowWalkable, entranceDoor,
+                                        "the tile the entrance door opens onto"))
+                                + (exitOk
+                                    ? ""
+                                    : readingOf(groundNow(), nowWalkable, exitDoor,
+                                        "the tile the exit door opens onto"))
                         });
                     } else {
                         // One tile, not four: the game serves a stall from the neighbour on
@@ -884,7 +937,12 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                                 ? "Guests buy from " + String(counter.x) + "," + String(counter.y)
                                     + ", which they can reach."
                                 : "NO PATH guests can reach at " + String(counter.x) + "," + String(counter.y) + ", so"
-                                    + " nobody can buy from this stall. That one tile is the counter: a stall is served"
+                                    + " nobody can buy from this stall."
+                                    // Before the explanation, because the explanation is
+                                    // what the model already has and this is what only this
+                                    // call read.
+                                    + readingOf(groundNow(), nowWalkable, counter, "the counter tile")
+                                    + " That one tile is the counter: a stall is served"
                                     + " only from the neighbour on the side it faces, which at rotation "
                                     + String(request.rotation) + " is " + String(counter.x) + "," + String(counter.y)
                                     + ". A path on any of its other three sides touches a wall and serves nobody."
