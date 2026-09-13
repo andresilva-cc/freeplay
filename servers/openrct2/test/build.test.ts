@@ -108,6 +108,26 @@ function step(outcome: BuildOutcome, name: string): string {
 type ExecuteAction = (name: string, args: Record<string, unknown>, callback?: (result: Record<string, unknown>) => void) => void;
 
 /**
+ * Let every action through, and move the world on after one of them.
+ *
+ * The park keeps running between an action and the read-back that verifies it - that is
+ * the whole reason these steps are spaced out - so the request a build was given is not a
+ * safe stand-in for what the ride is doing by the time the outcome is written.
+ */
+function afterAction(match: (name: string) => boolean, moveOn: () => void): void {
+    const scope = globalThis as unknown as { context: { executeAction: ExecuteAction } };
+    const real = scope.context.executeAction;
+
+    scope.context.executeAction = function (name, args, callback) {
+        real(name, args, callback);
+
+        if (match(name)) {
+            moveOn();
+        }
+    };
+}
+
+/**
  * Accept one action and never apply it, which is how a single door fails in the game:
  * the other one still goes up. `restore()` puts the whole context back, so this needs
  * no undoing of its own.
@@ -929,6 +949,178 @@ test("a ride left behind by a failed cleanup names the call that removes it", fu
         assert.match(step(outcome, "cleanup"), /operate_ride \{ride: 0, demolish: true\}/);
         assert.equal(game.rides.length, 1, "the orphan really is still there");
         assert.equal(trackTiles(game, 0).length, 0, "with nothing on the ground");
+    } finally {
+        restore();
+    }
+});
+
+test("a ride nobody can board reports the status the game gives it, not the open that was asked for", function () {
+    // pi session 01a098b4: `open: true` came back beside `reachable: false` and an access
+    // step reading "NO QUEUE at the entrance - guests cannot board". `open` has to be the
+    // game's answer about the ride, which is a different question from whether it was
+    // asked to open - so the same request is run twice with the game answering differently.
+    const wanted = { x: 20, y: 15, entrance: { x: 18, y: 15 }, exit: { x: 22, y: 15 }, open: true };
+    const opens = park();
+
+    try {
+        const outcome = build(wanted);
+        const access = outcome.steps.filter(function (s) { return s.step === "access"; })[0];
+
+        assert.equal(access.ok, false, "no queue reaches this ride, so the access step did not pass");
+        assert.equal(outcome.reachable, false);
+        assert.equal(opens.game.rides[0].status, "open", "the game did open this one");
+        assert.equal(outcome.status, "open", "the game's own word for the ride is not reported");
+        assert.equal(outcome.open, true, "and `open` follows it");
+    } finally {
+        opens.restore();
+    }
+
+    const refuses = park();
+    refuses.game.refuse.ridesetstatus = true;
+
+    try {
+        const outcome = build(wanted);
+
+        assert.equal(refuses.game.rides[0].status, "closed", "the game refused to open this one");
+        assert.equal(outcome.status, "closed",
+            "the same request, and the ride is shut: `open: true` would have been the argument talking back");
+        assert.equal(outcome.open, false);
+        assert.equal(outcome.ok, true, "the ride is still standing, which is all ok ever meant");
+    } finally {
+        refuses.restore();
+    }
+
+    // "open" and "closed" are two of the four words the game has for a ride. A ride that
+    // went into testing is neither open nor a failed build, and a boolean worked out from
+    // the request has no way of saying which of the four it is.
+    const testing = park();
+    // The game takes the open and puts the ride into testing rather than straight into
+    // service. `executeAction` only queues, so the state is set here in the action's
+    // place - anything set before the queue drains is overwritten when it does.
+    dropAction(function (name) {
+        if (name !== "ridesetstatus") {
+            return false;
+        }
+
+        testing.game.rides[0].status = "testing";
+        return true;
+    });
+
+    try {
+        const outcome = build(wanted);
+
+        assert.equal(outcome.status, "testing", "the game's third word for a ride is not reported");
+        assert.equal(outcome.open, false, "a ride under test is not open to guests");
+        assert.equal(outcome.ok, true, "and it is still a ride that was paid for and is standing");
+    } finally {
+        testing.restore();
+    }
+
+    // The other direction, on the path a build that needed nothing more takes: the ride is
+    // open and nobody asked for it to be. Whatever moved it - the player, another call in
+    // flight - the outcome is written from the ride, so the request cannot stand in for it
+    // here either.
+    const opened = park();
+    afterAction(function (name) { return name === "ridesetprice"; }, function () {
+        opened.game.rides[0].status = "open";
+    });
+
+    try {
+        const outcome = build({ ...wanted, open: false });
+
+        assert.equal(opened.game.rides[0].status, "open", "the ride in the park is open");
+        assert.equal(outcome.status, "open", "and the outcome says so, though `open: false` was asked for");
+        assert.equal(outcome.open, true);
+    } finally {
+        opened.restore();
+    }
+});
+
+test("a ride created and then cleaned up says so in the same step that reported the id", function () {
+    // The envelope said `rideId: null` while `steps` still carried
+    // {"step":"ridecreate","ok":true,"detail":"ride 1"}. Both were true of different
+    // moments in one call, and read together they are one answer contradicting itself.
+    const gone = park();
+    gone.game.refuse.trackplace = true;
+
+    try {
+        const outcome = build({});
+        const created = step(outcome, "ridecreate");
+
+        assert.equal(outcome.rideId, null, "the cleanup took the ride out, so no id is standing");
+        assert.equal(gone.game.rides.length, 0, "and it really is gone");
+        assert.match(created, /ride 0 was created and then removed again/,
+            "the step still reports an id that no longer exists: " + created);
+        assert.match(created, /no ride with that id is in the park now/, created);
+        assert.notEqual(created, "ride 0", "a bare id here reads as a ride standing in the park");
+    } finally {
+        gone.restore();
+    }
+
+    // The other half of the same rule: when the cleanup fails the ride IS still there, the
+    // envelope reports its id, and the step must go on saying exactly what it said.
+    const stranded = park();
+    stranded.game.refuse.trackplace = true;
+    stranded.game.refuse.ridedemolish = true;
+
+    try {
+        const outcome = build({});
+
+        assert.equal(outcome.rideId, 0, "the orphan's id is reported");
+        assert.equal(step(outcome, "ridecreate"), "ride 0",
+            "nothing removed this ride, so the step must not say anything was");
+    } finally {
+        stranded.restore();
+    }
+});
+
+test("a door tile held by a ride's own entrance names that ride and stops there", function () {
+    // The model re-sent the entrance coordinates of a ride it had just built, and was told
+    // its `access` list "either did not come from describe_placement or is now out of
+    // date". Neither was true: the list had been right, and what changed the ground was
+    // this tool putting the door up. The bridge can read whose door is on that tile.
+    const { game, restore } = park();
+
+    try {
+        const first = build({});
+
+        assert.equal(first.ok, true, JSON.stringify(first.steps));
+
+        const again = build({});
+        const detail = step(again, "site");
+
+        assert.equal(again.ok, false, "a second ride went up on ground the first one is standing on");
+        assert.equal(game.rides.length, 1, "and it was created before the refusal");
+        assert.match(detail, /entranceX\/entranceY 12,10 is not clear: the entrance BUILDING of ride 0 \(Ride 0\)/,
+            "the refusal does not say whose entrance is standing there: " + detail);
+        assert.match(detail, /exitX\/exitY 16,10 is not clear: the exit BUILDING of ride 0 \(Ride 0\)/,
+            "nor whose exit: " + detail);
+        assert.doesNotMatch(detail, /did not come from its `access` list/,
+            "the coordinates did come from an `access` list, so guessing they did not is false: " + detail);
+        assert.doesNotMatch(detail, /out of date/,
+            "and the list was not out of date when it was read - this tool changed the ground after");
+        assert.doesNotMatch(detail, /describe_placement for this ride again/,
+            "what to do about a ride standing there is the model's call, not this tool's");
+        assert.doesNotMatch(detail, /Pick a different option/, detail);
+    } finally {
+        restore();
+    }
+});
+
+test("the park's own gate on a door tile is not read as some ride's entrance", function () {
+    // An entrance element hands back a raw ride index, so the park gate reads as ride 0
+    // whether or not a ride 0 exists. `object` is the only field that tells the three
+    // kinds apart, and naming a ride off a gate would be a new guess in place of the old.
+    const { game, restore } = park();
+    game.addParkEntrance(11, 10);
+
+    try {
+        const detail = step(build({}), "site");
+
+        assert.match(detail, /entranceX\/entranceY 12,10 is not clear: the park entrance BUILDING is standing on it/,
+            detail);
+        assert.doesNotMatch(detail, /BUILDING of ride/, "the gate belongs to no ride: " + detail);
+        assert.equal(game.rides.length, 0, "nothing was created");
     } finally {
         restore();
     }

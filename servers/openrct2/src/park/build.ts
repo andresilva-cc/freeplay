@@ -1,5 +1,7 @@
 import { DIRECTION_VECTORS, directionBetween, readMapGrid, toWorld } from "./map.js";
-import { queuePathServes, tileIsWalkable, walkableFromParkEntrance } from "./paths.js";
+import {
+    PARK_ENTRANCE, queuePathServes, RIDE_ENTRANCE, RIDE_EXIT, tileIsWalkable, walkableFromParkEntrance
+} from "./paths.js";
 import { flatRideShape, footprintOffsets, shopServingTile } from "./flatRides.js";
 import type { MapGrid } from "./map.js";
 
@@ -46,24 +48,85 @@ function apronTile(access: { x: number; y: number; direction: number }): { x: nu
     return { x: access.x - towardsRide.dx, y: access.y - towardsRide.dy };
 }
 
-/** What is standing on a tile that a bulldozer would not shift, named by element type. */
-function immovableElementsOn(x: number, y: number): string[] {
+/**
+ * An entrance element named by what it belongs to.
+ *
+ * `object` is the only field that says which of the three kinds it is - `element.ride`
+ * reads back as 0 for the park's own gate - so the kind is taken from there and the ride
+ * is looked up rather than assumed. A refusal that said only "entrance is standing on it"
+ * withheld the one thing the bridge knew and the model could not read: whose entrance.
+ */
+function entranceName(element: EntranceElement): string {
+    if (element.object === PARK_ENTRANCE) {
+        return "the park entrance BUILDING";
+    }
+
+    if (element.object !== RIDE_ENTRANCE && element.object !== RIDE_EXIT) {
+        // Deliberately names no ride: an entrance kind this build does not know about must
+        // not inherit the ride index of one it does.
+        return "an entrance BUILDING of a kind this bridge does not recognise (`object` "
+            + String(element.object) + ")";
+    }
+
+    const which = element.object === RIDE_EXIT ? "exit" : "entrance";
+    const ride = map.getRide(element.ride);
+
+    return "the " + which + " BUILDING of ride " + String(element.ride)
+        + (ride ? " (" + ride.name + ")" : "");
+}
+
+export interface Blockers {
+    /** What is standing there, one entry per distinct thing. */
+    names: string[];
+    /** True when one of them is a ride's own entrance or exit building. The bridge put
+     *  that there itself and can read off which ride it serves, so a refusal about this
+     *  tile has a fact to state and nothing left to speculate about. */
+    rideDoor: boolean;
+}
+
+/** What is standing on a tile that a bulldozer would not shift. */
+function immovableElementsOn(x: number, y: number): Blockers {
     const tile = map.getTile(x, y);
     const seen: Record<string, boolean> = {};
     const names: string[] = [];
+    let rideDoor = false;
 
     for (let i = 0; i < tile.numElements; i++) {
-        const type = tile.getElement(i).type;
+        const element = tile.getElement(i);
+        const type = element.type;
 
-        if (type === "surface" || REMOVABLE_TYPES[type] || seen[type]) {
+        if (type === "surface" || REMOVABLE_TYPES[type]) {
             continue;
         }
 
-        seen[type] = true;
-        names.push(type);
+        let name: string = type;
+
+        if (type === "entrance") {
+            const entrance = element as EntranceElement;
+
+            name = entranceName(entrance);
+
+            if (entrance.object === RIDE_ENTRANCE || entrance.object === RIDE_EXIT) {
+                rideDoor = true;
+            }
+        }
+
+        if (seen[name]) {
+            continue;
+        }
+
+        seen[name] = true;
+        names.push(name);
     }
 
-    return names;
+    return { names: names, rideDoor: rideDoor };
+}
+
+/** The game's own word for a ride's status - closed, open, testing or simulating. */
+function rideStatus(rideId: number): string | null {
+    const ride = map.getRide(rideId);
+
+    return ride ? ride.status : null;
 }
 
 export interface BuildFlatRideRequest {
@@ -102,7 +165,13 @@ export interface BuildOutcome {
     rideName: string | null;
     /** Both doors are attached to the station. Null for a shop, which has neither. */
     doorsAttached: boolean | null;
-    /** Whether the ride is open right now. Failing to open is not a failure to build. */
+    /**
+     * The game's own word for what this ride is doing - closed, open, testing or
+     * simulating - read off the ride after the build rather than echoed back from the
+     * `open` argument. Null when no ride is standing.
+     */
+    status: string | null;
+    /** Whether the ride is open right now: `status` is "open". Never the request. */
     open: boolean;
     /** Whether guests can actually walk from the existing paths to this ride. */
     reachable: boolean;
@@ -114,7 +183,9 @@ interface FinishState {
     rideId: number | null;
     rideName: string | null;
     doorsAttached: boolean | null;
-    open: boolean;
+    /** The game's word for the ride, or null when there is no ride to read. `open` in the
+     *  outcome is derived from this, so a caller here cannot assert one without the other. */
+    status: string | null;
     reachable: boolean;
 }
 
@@ -168,6 +239,12 @@ interface AccessAttempt {
      * is the fix - which is the opposite of "pick another option from the list you have".
      */
     stale?: boolean;
+    /**
+     * True when a ride's own entrance or exit building is standing on the tile. The bridge
+     * placed that building and can read which ride it belongs to, so the refusal has the
+     * cause itself to state and nothing left to guess at.
+     */
+    rideDoor?: boolean;
 }
 
 function accessAt(
@@ -221,9 +298,10 @@ function accessAt(
         const blockers = immovableElementsOn(tile.x, tile.y);
 
         return {
-            reason: "is not clear: " + (blockers.length > 0 ? blockers.join(" and ") : "a structure")
+            reason: "is not clear: " + (blockers.names.length > 0 ? blockers.names.join(" and ") : "a structure")
                 + " is standing on it, and that is not scenery a bulldozer removes",
-            stale: true
+            stale: true,
+            rideDoor: blockers.rideDoor
         };
     }
 
@@ -248,9 +326,10 @@ function accessAt(
         const blockers = immovableElementsOn(door.x, door.y);
 
         return {
-            reason: opensOnto + "is blocked by " + (blockers.length > 0 ? blockers.join(" and ") : "a structure")
+            reason: opensOnto + "is blocked by " + (blockers.names.length > 0 ? blockers.names.join(" and ") : "a structure")
                 + ", so no queue could ever reach this door",
-            stale: true
+            stale: true,
+            rideDoor: blockers.rideDoor
         };
     }
 
@@ -355,13 +434,15 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
             rideId: state.rideId,
             rideName: state.rideName,
             doorsAttached: state.doorsAttached,
-            open: state.open,
+            status: state.status,
+            // Derived from the status the game gave back, so the two can never disagree.
+            open: state.status === "open",
             reachable: state.reachable,
             steps: steps
         });
     };
     const refuse = function (): void {
-        finish({ ok: false, rideId: null, rideName: null, doorsAttached: null, open: false, reachable: false });
+        finish({ ok: false, rideId: null, rideName: null, doorsAttached: null, status: null, reachable: false });
     };
 
     // Checked before anything else, and before a single action is fired. A paused game
@@ -501,6 +582,15 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
             const stale = (!entranceAttempt.access && entranceAttempt.stale === true)
                 || (!exitAttempt.access && exitAttempt.stale === true);
 
+            // A ride's own door on the tile is a cause the bridge has already read and
+            // named, ride and all. What followed it was a guess at where the coordinates
+            // came from - "either not from its `access` list or that list is out of date" -
+            // and after a build of the model's own it was false both ways: the list had
+            // been right, and the thing standing there was the door this tool had just put
+            // up. The fact replaces the guess, and the message ends there.
+            const named = (!entranceAttempt.access && entranceAttempt.rideDoor === true)
+                || (!exitAttempt.access && exitAttempt.rideDoor === true);
+
             steps.push({
                 step: "site",
                 ok: false,
@@ -509,7 +599,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                     // Every coordinate that failed was a door, so the options the model
                     // picked were the right ones and only the field was wrong: sending it to
                     // a different option here is what it did eleven times.
-                    + (doorsSent === faults.length
+                    + (doorsSent === faults.length || named
                         ? ""
                         : stale
                             ? " describe_placement never offers a tile like that, so these coordinates either did not come"
@@ -565,7 +655,11 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
         }
 
         const created = rideId as number;
-        steps.push({ step: "ridecreate", ok: true, detail: "ride " + String(created) });
+        // Held rather than pushed and forgotten: if the cleanup below takes this ride back
+        // out, this same step has to say so. A step reading "ride 1" beside an envelope
+        // reading `rideId: null` is one answer disagreeing with itself.
+        const createStep: BuildStep = { step: "ridecreate", ok: true, detail: "ride " + String(created) };
+        steps.push(createStep);
 
         let trackResult: GameActionResult | undefined;
         context.executeAction("trackplace", {
@@ -598,6 +692,13 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
 
                 return context.setTimeout(function () {
                     const stillThere = !!map.getRide(created);
+
+                    if (!stillThere) {
+                        createStep.detail = "ride " + String(created) + " was created and then removed again"
+                            + " by the cleanup below, so no ride with that id is in the park now - which is"
+                            + " why rideId is null";
+                    }
+
                     // Read back now rather than inferred from the refusal text: the pause can
                     // only have arrived after this build started, so the state at the moment
                     // the message is written is the one the model has to act on.
@@ -631,7 +732,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                         rideId: stillThere ? created : null,
                         rideName: null,
                         doorsAttached: null,
-                        open: false,
+                        status: stillThere ? rideStatus(created) : null,
                         reachable: false
                     });
                 }, STEP_DELAY_MS) as unknown as void;
@@ -717,7 +818,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                             rideId: created,
                             rideName: map.getRide(created).name,
                             doorsAttached: false,
-                            open: false,
+                            status: rideStatus(created),
                             reachable: false
                         }) as unknown as void;
                     }
@@ -834,7 +935,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                                 rideId: created,
                                 rideName: ride.name,
                                 doorsAttached: access ? true : null,
-                                open: false,
+                                status: ride.status,
                                 reachable: reachable
                             }) as unknown as void;
                         }
@@ -848,7 +949,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                             rideId: created,
                             rideName: ride.name,
                             doorsAttached: access ? true : null,
-                            open: opened,
+                            status: ride.status,
                             reachable: reachable
                         });
                     }, STEP_DELAY_MS);

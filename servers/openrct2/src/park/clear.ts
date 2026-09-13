@@ -9,6 +9,33 @@ const STEP_DELAY_MS = 200;
  */
 const INSUFFICIENT_FUNDS = 4;
 
+/** Everything this tool ever asks the game to take down. Nothing else is touched. */
+const REMOVABLE_TYPES: Record<string, boolean> = {
+    small_scenery: true,
+    large_scenery: true,
+    wall: true,
+    banner: true
+};
+
+/**
+ * Whether a tile carries anything this tool would remove.
+ *
+ * Called once before the removals and once after, because the difference between the two
+ * readings is the only thing that says how much ground actually changed. Counting the
+ * rectangle instead reported five tiles cleared where the game's own census moved by four.
+ */
+function hasScenery(x: number, y: number): boolean {
+    const tile = map.getTile(x, y);
+
+    for (let i = 0; i < tile.numElements; i++) {
+        if (REMOVABLE_TYPES[tile.getElement(i).type]) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 /** A rectangle of tiles, both corners included. */
 export interface TileRect {
     left: number;
@@ -20,6 +47,13 @@ export interface TileRect {
 export interface ClearAreaOutcome {
     ok: boolean;
     tilesRequested: number;
+    /** Tiles that carried scenery when the call started and carry none now: what this call
+     *  actually changed, counted off the map afterwards. Not the size of the rectangle. */
+    tilesCleared: number;
+    /** Tiles of the rectangle that had nothing on them to take down in the first place.
+     *  `tilesRequested` minus this is the most any call could ever have cleared, and the
+     *  bare tiles among them are ground the model has no other way of knowing was bare. */
+    tilesNothingToClear: number;
     /** Tiles still not bare, for whatever reason: the sum of the three counts below. */
     tilesStillBlocked: number;
     /** Tiles a ride, a path or a park structure stands on. Nothing here removes those. */
@@ -94,6 +128,8 @@ export function clearRect(area: TileRect, done: (outcome: ClearAreaOutcome) => v
     const tiles: { x: number; y: number }[] = [];
     /** Every refusal the game gave, keyed by the tile it was asked about. */
     const refused: Record<string, GameActionResult[]> = {};
+    /** Which tiles had something to take down, read before a single action is fired. */
+    const hadScenery: boolean[] = [];
 
     for (let x = bounds.left; x <= bounds.right; x++) {
         for (let y = bounds.top; y <= bounds.bottom; y++) {
@@ -120,6 +156,8 @@ export function clearRect(area: TileRect, done: (outcome: ClearAreaOutcome) => v
         const x = toWorld(tiles[i].x);
         const y = toWorld(tiles[i].y);
         const record = recorder(String(tiles[i].x) + "," + String(tiles[i].y));
+
+        hadScenery.push(hasScenery(tiles[i].x, tiles[i].y));
 
         for (let e = 0; e < tile.numElements; e++) {
             const element = tile.getElement(e);
@@ -153,6 +191,8 @@ export function clearRect(area: TileRect, done: (outcome: ClearAreaOutcome) => v
         let occupied = 0;
         let stillThere = 0;
         let unowned = 0;
+        let cleared = 0;
+        let nothingToClear = 0;
         let notEnoughCash = false;
         const reasons: string[] = [];
 
@@ -164,6 +204,14 @@ export function clearRect(area: TileRect, done: (outcome: ClearAreaOutcome) => v
 
         for (let i = 0; i < tiles.length; i++) {
             const cell = grid.at(tiles[i].x, tiles[i].y);
+
+            // Counted off the two readings, not off the request: a tile that was already
+            // bare was never cleared by this call, however cleanly the rectangle came back.
+            if (!hadScenery[i]) {
+                nothingToClear++;
+            } else if (!hasScenery(tiles[i].x, tiles[i].y)) {
+                cleared++;
+            }
 
             if (!cell || !cell.owned) {
                 unowned++;
@@ -201,8 +249,14 @@ export function clearRect(area: TileRect, done: (outcome: ClearAreaOutcome) => v
         const blocked = occupied + stillThere + unowned;
         const parts: string[] = [];
 
-        if (blocked === 0) {
-            parts.push("Cleared " + String(tiles.length) + " tiles.");
+        // Always "n of m", never a bare count: "Cleared 5 tiles" for a five-tile rectangle
+        // with scenery on four of them reads as the size of the rectangle, which is the
+        // number that was wrong, and left the model's idea of the ground one tile out of
+        // step with the park's own census with nothing it could call to find out why.
+        parts.push("Cleared " + String(cleared) + " of the " + String(tiles.length) + " tiles asked for.");
+
+        if (nothingToClear > 0) {
+            parts.push(String(nothingToClear) + " of them had no scenery, wall or banner on it to take down.");
         }
 
         if (unowned > 0) {
@@ -223,6 +277,8 @@ export function clearRect(area: TileRect, done: (outcome: ClearAreaOutcome) => v
         done({
             ok: blocked === 0,
             tilesRequested: tiles.length,
+            tilesCleared: cleared,
+            tilesNothingToClear: nothingToClear,
             tilesStillBlocked: blocked,
             tilesOccupied: occupied,
             tilesRefused: stillThere,

@@ -7,7 +7,7 @@ import { createApplication } from "../src/app.ts";
 import { centredSquare, clearRect } from "../src/park/clear.ts";
 import { ClearTools } from "../src/tools/clear.ts";
 import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
-import type { ClearAreaOutcome } from "../src/park/clear.ts";
+import type { ClearAreaOutcome, TileRect } from "../src/park/clear.ts";
 
 /** A flat, owned, entirely bare park. Each test puts in its own obstructions. */
 function withPark(run: (game: FakeGame) => void, options?: { inert?: boolean }): void {
@@ -26,6 +26,16 @@ function clear(cx: number, cy: number, size: number): ClearAreaOutcome {
     let outcome: ClearAreaOutcome | null = null;
 
     clearRect(centredSquare(cx, cy, size), function (result) { outcome = result; });
+
+    assert.ok(outcome, "clearRect never finished");
+    return outcome as unknown as ClearAreaOutcome;
+}
+
+/** The rectangle form, which is what a placement's `footprint` goes into. */
+function clearArea(area: TileRect): ClearAreaOutcome {
+    let outcome: ClearAreaOutcome | null = null;
+
+    clearRect(area, function (result) { outcome = result; });
 
     assert.ok(outcome, "clearRect never finished");
     return outcome as unknown as ClearAreaOutcome;
@@ -128,8 +138,80 @@ test("small scenery, large scenery, walls and banners all go", function () {
         assert.equal(countElements(game, "large_scenery"), 0, "the large scenery was removed");
         assert.equal(countElements(game, "wall"), 0, "the wall was removed");
         assert.equal(countElements(game, "banner"), 0, "the banner was removed");
-        assert.match(outcome.detail, /Cleared 9 tiles/);
+        // Four of the nine tiles had something on them, so four is the number the game's
+        // own census moved by. "Cleared 9 tiles" was the size of the square, not a reading.
+        assert.equal(outcome.tilesCleared, 4);
+        assert.equal(outcome.tilesNothingToClear, 5);
+        assert.match(outcome.detail, /Cleared 4 of the 9 tiles asked for/);
+        assert.match(outcome.detail, /5 of them had no scenery, wall or banner on it to take down/);
     });
+});
+
+
+test("a rectangle with a bare tile in it counts the tiles that changed, not the tiles asked for", function () {
+    // pi session 01a098c3, verbatim: a five-tile strip came back "Cleared 5 tiles." with
+    // `tilesRefused: 0`, while the park's own ground census moved by four and
+    // describe_placement had already read four tiles of scenery there. Five was the size
+    // of the rectangle. Which tile was bare is a fact about the map with no other tool
+    // that reports it.
+    withPark(function (game) {
+        game.addScenery(12, 6);
+        game.addScenery(12, 7);
+        // 12,8 is bare, and the call is about to ask for it anyway.
+        game.addScenery(12, 9);
+        game.addScenery(12, 10);
+
+        const before = countElements(game, "small_scenery");
+        const outcome = clearArea({ left: 12, top: 6, right: 12, bottom: 10 });
+
+        assert.equal(before - countElements(game, "small_scenery"), 4,
+            "the map only ever had four pieces of scenery on that strip to lose");
+        assert.equal(outcome.tilesRequested, 5);
+        assert.equal(outcome.tilesCleared, 4, "five is the size of the strip, not what the call changed");
+        assert.equal(outcome.tilesNothingToClear, 1);
+        assert.equal(outcome.tilesRefused, 0, "nothing was refused - the fifth tile simply had nothing on it");
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.match(outcome.detail, /Cleared 4 of the 5 tiles asked for/,
+            "the count has to differ from the request out loud: " + outcome.detail);
+        assert.match(outcome.detail, /1 of them had no scenery, wall or banner on it to take down/,
+            "how many tiles were already bare is the part the model cannot read anywhere else");
+    });
+});
+
+test("a rectangle with scenery on every tile clears them all and reports no bare ground", function () {
+    withPark(function (game) {
+        for (let y = 6; y <= 10; y++) {
+            game.addScenery(12, y);
+        }
+
+        const before = countElements(game, "small_scenery");
+        const outcome = clearArea({ left: 12, top: 6, right: 12, bottom: 10 });
+
+        assert.equal(before - countElements(game, "small_scenery"), 5, "all five pieces really went");
+        assert.equal(outcome.tilesRequested, 5);
+        assert.equal(outcome.tilesCleared, 5);
+        assert.equal(outcome.tilesNothingToClear, 0);
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.match(outcome.detail, /Cleared 5 of the 5 tiles asked for/);
+        assert.doesNotMatch(outcome.detail, /had no scenery, wall or banner/,
+            "there was no bare tile, so there is nothing to report about one: " + outcome.detail);
+    });
+});
+
+test("the cleared count is a reading of the ground afterwards, not a count of the removals asked for", function () {
+    // The bug class this whole file is about: the actions are accepted and never applied.
+    // A count taken from what was asked for cannot tell that apart from a clearance.
+    withPark(function (game) {
+        game.addScenery(12, 6);
+        game.addScenery(12, 7);
+
+        const outcome = clearArea({ left: 12, top: 6, right: 12, bottom: 8 });
+
+        assert.equal(game.attempted.length, 2, "two removals were asked for");
+        assert.equal(outcome.tilesCleared, 0, "and neither of them changed the ground");
+        assert.equal(outcome.tilesNothingToClear, 1, "the third tile of the strip was bare from the start");
+        assert.match(outcome.detail, /Cleared 0 of the 3 tiles asked for/);
+    }, { inert: true });
 });
 
 test("a path and a ride are left standing and counted as still blocking", function () {
@@ -150,7 +232,10 @@ test("a path and a ride are left standing and counted as still blocking", functi
         assert.deepEqual(names, ["smallsceneryremove"], "it only ever asks to remove scenery, walls and banners");
 
         assert.match(outcome.detail, /occupied by something that is not scenery/);
-        assert.doesNotMatch(outcome.detail, /Cleared/, "it must not claim to have cleared a square it did not clear");
+        assert.equal(outcome.tilesCleared, 1, "one tile of the nine had scenery on it and lost it");
+        assert.match(outcome.detail, /Cleared 1 of the 9 tiles asked for/);
+        assert.doesNotMatch(outcome.detail, /Cleared 9 of/,
+            "it must not claim to have cleared a square it did not clear");
     });
 });
 
@@ -166,7 +251,8 @@ test("land outside the park is reported as unowned, not blamed on a ride or a pa
         assert.match(outcome.detail, /2 of 9 tiles are outside the park's land/);
         assert.doesNotMatch(outcome.detail, /a ride, a path/,
             "unowned land is not something a demolition would fix, so it must not be described as one");
-        assert.doesNotMatch(outcome.detail, /Cleared/);
+        assert.equal(outcome.tilesCleared, 0, "the square was bare, so nothing was taken off it");
+        assert.match(outcome.detail, /Cleared 0 of the 9 tiles asked for/);
     });
 });
 
@@ -207,7 +293,11 @@ test("when nothing is applied, it does not claim to have cleared anything", func
         assert.equal(outcome.ok, false, "a clearance that did not happen is not a success");
         assert.equal(outcome.tilesStillBlocked, 9, "all nine tiles still have their scenery");
         assert.equal(countElements(game, "small_scenery"), 9, "and the scenery really is still there");
-        assert.doesNotMatch(outcome.detail, /Cleared/);
+        assert.equal(outcome.tilesCleared, 0, "not one tile changed");
+        assert.equal(outcome.tilesNothingToClear, 0, "and every one of them had something to change");
+        assert.match(outcome.detail, /Cleared 0 of the 9 tiles asked for/);
+        assert.doesNotMatch(outcome.detail, /had no scenery, wall or banner/,
+            "every tile had scenery on it, so none of them was bare to begin with");
         assert.doesNotMatch(outcome.detail, /a ride, a path/,
             "scenery that is still standing is not a ride, and saying so sends the model somewhere else");
     }, { inert: true });
@@ -724,7 +814,10 @@ test("the rectangle form reports what is still standing rather than what it aske
         assert.equal(body.tilesStillBlocked, 2);
         assert.equal(hasElement(session.game, 11, 11, "footpath"), true, "the path was left alone");
         assert.equal(hasElement(session.game, 12, 12, "track"), true, "and so was the ride");
-        assert.doesNotMatch(String(body.detail), /Cleared/);
+        // Every one of the sixteen carried scenery and lost it; two of them still carry
+        // something a bulldozer never touches, which is a separate count.
+        assert.equal(body.tilesCleared, 16);
+        assert.match(String(body.detail), /Cleared 16 of the 16 tiles asked for/);
     });
 });
 

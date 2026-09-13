@@ -33,6 +33,7 @@ function refuseArguments(detail: string): DeferredMcpResult {
         rideId: null,
         rideName: null,
         doorsAttached: null,
+        status: null,
         open: false,
         reachable: false,
         steps: [{ step: "arguments", ok: false, detail: detail }]
@@ -65,7 +66,9 @@ export class BuildTools {
             "All four go together: give one and you must give all four.",
             "It builds no paths: the queue and the walk away from the exit are `build_path`.",
             "`ok` means the ride EXISTS with its track on the ground — nothing more. Read `doorsAttached`, `open`",
-            "and `reachable` for the rest. `ok: true` with any of those false is a ride you already own, and",
+            "and `reachable` for the rest. `status` is the game's own word for the ride — closed, open, testing or",
+            "simulating — read back off the ride after the build, and `open` is that word being \"open\".",
+            "`ok: true` with any of those false is a ride you already own, and",
             "calling this again builds and pays for a second one.",
             "`reachable` is false straight after building until the queue and the exit path are laid.",
             "The only build that leaves nothing behind is `ok: false`; anything else means a ride is standing, and",
