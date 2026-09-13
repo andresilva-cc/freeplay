@@ -226,6 +226,32 @@ export function tileIsWalkable(walkable: Record<string, boolean>, tile: Tile): b
 }
 
 /**
+ * Whether the game's own edge bits join these two neighbouring tiles, both ways.
+ *
+ * Exactly the pair-wise test `walkableFromParkEntrance` floods with, exported rather than
+ * restated so that a caller explaining why a tile is missing from that flood reads the
+ * same bitfield the flood read. A second, hand-rolled rule about what connects to what is
+ * how this file got connectivity wrong before.
+ *
+ * False for tiles that are not neighbours and for a tile carrying no footpath at all.
+ */
+export function edgesLink(from: Tile, to: Tile): boolean {
+    for (let d = 0; d < EDGE_DIRECTIONS.length; d++) {
+        if (from.x + EDGE_DIRECTIONS[d].dx !== to.x || from.y + EDGE_DIRECTIONS[d].dy !== to.y) {
+            continue;
+        }
+
+        const here = pathEdges(from.x, from.y);
+        const there = pathEdges(to.x, to.y);
+
+        return here >= 0 && there >= 0
+            && (here & (1 << d)) !== 0 && (there & (1 << opposite(d))) !== 0;
+    }
+
+    return false;
+}
+
+/**
  * How many of these tiles now carry a path at all.
  *
  * Deliberately not "a path of the kind we asked for": a route legitimately ends on

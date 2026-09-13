@@ -377,7 +377,17 @@ export function removePath(request: RemovePathRequest, done: (outcome: RemovePat
         }
 
         let reachableNow = 0;
-        let cutOff = 0;
+        let reachableThen = 0;
+        /**
+         * The tiles guests could walk to before this call and cannot now, named.
+         *
+         * A count alone names a category. One session took up the tile its park entrance
+         * path ran through, read "reachableFromEntrance: 27" with no figure to compare it
+         * to and no tile named, concluded that a ride queue elsewhere had severed them, and
+         * never relaid the tile. Which tiles went is measurable only either side of the
+         * removal, which is to say only here.
+         */
+        const cutOffTiles: Tile[] = [];
 
         for (const tile in walkable) {
             if (walkable[tile]) {
@@ -388,8 +398,30 @@ export function removePath(request: RemovePathRequest, done: (outcome: RemovePat
         // A tile this call took up is not a tile that got cut off, and counting it as one
         // turns every successful removal into a severance warning about its own work.
         for (const tile in reachableBefore) {
-            if (reachableBefore[tile] && !walkable[tile] && !wasRemoved[tile]) {
-                cutOff++;
+            if (!reachableBefore[tile]) {
+                continue;
+            }
+
+            reachableThen++;
+
+            if (!walkable[tile] && !wasRemoved[tile]) {
+                const at = tile.split(",");
+                cutOffTiles.push({ x: Number(at[0]), y: Number(at[1]) });
+            }
+        }
+
+        // In coordinate order rather than the order the flood happened to reach them, which
+        // interleaves separate branches and reads as a shuffle.
+        cutOffTiles.sort(function (a, b) { return a.x === b.x ? a.y - b.y : a.x - b.x; });
+
+        // The tiles this call took up that guests could reach before. Not a cause - nothing
+        // here measured which tile carried the route - but the fact the model was missing
+        // when it blamed a queue for tiles its own removal had stranded.
+        const removedFromNetwork: Tile[] = [];
+
+        for (let i = 0; i < removed.length; i++) {
+            if (reachableBefore[tileName(removed[i])]) {
+                removedFromNetwork.push(removed[i]);
             }
         }
 
@@ -441,15 +473,28 @@ export function removePath(request: RemovePathRequest, done: (outcome: RemovePat
 
         const notes: string[] = [];
 
+        // Both figures, because one of them on its own is a number with nothing to read it
+        // against: the network was walked before the removal and again after it, and the
+        // pair is the only thing that says whether this call cost the park anything.
         notes.push(plural(reachableNow, "path tile") + " "
-            + (reachableNow === 1 ? "is" : "are") + " reachable from the park entrance.");
+            + (reachableNow === 1 ? "is" : "are") + " reachable from the park entrance"
+            + (reachableThen === reachableNow
+                ? ", the same as before this call."
+                : ", against " + String(reachableThen) + " before this call."));
 
-        if (cutOff > 0) {
+        if (cutOffTiles.length > 0) {
             // Taking a tile out of a route strands whatever was behind it. Rebuilding the
             // route is the only thing that reconnects it: removal never adds a way through,
             // so there is no opposite case to report here.
-            notes.push("WARNING: " + plural(cutOff, "path tile")
-                + " guests could reach before are now cut off from the park entrance.");
+            notes.push("WARNING: " + plural(cutOffTiles.length, "path tile")
+                + " guests could reach before are now cut off from the park entrance: "
+                + nameTiles(cutOffTiles) + "."
+                + (removedFromNetwork.length > 0
+                    ? " " + nameTiles(removedFromNetwork)
+                        + (removedFromNetwork.length === 1 ? " was itself" : " were themselves")
+                        + " reachable from the park entrance before this call and carr"
+                        + (removedFromNetwork.length === 1 ? "ies" : "y") + " no path now."
+                    : ""));
         }
 
         for (let i = 0; i < lostQueue.length; i++) {

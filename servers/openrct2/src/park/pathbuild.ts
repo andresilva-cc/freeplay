@@ -1,7 +1,8 @@
 import { DIRECTION_VECTORS, readMapGrid, toWorld } from "./map.js";
 import type { MapGrid } from "./map.js";
 import {
-    countPathTiles, isParkEntranceElement, RIDE_ENTRANCE, RIDE_EXIT, tileIsWalkable, walkableFromParkEntrance
+    countPathTiles, edgesLink, isParkEntranceElement, RIDE_ENTRANCE, RIDE_EXIT, tileIsWalkable,
+    walkableFromParkEntrance
 } from "./paths.js";
 import type { Tile } from "./paths.js";
 import { ridesServedByQueue, ridesThatLostTheirQueue } from "./pathremove.js";
@@ -598,6 +599,139 @@ function fragmentSamples(tiles: Tile[]): Tile[] {
     return samples;
 }
 
+/** How many tiles beside a run one clause names before it counts the rest. */
+const NEIGHBOURS_LISTED = 6;
+
+/** How many different things the tiles beside a run are reported as before the list stops. */
+const NEIGHBOUR_KINDS_LISTED = 6;
+
+/**
+ * What one tile beside the run is, read off the map after the build.
+ *
+ * Written as the predicate of "x,y is ...", so every branch is a noun phrase.
+ *
+ * Only what was read, and nothing about what to do with it. A run that does not reach the
+ * park used to say so with no tile named on either side of it: one session built a single
+ * queue tile, was told "no tile of it is in the network guests can walk", and never found
+ * out that the tile it would have joined was the one its own remove_path call had taken up
+ * two turns earlier. Which neighbour was examined and what was standing there is knowable
+ * only here - the call read those tiles, and nothing in the result carried the answer.
+ */
+function neighbourState(grid: MapGrid, walkable: Record<string, boolean>, from: Tile, at: Tile): string {
+    const cell = grid.at(at.x, at.y);
+
+    if (!cell) {
+        return "off the map";
+    }
+
+    if (cell.path) {
+        const here = grid.at(from.x, from.y);
+
+        return (cell.queue ? "a queue" : "a footpath")
+            + (tileIsWalkable(walkable, at)
+                ? " guests can reach from the park entrance"
+                : " guests cannot reach from the park entrance either")
+            // Each tile of a run is laid at its own ground height, so a neighbour at another
+            // height is a step the game does not join across. Reported as the two heights
+            // rather than as a verdict about them.
+            + (here && here.baseZ !== cell.baseZ
+                ? ", at ground height " + String(cell.baseZ) + " against the run's " + String(here.baseZ)
+                : "")
+            // The game's own bitfield, read through the same test the flood out of the gate
+            // uses, because a second rule about what connects to what would disagree with it.
+            + (edgesLink(from, at)
+                ? ", joined to the run by the edge bits the game keeps on both tiles"
+                : ", with no edge bit on either tile joining it to the run");
+    }
+
+    const door = rideDoorOn(at);
+
+    if (door) {
+        return "the " + (door.isExit ? "exit" : "entrance") + " BUILDING of ride " + String(door.ride)
+            + ", whose door opens onto " + tileName(door.opensOnto);
+    }
+
+    if (isParkGate(at)) {
+        return "the park entrance BUILDING";
+    }
+
+    if (!cell.owned) {
+        return "not land the park owns";
+    }
+
+    const standing = immovableOn(at.x, at.y);
+
+    if (standing.length > 0) {
+        return "carrying " + standing.join(" and ") + ", which is not scenery a bulldozer removes";
+    }
+
+    if (!cell.clear) {
+        return "carrying scenery";
+    }
+
+    return cell.flat ? "bare ground the park owns" : "bare ground on a slope, which takes no footpath";
+}
+
+/**
+ * Every tile beside the tiles examined that is not one of them, and what each one is.
+ *
+ * Tiles that read the same share a clause, the way a blocked run's do: the answer that
+ * matters is which side of the run has what on it, and six copies of "bare ground" spend a
+ * line saying it once. Both caps are what keeps this bounded well inside the length a tool
+ * result is cut at, however long the run.
+ */
+function neighboursOfRun(
+    grid: MapGrid, walkable: Record<string, boolean>, run: Tile[], inRun: Record<string, boolean>
+): string {
+    const order: string[] = [];
+    const tiles: Record<string, Tile[]> = {};
+    const seen: Record<string, boolean> = {};
+
+    for (let i = 0; i < run.length; i++) {
+        for (let d = 0; d < NEIGHBOURS.length; d++) {
+            const at = { x: run[i].x + NEIGHBOURS[d].dx, y: run[i].y + NEIGHBOURS[d].dy };
+            const name = tileName(at);
+
+            if (inRun[name] || seen[name]) {
+                continue;
+            }
+
+            seen[name] = true;
+            const state = neighbourState(grid, walkable, run[i], at);
+
+            if (!tiles[state]) {
+                tiles[state] = [];
+                order.push(state);
+            }
+
+            tiles[state].push(at);
+        }
+    }
+
+    if (order.length === 0) {
+        return "";
+    }
+
+    const listed = order.slice(0, NEIGHBOUR_KINDS_LISTED).map(function (state) {
+        const group = tiles[state];
+        const shown = group.slice(0, NEIGHBOURS_LISTED).map(tileName).join(" ");
+        const more = group.length > NEIGHBOURS_LISTED
+            ? " and " + String(group.length - NEIGHBOURS_LISTED) + " more"
+            : "";
+
+        return shown + more + (group.length === 1 ? " is " : " are ") + state;
+    });
+
+    let unnamed = 0;
+
+    for (let i = NEIGHBOUR_KINDS_LISTED; i < order.length; i++) {
+        unnamed += tiles[order[i]].length;
+    }
+
+    return listed.join(". ") + "."
+        + (unnamed > 0 ? " " + plural(unnamed, "further tile") + " beside it went unnamed here." : "");
+}
+
 export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOutcome) => void): void {
     const kind = request.queue ? "queue" : "path";
     const otherKind = request.queue ? "path" : "queue";
@@ -872,6 +1006,22 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
         }
 
         const pieces = placed > 0 ? fragmentSamples(tiles) : [];
+        const inRun: Record<string, boolean> = {};
+
+        for (let i = 0; i < tiles.length; i++) {
+            inRun[tileName(tiles[i])] = true;
+        }
+
+        // Nothing of the run reaches the network, or the game dead-ended the only tiles that
+        // would have: either way the run as a whole is what has to be named, not a subset.
+        const wholeRunIsStranded = stranded.length === 0 || stranded.length === tiles.length;
+        // Read back rather than reusing `grid`, which was taken before the placements: this
+        // reports what the map says now, and its cell fields sit in the same sentence as
+        // live element reads, which must not be able to disagree about a tile. Only taken
+        // where the run failed to join up, which is the one case whose message needs it.
+        const beside = connected || placed === 0
+            ? ""
+            : neighboursOfRun(readMapGrid(), walkable, wholeRunIsStranded ? tiles : stranded, inRun);
 
         done({
             // `ok` is whether the path got laid. Whether it reaches the park is
@@ -908,10 +1058,17 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
                 + (connected || placed === 0
                     ? ""
                     : " This run does not reach the park entrance, so guests cannot walk it: "
-                        + (stranded.length === 0 || stranded.length === tiles.length
+                        + (wholeRunIsStranded
                             ? "no tile of it is in the network guests can walk"
                             : nameTiles(stranded) + (stranded.length === 1 ? " is" : " are") + " cut off")
                         + "."
+                        // What was actually examined and what was found there, before the
+                        // general explanation, because the general explanation is what the
+                        // model already has and this is what only this call read.
+                        + (beside === ""
+                            ? ""
+                            : " The tiles beside " + (wholeRunIsStranded ? "this run" : "them")
+                                + " were read: " + beside)
                         + " Having a path on a tile is not the same as that tile being reachable: the tiles"
                         + " guests can really walk to are the ones park_status covers with `paths.runs`, and a"
                         + " run covers every tile between its `fromX`,`fromY` and its `toX`,`toY`. A run whose"

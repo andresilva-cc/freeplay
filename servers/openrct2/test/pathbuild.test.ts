@@ -8,6 +8,7 @@ import type { BuildPathOutcome } from "../src/park/pathbuild.ts";
 import type { Tile } from "../src/park/paths.ts";
 import { PathTools } from "../src/tools/path.ts";
 import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
+import { sanitizeToolResult } from "../src/scripting.ts";
 
 function withGame(build: (game: FakeGame) => void, run: (game: FakeGame) => void, options?: { inert?: boolean }): void {
     const game = new FakeGame(24, 24, options);
@@ -1325,4 +1326,202 @@ test("the footpath object lookup is spelled out once across the two style argume
     assert.doesNotMatch(railings, /getAllObjects/, "the second copy of the lookup was the duplicate");
     assert.match(railings, /`footpath_railings` the same way/, "and it names its own object type");
     assert.match(railings, /Default 0/);
+});
+
+/**
+ * `lay`, with a change the game itself would have made applied at the moment it would land:
+ * after the placements, before build_path reads the map back.
+ *
+ * The same shape `layAndLetTheRideClaimIt` uses and for the same reason - an edge the game
+ * cuts is stated as data rather than derived - but for ordinary path, and for any change a
+ * fixture needs to have happened by the time the result is composed.
+ */
+function layAndThen(game: FakeGame, tiles: Tile[], change: () => void, queue = false): BuildPathOutcome {
+    const realSetTimeout = context.setTimeout;
+    let outcome: BuildPathOutcome | null = null;
+
+    context.setTimeout = function (callback: () => void): number {
+        game.applyQueuedActions();
+        change();
+        callback();
+        return 0;
+    };
+
+    try {
+        buildPath({
+            tiles: tiles,
+            queue: queue,
+            surfaceObject: queue ? DEFAULT_QUEUE_OBJECT : DEFAULT_PATH_OBJECT,
+            railingsObject: 0
+        }, function (result) { outcome = result; });
+    } finally {
+        context.setTimeout = realSetTimeout;
+    }
+
+    assert.ok(outcome, "buildPath never called back");
+    return outcome as unknown as BuildPathOutcome;
+}
+
+/** A footpath on ground raised to `baseZ`, which is a step the game does not join across. */
+function addPathAtHeight(game: FakeGame, x: number, y: number, baseZ: number): void {
+    game.tile(x, y).elements[0].baseZ = baseZ;
+    game.addPath(x, y);
+
+    const elements = game.tile(x, y).elements;
+
+    for (let i = 0; i < elements.length; i++) {
+        if (elements[i].type === "footpath") {
+            elements[i].baseZ = baseZ;
+        }
+    }
+}
+
+/**
+ * The other half of the run this file's severance tests come from. Having taken up the path
+ * tile its queue would have joined, the model laid a single queue tile beside the hole and
+ * was told "no tile of it is in the network guests can walk" - true, and silent about the
+ * one thing it could not see: that the tile next door, which had been path two turns
+ * earlier, was now bare ground. It spent the rest of the session on the wrong tile.
+ *
+ * Which neighbours were examined and what was standing on each is knowable only here. The
+ * call read them; nothing in the result carried the answer.
+ */
+test("a run that reaches nothing names the tiles beside it and what each one is", function () {
+    withGame(parkWithSpine, function () {
+        const outcome = lay([{ x: 15, y: 15 }], true);
+
+        assert.equal(outcome.connectedToPark, false);
+        assert.match(outcome.detail, /The tiles beside this run were read: /,
+            "the message has to say that neighbours were examined at all");
+        assert.match(outcome.detail, /16,15 14,15 15,16 15,14 are bare ground the park owns/,
+            "every neighbour by name, with what was found on it: bare ground is the answer that"
+            + " ended one run on the wrong tile for fifteen turns");
+    });
+});
+
+test("a tile of the run is never listed among the tiles beside it", function () {
+    // Every tile of the run carries a path by the time this is composed, so a run tile that
+    // leaked into its own neighbour list would read as "a footpath guests cannot reach" -
+    // the run reporting itself as the thing it failed to join.
+    withGame(parkWithSpine, function () {
+        const outcome = lay([{ x: 15, y: 15 }, { x: 15, y: 16 }, { x: 16, y: 16 }]);
+        const beside = outcome.detail.substring(outcome.detail.indexOf("The tiles beside"));
+
+        assert.equal(outcome.connectedToPark, false);
+        assert.ok(beside.indexOf("The tiles beside") === 0, "this run has to produce a neighbour listing at all");
+
+        const run = ["15,15", "15,16", "16,16"];
+
+        for (let i = 0; i < run.length; i++) {
+            assert.ok(beside.indexOf(run[i]) < 0,
+                run[i] + " is a tile of the run and must not be reported as a tile beside it: " + beside);
+        }
+
+        assert.match(beside, /16,15/, "and the corner the L leaves bare is a neighbour, so it must be there");
+    });
+});
+
+test("a neighbour the park does not own, one carrying scenery and one off the map are each named as that", function () {
+    withGame(function (game) {
+        parkWithSpine(game);
+        game.addScenery(1, 1);
+        game.own(0, 0, false);
+    }, function () {
+        const outcome = lay([{ x: 0, y: 1 }]);
+
+        assert.equal(outcome.connectedToPark, false);
+        assert.match(outcome.detail, /1,1 is carrying scenery/);
+        assert.match(outcome.detail, /0,0 is not land the park owns/);
+        assert.match(outcome.detail, /-1,1 is off the map/,
+            "a tile past the edge is a real answer and reads nothing like an empty one");
+    });
+});
+
+/**
+ * The case the count alone cannot tell apart from bare ground: there IS a path next door,
+ * and guests walk it, and the game still does not join the two tiles. Read off the game's
+ * own `edges` bitfield through the same test the walk out of the gate floods with, because
+ * a second rule about what connects to what is what this file got wrong before.
+ */
+test("a neighbour that carries walkable path the game has not joined is named as exactly that", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+
+        for (let y = 5; y <= 9; y++) {
+            game.addPath(10, y);
+        }
+    }, function (game) {
+        const outcome = layAndThen(game, [{ x: 10, y: 10 }], function () {
+            game.severPath(10, 9, 10, 10);
+        });
+
+        assert.equal(outcome.connectedToPark, false);
+        assert.match(outcome.detail,
+            /10,9 is a footpath guests can reach from the park entrance, with no edge bit on either tile joining it to the run/,
+            "path next door that guests walk, and the game still does not join the two: the one"
+            + " neighbour a bare count of stranded tiles cannot be told apart from bare ground");
+    });
+});
+
+test("a neighbour that carries path at another height is named with both heights", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+
+        for (let y = 5; y <= 8; y++) {
+            game.addPath(10, y);
+        }
+
+        addPathAtHeight(game, 10, 10, 112);
+    }, function (game) {
+        const outcome = layAndThen(game, [{ x: 10, y: 11 }, { x: 10, y: 12 }], function () {
+            // The game joins no footpath across a step; handed over as the edge data it is.
+            game.severPath(10, 10, 10, 11);
+        });
+
+        assert.equal(outcome.connectedToPark, false);
+        assert.match(outcome.detail,
+            /10,10 is a footpath guests cannot reach from the park entrance either, at ground height 112 against the run's 96, with no edge bit on either tile joining it to the run/,
+            "a tile that is path and still does not connect needs the reason, or the model relays a tile that is already there");
+    });
+});
+
+/**
+ * Both caps together, against a run long enough and a map varied enough to blow the length
+ * a tool result is cut at. The cut keeps the head and the tail of an over-long string and
+ * drops the middle, so an unbounded neighbour list does not merely run long: it pushes the
+ * explanation and the warnings either side of it apart until the middle goes.
+ */
+test("the tiles beside a run cannot push the detail past the length a tool result is cut at", function () {
+    const game = new FakeGame(48, 48);
+    game.addParkEntrance(2, 2);
+    game.addPath(2, 3);
+
+    const run: Tile[] = [];
+
+    for (let y = 4; y <= 43; y++) {
+        run.push({ x: 20, y: y });
+        // Forty neighbours, every one of them a path at its own height, so every one of them
+        // reads differently and no two can share a clause.
+        addPathAtHeight(game, 19, y, 96 + (y - 4) * 8);
+    }
+
+    const restore = game.install();
+
+    try {
+        const outcome = layAndThen(game, run, function () {
+            for (let y = 4; y <= 43; y++) {
+                game.severPath(19, y, 20, y);
+            }
+        });
+
+        assert.equal(outcome.connectedToPark, false, outcome.detail);
+        assert.match(outcome.detail, /and 36 more are bare ground the park owns/,
+            "the per-clause cap has to fire and say how many it did not name");
+        assert.match(outcome.detail, /35 further tiles beside it went unnamed here/,
+            "and the cap on how many different answers are spelled out, with the count it left");
+        assert.equal((sanitizeToolResult({ detail: outcome.detail }) as { detail: string }).detail, outcome.detail,
+            "the detail was long enough to be cut, which silently drops whatever sat in its middle");
+    } finally {
+        restore();
+    }
 });

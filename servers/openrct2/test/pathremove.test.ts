@@ -268,6 +268,80 @@ test("severing the park is reported as tiles cut off", function () {
     });
 });
 
+/**
+ * The defect this file exists to stop repeating, measured on a real run: the model took the
+ * spine tile its park entrance ran through, read `reachableFromEntrance: 27` with no figure
+ * to compare it against and not one tile named, and concluded that a ride queue elsewhere
+ * had "permanently lost" the eight tiles its own call had just stranded. It never relaid the
+ * tile. Only this call can answer either half: the network was walked before the removal and
+ * again after it, and nothing else on the map records which tiles fell out between.
+ */
+test("the tiles guests can no longer reach are named, not merely counted", function () {
+    withGame(parkWithSpine, function () {
+        const outcome = take([{ x: 10, y: 8 }]);
+
+        assert.match(outcome.detail,
+            /cut off from the park entrance: 10,9 10,10 10,11 10,12\./,
+            "the count names a category; the tiles are the fact the model has to act on");
+        assert.match(outcome.detail, /3 path tiles are reachable from the park entrance, against 8 before this call/,
+            "a reachability figure with nothing to read it against is what was there before");
+        assert.match(outcome.detail,
+            /10,8 was itself reachable from the park entrance before this call and carries no path now/,
+            "and which tile this call took out of the walk, which the run above blamed on a queue");
+    });
+});
+
+test("a removal that strands nothing raises no severance warning, however much it takes up", function () {
+    // A ring, so the tile taken out has a way round it. The reachable count still drops by
+    // the tile itself, and a warning keyed to that drop rather than to what it stranded
+    // would cry severance over every successful removal there is.
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+
+        const ring = [
+            { x: 10, y: 6 }, { x: 11, y: 6 }, { x: 12, y: 6 }, { x: 12, y: 7 },
+            { x: 12, y: 8 }, { x: 11, y: 8 }, { x: 10, y: 8 }, { x: 10, y: 7 }
+        ];
+
+        for (let i = 0; i < ring.length; i++) {
+            game.addPath(ring[i].x, ring[i].y);
+        }
+    }, function () {
+        const outcome = take([{ x: 12, y: 7 }]);
+
+        assert.equal(outcome.reachableFromEntrance, 8, "the other eight tiles of the ring are still walkable");
+        assert.match(outcome.detail, /8 path tiles are reachable from the park entrance, against 9 before this call/,
+            "the drop is the tile that came up, and saying both figures is what makes that readable");
+        assert.doesNotMatch(outcome.detail, /cut off/,
+            "nothing was stranded: guests walk round the other side of the ring");
+    });
+});
+
+test("a removal that changes no reachability says the figure is unchanged", function () {
+    withGame(parkWithSpine, function () {
+        const outcome = take(line({ x: 15, y: 15 }, { x: 15, y: 17 }));
+
+        assert.match(outcome.detail, /8 path tiles are reachable from the park entrance, the same as before this call/,
+            "a run over bare ground costs the network nothing, and that is worth saying plainly");
+        assert.doesNotMatch(outcome.detail, /cut off/);
+    });
+});
+
+test("a severance longer than the message will spell out says how many more there are", function () {
+    withGame(function (game) {
+        parkWithSpine(game, 20);
+    }, function () {
+        const outcome = take([{ x: 10, y: 6 }]);
+
+        // 10,7 through 10,20 are stranded: fourteen tiles, and the message names twelve.
+        assert.match(outcome.detail, /14 path tiles guests could reach before are now cut off/);
+        assert.match(outcome.detail,
+            /10,7 10,8 10,9 10,10 10,11 10,12 10,13 10,14 10,15 10,16 10,17 10,18 and 2 more\./,
+            "an unbounded list of tiles is how one message swallows the rest of the result");
+    });
+});
+
 test("a run over ground with no path removes nothing and says so", function () {
     withGame(parkWithSpine, function () {
         const outcome = take(line({ x: 15, y: 15 }, { x: 15, y: 17 }));
