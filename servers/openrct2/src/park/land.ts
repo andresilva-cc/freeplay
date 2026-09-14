@@ -8,6 +8,22 @@ const STEP_DELAY_MS = 200;
 /** `LandBuyRightSetting::buyLand`. 1 is construction rights, which build nothing guests use. */
 const SETTING_BUY_LAND = 0;
 
+/**
+ * OpenRCT2's `OWNERSHIP_*` bits, from `world/tile_element/SurfaceElement.h`.
+ *
+ * The plugin API hands the byte over raw as `SurfaceElement.ownership`, and it is the only
+ * place the game says what a tile is on offer for. A tile still unowned after a purchase the
+ * game accepted used to be reported as "not for sale", which was inferred from ownership not
+ * having changed rather than read: a tile the scenario offers as construction rights is not
+ * for sale *as land*, which is what `setting: 0` asks for, and the old wording said something
+ * about the scenario that the scenario had not said.
+ */
+/* `OWNERSHIP_OWNED`, 1 << 5, is not here: the API derives `hasOwnership` from it and
+ * `parkOwns` reads that. These are the three bits nothing else in this bridge reads. */
+const OWNERSHIP_CONSTRUCTION_RIGHTS_OWNED = 1 << 4;
+const OWNERSHIP_CONSTRUCTION_RIGHTS_AVAILABLE = 1 << 6;
+const OWNERSHIP_AVAILABLE = 1 << 7;
+
 /** How many tile names one message will spell out before it starts counting instead. */
 const MAX_NAMED_TILES = 12;
 
@@ -98,6 +114,83 @@ export function parkOwns(tile: Tile): boolean {
     }
 
     return false;
+}
+
+/** The tile's own `ownership` byte, or null where no surface could be read. */
+export function readOwnership(tile: Tile): number | null {
+    if (tile.x < 0 || tile.y < 0 || tile.x >= map.size.x || tile.y >= map.size.y) {
+        return null;
+    }
+
+    const mapTile = map.getTile(tile.x, tile.y);
+
+    for (let i = 0; i < mapTile.numElements; i++) {
+        const element = mapTile.getElement(i);
+
+        if (element.type === "surface") {
+            const ownership = (element as SurfaceElement).ownership;
+
+            return typeof ownership === "number" ? ownership : null;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * What one tile's ownership flags say, as a phrase that follows its coordinates.
+ *
+ * Every bit that is set is named. Nothing here decides whether the tile is worth having or
+ * what to ask for instead: it reports the byte the game keeps and stops.
+ */
+function ownershipPhrase(tile: Tile): string {
+    const flags = readOwnership(tile);
+
+    if (flags === null) {
+        return "no surface could be read, so the game says nothing about what it is on offer for";
+    }
+
+    const says: string[] = [];
+
+    if ((flags & OWNERSHIP_AVAILABLE) !== 0) {
+        says.push("the land is for sale");
+    }
+
+    if ((flags & OWNERSHIP_CONSTRUCTION_RIGHTS_AVAILABLE) !== 0) {
+        says.push("construction rights are for sale, which this call does not ask for: it sends"
+            + " landbuyrights setting 0, land only");
+    }
+
+    if ((flags & OWNERSHIP_CONSTRUCTION_RIGHTS_OWNED) !== 0) {
+        says.push("the park already holds construction rights, not the land");
+    }
+
+    if (says.length === 0) {
+        return "the scenario has it on offer neither as land nor as construction rights";
+    }
+
+    return says.join(", and ");
+}
+
+/** Tiles the park still does not own, gathered by what their own flags say. */
+function ownershipGroups(tiles: Tile[]): string {
+    const order: string[] = [];
+    const grouped: Record<string, Tile[]> = {};
+
+    for (let i = 0; i < tiles.length; i++) {
+        const phrase = ownershipPhrase(tiles[i]);
+
+        if (!grouped[phrase]) {
+            grouped[phrase] = [];
+            order.push(phrase);
+        }
+
+        grouped[phrase].push(tiles[i]);
+    }
+
+    return order.map(function (phrase) {
+        return nameTiles(grouped[phrase]) + " - " + phrase;
+    }).join(". ");
 }
 
 function tilesOf(area: TileRect): Tile[] {
@@ -192,14 +285,16 @@ export function buyLand(area: TileRect, done: (outcome: BuyLandOutcome) => void)
         }
 
         if (notOwned.length > 0) {
-            // Only name a cause that is actually present. A tile the park does not own after
-            // a purchase the game accepted is a tile the scenario is not selling; a purchase
-            // the game refused outright is a different thing and says so.
+            // Only name a cause that is actually present. A purchase the game refused outright
+            // has the game's own words for it; otherwise every tile still unowned is read back
+            // off its own ownership flags, which is the one place the scenario states what a
+            // tile is on offer for. This used to infer "not for sale" from ownership failing to
+            // change, and reported a tile offered as construction rights as unsellable.
             clauses.push(refusal !== null
                 ? "The game refused the whole purchase: " + String(refusal) + ". Nothing was bought."
                 : plural(notOwned.length, "tile") + " " + (notOwned.length === 1 ? "is" : "are")
-                    + " not for sale in this scenario and " + (notOwned.length === 1 ? "was" : "were")
-                    + " left alone: " + nameTiles(notOwned) + ".");
+                    + " still not the park's, and " + (notOwned.length === 1 ? "its" : "their")
+                    + " ownership flags read back: " + ownershipGroups(notOwned) + ".");
         }
 
         if (price !== null) {

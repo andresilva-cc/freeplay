@@ -84,13 +84,14 @@ test("the reachable count is exactly what walkableFromParkEntrance finds", funct
             game.addPath(10, y);
         }
 
-        // A spur ending in a queue ride 3 owns. Claiming it dead-ends the door tile 13,14:
-        // the game drops its edge to what lies beyond, which is the rest of the spur.
+        // A spur running out to a ride 3 owns the queue of. The door tile is 13,14 and the
+        // queue reaches it from 14,14, so claiming it drops 13,14's edge to the plain path at
+        // 12,14 and the whole queue falls off the network. Stated by binding it, not by hand.
         game.addPath(11, 14);
-        game.addPath(12, 14, true);
+        game.addPath(12, 14);
         game.addPath(13, 14, true);
-        addDoor(game, 14, 14, 3, 2);
-        game.severPath(13, 14, 12, 14);
+        game.addPath(14, 14, true);
+        addDoor(game, 13, 13, 3, 3);
 
         // And an island nobody can reach at all.
         game.addPath(30, 30);
@@ -103,9 +104,10 @@ test("the reachable count is exactly what walkableFromParkEntrance finds", funct
             "two different answers to `what can guests reach` is the bug this report exists to kill");
         assert.equal(shape.reachableTiles, 14,
             "the twelve spine tiles and the two spur tiles this side of the claimed door tile");
-        assert.equal(shape.islands.length, 2, "the claimed door tile, and the pair at 30,30");
-        assert.deepEqual(shape.islands.filter(function (island) { return island.tiles === 1; })[0].doors,
-            [{ ride: 3, door: "entrance", x: 13, y: 14 }],
+        assert.equal(shape.islands.length, 2, "ride 3's claimed queue, and the pair at 30,30");
+        assert.deepEqual(shape.islands.filter(function (island) {
+            return island.runs[0].kind === "queue";
+        })[0].doors, [{ ride: 3, door: "entrance", x: 13, y: 14 }],
             "ride 3 is built with a queue and no guest can get to its door");
     });
 });
@@ -127,26 +129,32 @@ test("an unclaimed queue is walked straight through, because the game moves no e
 });
 
 test("a ride claiming a queue dead-ends the one tile its door opens onto", function () {
+    // The queue runs down from the walk and ends at the door; the corridor carries on past
+    // it. Nothing in this fixture states the cut - binding the queue is the whole of it, and
+    // the fake makes the cut the way the game was measured making it. It used to be a
+    // `severPath` here, which made this test's author, not the game, pick the tile.
     withGame(function (game) {
         addRide(game, 0);
         game.addParkEntrance(10, 4);
         game.addPath(10, 5);
+        game.addPath(10, 6, true);
+        game.addPath(10, 7, true);
 
-        for (let y = 6; y <= 8; y++) {
-            game.addPath(10, y, true);
-        }
+        // The building at 11,7 with the ride at 12,7, so the door opens onto 10,7.
+        addDoor(game, 11, 7, 0, 2);
 
-        // The building at 11,6 with the ride at 12,6, so the door opens onto 10,6.
-        addDoor(game, 11, 6, 0, 2);
-        game.severPath(10, 6, 10, 7);
+        // And the corridor carries on past the door tile.
+        game.addPath(10, 8);
+        game.addPath(10, 9);
     }, function () {
         const shape = readPathNetwork();
 
-        assert.equal(shape.reachableTiles, 2, "10,5 and the door tile; the queue past it carries nobody");
+        assert.equal(shape.reachableTiles, 3,
+            "10,5 and the two queue tiles up to the door; the corridor past it carries nobody");
         assert.equal(shape.islands.length, 1);
         assert.equal(shape.islands[0].tiles, 2);
         assert.deepEqual(shape.islands[0].runs,
-            [{ fromX: 10, fromY: 7, toX: 10, toY: 8, tiles: 2, kind: "queue", ride: 0 }]);
+            [{ fromX: 10, fromY: 8, toX: 10, toY: 9, tiles: 2, kind: "path" }]);
     });
 });
 

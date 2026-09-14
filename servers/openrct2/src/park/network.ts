@@ -670,7 +670,10 @@ export interface GroundBlock {
     clear: number;
     /** Owned and flat, with scenery, a wall or a banner on it: clear_scenery makes these `clear`. */
     scenery: number;
-    /** Owned but sloped, with nothing built on it. Nothing here levels ground. */
+    /**
+     * Owned but sloped, with nothing built on it. No typed tool here levels ground; the game's
+     * own landsetheight, landraise, landlower and landsmooth do, and `evaluate` reaches them.
+     */
     sloped: number;
     /** Owned water. */
     water: number;

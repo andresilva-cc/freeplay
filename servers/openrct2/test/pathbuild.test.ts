@@ -900,7 +900,11 @@ test("a blocker with no remedy says so rather than implying one", function () {
             "offering a call that cannot touch this tile is the defect, one remedy along");
     });
 
-    // Sloped ground is the other one: nothing here levels land.
+    // Sloped ground is NOT the other one, and saying it was is the defect this pins against.
+    // "a footpath needs level ground" is false - OpenRCT2 footpaths run up slopes, and
+    // `footpathplace` takes the slopeType and slopeDirection that do it - and pairing it with
+    // `remedy: null` printed "nothing in this bridge changes that" over a limit this file
+    // chose itself and over terrain actions `evaluate` reaches. The model believed it.
     withGame(function (game) {
         parkWithGate(game);
         game.addPath(10, 6);
@@ -909,11 +913,123 @@ test("a blocker with no remedy says so rather than implying one", function () {
         const outcome = lay(line({ x: 10, y: 6 }, { x: 10, y: 10 }));
 
         assert.equal(outcome.ok, false);
-        assert.match(outcome.detail, /10,8 - on a slope, and a footpath needs level ground/,
-            "the condition, on the tile that fails it");
-        assert.match(outcome.detail, /nothing in this bridge changes that/);
+        assert.match(outcome.detail, /10,8 - on a slope, and this tool lays flat path only/,
+            "the condition, on the tile that fails it, as this tool's condition");
+        assert.doesNotMatch(outcome.detail, /needs level ground/,
+            "the game does not need level ground for a footpath; this tool does");
+        assert.doesNotMatch(outcome.detail, /nothing in this bridge changes that/,
+            "something does change it, so claiming nothing did was the lie");
+        assert.match(outcome.detail, /landsetheight/,
+            "the route that exists has to be named, the way buy_land already names it");
+        assert.match(outcome.detail, /evaluate/,
+            "and how it is reached");
         assert.doesNotMatch(outcome.detail, /buy_land|clear_scenery|remove_path/,
-            "no call here levels ground, so naming one would send the model round a loop");
+            "no typed call here levels ground, so naming one would send the model round a loop");
+    });
+});
+
+test("a queue the ride claims cuts the corridor, and no part of this test says which tile", function () {
+    // The fixture states one thing: a ride's entrance, and a queue laid up to its door.
+    // Binding is what cuts, and the cut comes out of the fake. While it was a `severPath`
+    // in the test body, this test - and `park_status.guestsCanReach`, `build_flat_ride`'s
+    // `reachable` and `describe_placement`'s `queueCutsOff` with it - was checking the tool
+    // against a world whose one hard invariant the test author had filled in by hand.
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+
+        for (let y = 5; y <= 12; y++) {
+            game.addPath(10, y);
+        }
+
+        // The building at 11,7 with the ride at 12,7, so the door opens onto 10,7.
+        game.addRideEntrance(11, 7, 0, 2);
+    }, function (game) {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 7 }], true);
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(footpathAt(game, 10, 7)?.ride, 0, "the entrance has to have claimed the line");
+        assert.equal(outcome.connectedToPark, true, "the queue still reaches the gate from its other end");
+        assert.match(outcome.detail, /WARNING: 5 path tiles are no longer reachable/,
+            "10,8 through 10,12 lost their only way back, because the line dead-ends at the door");
+    });
+});
+
+test("a queue no entrance has claimed cuts nothing, so the corridor stays open", function () {
+    // The other half of the same rule, and the one an earlier version of this bridge got
+    // wrong: turning path into queue moves no edge bit at all. Only binding cuts.
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+
+        for (let y = 5; y <= 12; y++) {
+            game.addPath(10, y);
+        }
+    }, function (game) {
+        const outcome = lay([{ x: 10, y: 6 }, { x: 10, y: 7 }], true);
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(footpathAt(game, 10, 7)?.ride, null, "no entrance, so nothing claimed it");
+        assert.doesNotMatch(outcome.detail, /no longer reachable/,
+            "an unclaimed queue is a corridor guests walk over, not a wall");
+    });
+});
+
+test("a run drawn across a step is laid and does not join up", function () {
+    // build_path's own claim, and until the fake gave a footpath a height it could not be
+    // tested: every fake path sat at 96 and the fixture joined any two neighbouring paths
+    // whatever height they were on.
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+        game.addPath(10, 6);
+
+        // The ground steps up one level from 10,7 on.
+        for (let y = 7; y <= 9; y++) {
+            game.tile(10, y).elements[0].baseZ = 112;
+        }
+    }, function (game) {
+        const outcome = lay(line({ x: 10, y: 7 }, { x: 10, y: 9 }));
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(outcome.tilesPlaced, 3, "every tile of the run is laid; the step refuses nothing");
+        assert.equal(footpathAt(game, 10, 7)?.baseZ, 112, "each tile is laid at its own ground height");
+        assert.equal(outcome.connectedToPark, false,
+            "and the step is not joined, so none of what was laid is reachable from the gate");
+
+        // Bit 3 is -y and bit 1 is +y, so this is the link across the step, from both sides.
+        assert.equal((footpathAt(game, 10, 7)?.edges || 0) & (1 << 3), 0,
+            "the game joins no footpath across a step");
+        assert.equal((footpathAt(game, 10, 6)?.edges || 0) & (1 << 1), 0,
+            "and it keeps both sides of a link in step");
+    });
+});
+
+test("the same run on level ground joins up, so the step is what did it", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+        game.addPath(10, 6);
+    }, function (game) {
+        const outcome = lay(line({ x: 10, y: 7 }, { x: 10, y: 9 }));
+
+        assert.equal(outcome.connectedToPark, true, outcome.detail);
+        assert.notEqual((footpathAt(game, 10, 7)?.edges || 0) & (1 << 3), 0);
+    });
+});
+
+test("build_path says flat ground is its own limit, not a rule of the game", function () {
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+        game.tile(10, 8).elements[0].slope = 1;
+    }, function () {
+        const outcome = lay(line({ x: 10, y: 6 }, { x: 10, y: 10 }));
+
+        assert.match(outcome.detail, /Flat is this tool's limit and not the game's/,
+            "the summary sentence carried the same false rule and has to carry the true one");
+        assert.match(outcome.detail, /OpenRCT2 footpaths run up slopes/,
+            "what is actually true about footpaths and slopes");
+        assert.match(outcome.detail, /landsetheight, landraise, landlower and landsmooth/,
+            "the terrain actions by name, so the model can reach them");
     });
 });
 

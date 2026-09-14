@@ -215,19 +215,23 @@ test("a queue the game has bound to the ride is still unreachable when nothing j
  */
 test("a ride down the walk past another ride's queue is reachable, because guests walk over it", function () {
     withPark(function (game) {
-        // Ride 0's queue occupies two tiles of the only walk south.
+        // Ride 0's queue crosses the walk at 10,8 and turns off it to the door at 11,8. A
+        // MID-LINE queue tile, which the game was measured leaving alone: 51,27, bound to a
+        // ride, `edges` 10, still joined to the plain path beside it. The tile that dead-ends
+        // is the one at the door, and here that tile is off the walk.
         game.addPath(10, 8, true);
-        game.addPath(10, 9, true);
-        game.addRideEntrance(11, 9, 0, 2);
+        game.addPath(11, 8, true);
+        game.addRideEntrance(12, 8, 0, 2);
         // Ride 1 is further down the same walk, with a queue of its own.
         game.addPath(10, 14, true);
         game.addRideEntrance(11, 14, 1, 2);
         game.rides = [
-            ride(0, { x: 11, y: 9, direction: 2 }, null),
+            ride(0, { x: 12, y: 8, direction: 2 }, null),
             ride(1, { x: 11, y: 14, direction: 2 }, null)
         ];
     }, function (game) {
-        assert.equal(queueBinding(game, 10, 9), 0, "ride 0 owns the queue across the walk");
+        assert.equal(queueBinding(game, 10, 8), 0, "ride 0 owns the queue across the walk");
+        assert.equal(queueBinding(game, 11, 8), 0, "and the tile of it at its door");
         assert.equal(queueBinding(game, 10, 14), 1, "and ride 1 owns its own");
 
         const walkable = walkableFromParkEntrance();
@@ -242,10 +246,13 @@ test("a ride down the walk past another ride's queue is reachable, because guest
 });
 
 /**
- * The same walk, with the one cut the game really does make: when a ride claims the queue at
- * its door, the tile at the door loses its edge to whatever lies past it. Measured going
- * both ways in a running park - stripping the queue back to ordinary path put the edge back
- * and reopened the walk.
+ * The same walk, with the door ON it: when a ride claims the queue at its door, the tile at
+ * the door loses its edge to whatever lies past it. Measured going both ways in a running
+ * park - stripping the queue back to ordinary path put the edge back and reopened the walk.
+ *
+ * Nothing here states that cut. The fixture binds the queue and the fake cuts it, which is
+ * the whole point: while this was `severPath` in the test body, the test author decided
+ * which tile the game had taken out and every check below it agreed by construction.
  */
 test("a ride behind a door the game has dead-ended is not reachable", function () {
     withPark(function (game) {
@@ -254,8 +261,6 @@ test("a ride behind a door the game has dead-ended is not reachable", function (
         game.addRideEntrance(11, 9, 0, 2);
         game.addPath(10, 14, true);
         game.addRideEntrance(11, 14, 1, 2);
-        // Ride 0's line ends at its door: the game clears the bit on the far side of it.
-        game.severPath(10, 9, 10, 10);
         game.rides = [
             ride(0, { x: 11, y: 9, direction: 2 }, null),
             ride(1, { x: 11, y: 14, direction: 2 }, null)

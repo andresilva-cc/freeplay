@@ -93,8 +93,73 @@ test("tiles the scenario is not selling are left alone and named", function () {
         assert.equal(outcome.cost, 3 * 200,
             "cost is what the game charged for the three it sold, not the price of the rectangle");
         assert.deepEqual(outcome.notOwned, [{ x: 6, y: 6 }]);
-        assert.match(outcome.detail, /not for sale/);
         assert.match(outcome.detail, /6,6/);
+        // The old wording was "1 tile is not for sale in this scenario", inferred from
+        // ownership failing to change rather than read off the tile. What the tile says is
+        // the ownership byte, and 6,6's says nothing is on offer here.
+        assert.match(outcome.detail, /ownership flags read back/,
+            "the source of the claim has to be the tile, not the purchase");
+        assert.match(outcome.detail, /on offer neither as land nor as construction rights/,
+            "which is what OWNERSHIP 0 actually says");
+    });
+});
+
+test("a tile offered as construction rights is not reported as unsellable", function () {
+    // The defect: buy_land sends landbuyrights setting 0, which asks for land. A tile the
+    // scenario offers as CONSTRUCTION RIGHTS is untouched by that call and used to be
+    // reported as "not for sale in this scenario" - a statement about the scenario the
+    // scenario had never made, and one that closes off a purchase that exists.
+    withGame(function (game) {
+        offerForSale(game, { left: 5, top: 5, right: 6, bottom: 6 });
+        game.putUpForSale(6, 6, false);
+        game.offerConstructionRights(6, 6);
+        game.parkValues.cash = 10000;
+        game.parkValues.landPrice = 200;
+    }, function () {
+        const outcome = buy({ left: 5, top: 5, right: 6, bottom: 6 });
+
+        assert.equal(outcome.ok, false);
+        assert.deepEqual(outcome.notOwned, [{ x: 6, y: 6 }]);
+        assert.match(outcome.detail, /6,6 - construction rights are for sale/,
+            "what the tile's own flags say");
+        assert.match(outcome.detail, /setting 0, land only/,
+            "and why this call did not take them: it asked for land");
+        assert.doesNotMatch(outcome.detail, /not for sale/,
+            "the tile is on the market; saying it is not is the invented conclusion");
+    });
+});
+
+test("construction rights the park already holds are reported as that, not as unowned land", function () {
+    withGame(function (game) {
+        offerForSale(game, { left: 5, top: 5, right: 5, bottom: 5 });
+        game.own(6, 5, false);
+        game.putUpForSale(6, 5, false);
+        game.grantConstructionRights(6, 5);
+        game.parkValues.cash = 10000;
+        game.parkValues.landPrice = 200;
+    }, function () {
+        const outcome = buy({ left: 5, top: 5, right: 6, bottom: 5 });
+
+        assert.deepEqual(outcome.notOwned, [{ x: 6, y: 5 }]);
+        assert.match(outcome.detail, /6,5 - the park already holds construction rights, not the land/);
+    });
+});
+
+test("tiles that fail the same way are named together, and tiles that do not are kept apart", function () {
+    withGame(function (game) {
+        offerForSale(game, { left: 5, top: 5, right: 6, bottom: 6 });
+        game.putUpForSale(6, 5, false);
+        game.putUpForSale(6, 6, false);
+        game.offerConstructionRights(6, 6);
+        game.parkValues.cash = 10000;
+        game.parkValues.landPrice = 200;
+    }, function () {
+        const outcome = buy({ left: 5, top: 5, right: 6, bottom: 6 });
+
+        assert.match(outcome.detail, /6,5 - the scenario has it on offer neither as land nor as construction rights/);
+        assert.match(outcome.detail, /6,6 - construction rights are for sale/);
+        assert.doesNotMatch(outcome.detail, /6,5 6,6/,
+            "two tiles the scenario says different things about must not be collapsed into one clause");
     });
 });
 

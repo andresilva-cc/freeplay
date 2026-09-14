@@ -17,6 +17,16 @@ export interface FakeElement {
     hasOwnership?: boolean;
     /** Surface only: the scenario has put this tile up for sale, so landbuyrights can take it. */
     forSale?: boolean;
+    /** Surface only: the scenario offers construction rights on this tile, which is not the land. */
+    rightsForSale?: boolean;
+    /** Surface only: the park holds construction rights here without owning the ground. */
+    hasConstructionRights?: boolean;
+    /**
+     * Surface only: OpenRCT2's `OWNERSHIP_*` byte, which the plugin API hands over raw and is
+     * the only place the game says what a tile is on offer for. Kept in step with the four
+     * flags above by `syncOwnership`, so a fixture sets those and this follows.
+     */
+    ownership?: number;
     slope?: number;
     isQueue?: boolean;
     /**
@@ -92,6 +102,12 @@ interface QueuedAction {
     args: Record<string, unknown>;
     callback?: (result: Record<string, unknown>) => void;
 }
+
+/** OpenRCT2's `OWNERSHIP_*` bits, from `world/tile_element/SurfaceElement.h`. */
+export const OWNERSHIP_CONSTRUCTION_RIGHTS_OWNED = 1 << 4;
+export const OWNERSHIP_OWNED = 1 << 5;
+export const OWNERSHIP_CONSTRUCTION_RIGHTS_AVAILABLE = 1 << 6;
+export const OWNERSHIP_AVAILABLE = 1 << 7;
 
 const STAFF_TYPE_NAMES: Record<number, string> = {
     0: "handyman", 1: "mechanic", 2: "security", 3: "entertainer"
@@ -323,7 +339,9 @@ export class FakeGame {
         this.tiles = [];
 
         for (let i = 0; i < width * height; i++) {
-            this.tiles.push({ elements: [{ type: "surface", baseZ: 96, hasOwnership: true, slope: 0 }] });
+            this.tiles.push({ elements: [{
+                type: "surface", baseZ: 96, hasOwnership: true, slope: 0, ownership: OWNERSHIP_OWNED
+            }] });
         }
     }
 
@@ -337,6 +355,7 @@ export class FakeGame {
 
     public own(x: number, y: number, owned: boolean): void {
         this.tile(x, y).elements[0].hasOwnership = owned;
+        this.syncOwnership(x, y);
     }
 
     /**
@@ -346,15 +365,71 @@ export class FakeGame {
      */
     public putUpForSale(x: number, y: number, forSale = true): void {
         this.tile(x, y).elements[0].forSale = forSale;
+        this.syncOwnership(x, y);
+    }
+
+    /**
+     * Offer construction rights on a tile without offering the land.
+     *
+     * A real scenario state, and the one `buy_land` used to report as "not for sale": the
+     * tile is on the market, just not for what `landbuyrights` setting 0 asks for.
+     */
+    public offerConstructionRights(x: number, y: number, offered = true): void {
+        this.tile(x, y).elements[0].rightsForSale = offered;
+        this.syncOwnership(x, y);
+    }
+
+    /** Give the park construction rights on a tile without giving it the ground. */
+    public grantConstructionRights(x: number, y: number, held = true): void {
+        this.tile(x, y).elements[0].hasConstructionRights = held;
+        this.syncOwnership(x, y);
+    }
+
+    /**
+     * Rewrite the surface's `ownership` byte from the fake's own flags.
+     *
+     * One derivation, called by every mutator, so the byte a tool reads and the flags a
+     * fixture sets cannot drift apart. Owning the ground subsumes the rest, which is what
+     * the game's `OWNERSHIP_OWNED` means.
+     */
+    private syncOwnership(x: number, y: number): void {
+        const surface = this.tile(x, y).elements[0];
+        let bits = 0;
+
+        if (surface.hasOwnership) {
+            bits |= OWNERSHIP_OWNED;
+        } else {
+            if (surface.forSale === true) {
+                bits |= OWNERSHIP_AVAILABLE;
+            }
+
+            if (surface.rightsForSale === true) {
+                bits |= OWNERSHIP_CONSTRUCTION_RIGHTS_AVAILABLE;
+            }
+
+            if (surface.hasConstructionRights === true) {
+                bits |= OWNERSHIP_CONSTRUCTION_RIGHTS_OWNED;
+            }
+        }
+
+        surface.ownership = bits;
     }
 
     public addScenery(x: number, y: number, type = "small_scenery"): void {
         this.tile(x, y).elements.push({ type: type, baseZ: 96, object: 0, direction: 0 });
     }
 
+    /** The height the ground is at here, which is where anything standing on it sits. */
+    private groundHeight(x: number, y: number): number {
+        const surface = this.tile(x, y).elements[0];
+
+        return typeof surface.baseZ === "number" ? surface.baseZ : 96;
+    }
+
     public addPath(x: number, y: number, queue = false, ride: number | null = null): void {
         this.tile(x, y).elements.push({
-            type: "footpath", baseZ: 96, isQueue: queue, ride: ride, surfaceObject: queue ? 11 : 0, edges: 0
+            type: "footpath", baseZ: this.groundHeight(x, y), isQueue: queue, ride: ride,
+            surfaceObject: queue ? 11 : 0, edges: 0
         });
         this.connectEdgesAround(x, y);
     }
@@ -384,9 +459,34 @@ export class FakeGame {
                 }
             }
         }
+
+        // Recomputing puts back any edge a claimed queue had taken out, so the cuts go on
+        // again. Without this the fixture's build order decided whether a ride's door was
+        // dead-ended, which is the same "the author decides" problem as hand-severing.
+        this.applyQueueCuts();
     }
 
     private recomputeEdges(x: number, y: number): void {
+        const elements = this.tile(x, y).elements;
+
+        for (let i = 0; i < elements.length; i++) {
+            if (elements[i].type === "footpath") {
+                elements[i].edges = this.edgesAt(x, y, typeof elements[i].baseZ === "number"
+                    ? (elements[i].baseZ as number)
+                    : 96);
+            }
+        }
+    }
+
+    /**
+     * The sides a footpath at `x,y,z` is joined on.
+     *
+     * The height is the point. OpenRCT2 joins a footpath to its neighbour only where the two
+     * meet, so a run drawn across a step is laid tile by tile and does not join up - which is
+     * exactly what `build_path` tells the model, and what could not be tested while every
+     * fake path sat at 96 and this joined any two neighbouring paths unconditionally.
+     */
+    private edgesAt(x: number, y: number, z: number): number {
         const directions = [{ dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 }, { dx: 0, dy: -1 }];
         let edges = 0;
 
@@ -402,20 +502,20 @@ export class FakeGame {
 
             for (let i = 0; i < neighbours.length; i++) {
                 // A doorway counts: guests step between a path and the building it serves.
-                if (neighbours[i].type === "footpath" || neighbours[i].type === "entrance") {
-                    edges |= 1 << d;
-                    break;
+                if (neighbours[i].type !== "footpath" && neighbours[i].type !== "entrance") {
+                    continue;
                 }
+
+                if (neighbours[i].baseZ !== z) {
+                    continue;
+                }
+
+                edges |= 1 << d;
+                break;
             }
         }
 
-        const elements = this.tile(x, y).elements;
-
-        for (let i = 0; i < elements.length; i++) {
-            if (elements[i].type === "footpath") {
-                elements[i].edges = edges;
-            }
-        }
+        return edges;
     }
 
     /**
@@ -462,7 +562,8 @@ export class FakeGame {
      */
     public addRideEntrance(x: number, y: number, ride: number, direction: number, isExit = false): void {
         this.tile(x, y).elements.push({
-            type: "entrance", baseZ: 96, object: isExit ? 1 : 0, sequence: 0, ride: ride, direction: direction
+            type: "entrance", baseZ: this.groundHeight(x, y), object: isExit ? 1 : 0, sequence: 0,
+            ride: ride, direction: direction
         });
         this.connectEdgesAround(x, y);
         this.updateQueueChains();
@@ -481,7 +582,7 @@ export class FakeGame {
     public addParkEntrance(x: number, y: number): void {
         for (let i = 0; i < 3; i++) {
             this.tile(x + i, y).elements.push({
-                type: "entrance", baseZ: 96, object: 2, sequence: i, ride: 0
+                type: "entrance", baseZ: this.groundHeight(x + i, y), object: 2, sequence: i, ride: 0
             });
             this.connectEdgesAround(x + i, y);
         }
@@ -794,7 +895,11 @@ export class FakeGame {
                 existing.surfaceObject = args.object as number;
             } else {
                 tile.elements.push({
-                    type: "footpath", baseZ: 96, isQueue: isQueue, ride: null,
+                    // The height the action asked for. `build_path` sends each tile its own
+                    // ground height, and pinning every path to 96 here hid what that does.
+                    type: "footpath",
+                    baseZ: typeof args.z === "number" ? args.z : this.groundHeight(tileX, tileY),
+                    isQueue: isQueue, ride: null,
                     surfaceObject: args.object as number, edges: 0
                 });
             }
@@ -926,6 +1031,7 @@ export class FakeGame {
             const surface = this.tile(buyable[i].x, buyable[i].y).elements[0];
             surface.hasOwnership = true;
             surface.forSale = false;
+            this.syncOwnership(buyable[i].x, buyable[i].y);
         }
 
         this.parkValues.cash -= cost;
@@ -988,6 +1094,95 @@ export class FakeGame {
                 }
             }
         }
+
+        this.applyQueueCuts();
+    }
+
+    /**
+     * Cut every queue a ride has claimed off from whatever lies past its door.
+     *
+     * Separate from binding because the two are triggered by different things: binding is
+     * recomputed when a ride or a path changes, while the cut has to go back on whenever the
+     * edges around a door tile are rebuilt for any reason at all.
+     */
+    private applyQueueCuts(): void {
+        for (let y = 0; y < this.height; y++) {
+            for (let x = 0; x < this.width; x++) {
+                const elements = this.tile(x, y).elements;
+
+                for (let i = 0; i < elements.length; i++) {
+                    const element = elements[i];
+
+                    if (element.type !== "entrance" || element.object !== 0 || typeof element.ride !== "number") {
+                        continue;
+                    }
+
+                    const away = DIRECTION_DELTAS[((element.direction || 0) % 4 + 4) % 4];
+                    const doorX = x - away.dx;
+                    const doorY = y - away.dy;
+
+                    if (!this.inBounds(doorX, doorY)) {
+                        continue;
+                    }
+
+                    const door = this.queueOn(doorX, doorY);
+
+                    if (door && door.ride === element.ride) {
+                        this.severPastTheDoor(doorX, doorY, element.ride);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Cut the tile at a ride's door off from whatever lies past it, the way binding does.
+     *
+     * Measured in a running park (`src/park/paths.ts`): when the entrance claimed the queue,
+     * the tile at the door lost the bit on its far side - 51,25 went `edges` 10 to 9 - and the
+     * ordinary path past it, 51,26, lost the matching one and went 10 to 3, leaving the line a
+     * cul-de-sac ending at the door. "Past it" is along the queue's own axis: the chain reaches
+     * the door tile from one side, and the tile on the other side stops carrying traffic.
+     *
+     * Only that, and only where the axis is a fact rather than a guess. A queue one tile long
+     * has no axis and a door tile with queue on two sides has two, and what the game does in
+     * either was never measured, so nothing is cut there and a test that needs one still says
+     * so with `severPath` - the way the API hands that state over as data. Deriving more edge
+     * rules than were measured is the bug all of this replaced.
+     */
+    private severPastTheDoor(doorX: number, doorY: number, ride: number): void {
+        const chain: number[] = [];
+
+        for (let d = 0; d < DIRECTION_DELTAS.length; d++) {
+            const nx = doorX + DIRECTION_DELTAS[d].dx;
+            const ny = doorY + DIRECTION_DELTAS[d].dy;
+
+            if (!this.inBounds(nx, ny)) {
+                continue;
+            }
+
+            const next = this.queueOn(nx, ny);
+
+            if (next && next.ride === ride) {
+                chain.push(d);
+            }
+        }
+
+        if (chain.length !== 1) {
+            return;
+        }
+
+        const back = DIRECTION_DELTAS[(chain[0] + 2) % 4];
+        const pastX = doorX + back.dx;
+        const pastY = doorY + back.dy;
+
+        // No footpath past the door - the entrance building itself, or bare ground - is a queue
+        // that already ends there, and there is no link to cut.
+        if (!this.inBounds(pastX, pastY) || !this.footpathOn(pastX, pastY)) {
+            return;
+        }
+
+        this.severPath(doorX, doorY, pastX, pastY);
     }
 
     /** Walks a connected run of queue tiles from `x,y`, binding each one to `ride`. */
@@ -1004,15 +1199,7 @@ export class FakeGame {
             }
 
             seen[key] = true;
-            const elements = this.tile(at.x, at.y).elements;
-            let queue: FakeElement | undefined;
-
-            for (let i = 0; i < elements.length; i++) {
-                if (elements[i].type === "footpath" && elements[i].isQueue) {
-                    queue = elements[i];
-                    break;
-                }
-            }
+            const queue = this.queueOn(at.x, at.y);
 
             if (!queue) {
                 continue;
@@ -1024,6 +1211,32 @@ export class FakeGame {
                 pending.push({ x: at.x + DIRECTION_DELTAS[d].dx, y: at.y + DIRECTION_DELTAS[d].dy });
             }
         }
+    }
+
+    /** The queue element on a tile, if there is one. */
+    private queueOn(x: number, y: number): FakeElement | undefined {
+        const elements = this.tile(x, y).elements;
+
+        for (let i = 0; i < elements.length; i++) {
+            if (elements[i].type === "footpath" && elements[i].isQueue) {
+                return elements[i];
+            }
+        }
+
+        return undefined;
+    }
+
+    /** Whether a tile carries a footpath of either kind. */
+    private footpathOn(x: number, y: number): boolean {
+        const elements = this.tile(x, y).elements;
+
+        for (let i = 0; i < elements.length; i++) {
+            if (elements[i].type === "footpath") {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private findRide(id: number): FakeRide | undefined {

@@ -262,6 +262,10 @@ interface Blocker {
  * There is no height condition. Every tile is laid at its own ground height, so a run does
  * not have one height to hold its tiles to. A run drawn across a step is laid and does not
  * join up, and that is reported as the tiles guests cannot reach rather than guessed at.
+ *
+ * `sloped` is this tool's condition rather than the game's. `footpathplace` takes a
+ * `slopeType` and a `slopeDirection` and OpenRCT2 runs footpaths up slopes with them; this
+ * file sends 0 for both, so it needs flat ground and says so as its own limit.
  */
 function blockCode(grid: MapGrid, x: number, y: number, queueAllowed: boolean): string | null {
     const cell = grid.at(x, y);
@@ -330,8 +334,13 @@ function describeBlock(tile: Tile, code: string, wantQueue: boolean): Blocker {
     if (code === "sloped") {
         return {
             tile: tile,
-            what: "on a slope, and a footpath needs level ground",
-            remedy: null,
+            // Not "a footpath needs level ground", which is false and was believed: OpenRCT2
+            // footpaths run up slopes, and `footpathplace` takes the `slopeType` and
+            // `slopeDirection` that do it. This tool sends 0 for both, so the limit is this
+            // tool's and is stated as this tool's.
+            what: "on a slope, and this tool lays flat path only",
+            remedy: "no typed tool here levels ground or lays a sloped path, but evaluate reaches the game's"
+                + " own landsetheight, landraise, landlower and landsmooth, and footpathplace's slopeType",
             stale: false
         };
     }
@@ -438,6 +447,9 @@ function blockedRunRefusal(blockers: Blocker[], named: number): string {
         + blockerGroups(blockers) + "."
         + " Every tile of a run has to be owned, flat, and carrying nothing a footpath cannot share,"
         + " and a run that is not a queue takes no tile carrying a queue."
+        + " Flat is this tool's limit and not the game's: OpenRCT2 footpaths run up slopes, this tool lays"
+        + " flat path only, and levelling ground is the game's own landsetheight, landraise, landlower and"
+        + " landsmooth, which evaluate reaches."
         // The same split `src/park/build.ts` draws between a coordinate that was wrong and
         // a coordinate that has gone stale: they read alike and need opposite answers.
         + (anyStale
