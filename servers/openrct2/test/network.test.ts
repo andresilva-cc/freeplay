@@ -28,7 +28,7 @@ function addRide(game: FakeGame, id: number): void {
     game.rides.push({
         id: id, name: "Ride " + String(id), type: 0, status: "closed", price: [0],
         stations: [{ start: null, entrance: null, exit: null, length: 0, queueTime: 0 }],
-        excitement: -1, intensity: 0, totalCustomers: 0, totalProfit: 0,
+        excitement: -1, intensity: 0, nausea: 0, totalCustomers: 0, totalProfit: 0,
         downtime: 0, reliability: 100, flags: 0, value: null
     });
 }

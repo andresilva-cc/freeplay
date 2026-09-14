@@ -102,7 +102,7 @@ function rideWithQueueAt(game: FakeGame, queue: Tile): FakeRide {
             entrance: { x: 10 * 32, y: 8 * 32, z: 96, direction: 3 },
             exit: null, length: 0, queueTime: 0
         }],
-        excitement: 500, intensity: 300, totalCustomers: 0, totalProfit: 0,
+        excitement: 500, intensity: 300, nausea: 200, totalCustomers: 0, totalProfit: 0,
         downtime: 0, reliability: 100, flags: 0, value: 40
     };
 

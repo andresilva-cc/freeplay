@@ -27,15 +27,68 @@ const RIDE_FLAG_CRASHED = 1 << 10;
 const RIDE_RATING_UNDEFINED = -1;
 
 /**
- * Every stream in the game's own ExpenditureType. All of them, because the sum is
- * reported as net profit: leaving construction and land out of it showed a month in
- * profit that the game's own finance graph showed in the red.
+ * Every stream in the game's own ExpenditureType, in the order the game declares them.
+ *
+ * All of them, because the sum is reported as net profit: leaving construction and land out
+ * of it showed a month in profit that the game's own finance graph showed in the red. Each
+ * is also reported on its own line, because the sum alone cannot tell a park bleeding wages
+ * from one bleeding ride upkeep, and a person reading the Finances window sees the lines.
  */
 const EXPENDITURE_STREAMS: ExpenditureType[] = [
     "ride_construction", "ride_runningcosts", "land_purchase", "landscaping",
     "park_entrance_tickets", "park_ride_tickets", "shop_sales", "shop_stock",
     "food_drink_sales", "food_drink_stock", "wages", "marketing", "research", "interest"
 ];
+
+/**
+ * OpenRCT2's own PeepThoughtType, in declaration order, as the plugin API's `ThoughtType`
+ * union lists it. This is the order `guest_feedback` reports thoughts in.
+ *
+ * It is here to be an order that says nothing. The counts used to be sorted by size, which
+ * put the park's commonest complaint at the top of the list and made the reading of them -
+ * which problem is worth acting on - a thing this tool had already done. The game keeps no
+ * such histogram and shows no such list: a person reads thought bubbles one guest at a time
+ * and forms their own view. So the rows come back in the game's own enumeration order,
+ * which is arbitrary with respect to anything a park could want, and stable from call to
+ * call so two reads can be compared. The counts stay, because a count is a measurement.
+ *
+ * A type the game reports that is not listed here is still reported, after these, in the
+ * order it was read. Nothing is dropped for being unrecognised.
+ */
+const THOUGHT_TYPE_ORDER: string[] = [
+    "cant_afford_ride", "spent_money", "sick", "very_sick", "more_thrilling", "intense",
+    "havent_finished", "sickening", "bad_value", "go_home", "good_value", "already_got",
+    "cant_afford_item", "not_hungry", "not_thirsty", "drowning", "lost", "was_great",
+    "queuing_ages", "tired", "hungry", "thirsty", "toilet", "cant_find", "not_paying",
+    "not_while_raining", "bad_litter", "cant_find_exit", "get_off", "get_out", "not_safe",
+    "path_disgusting", "crowded", "vandalism", "scenery", "very_clean", "fountains", "music",
+    "balloon", "toy", "map", "photo", "umbrella", "drink", "burger", "chips", "ice_cream",
+    "candyfloss", "pizza", "popcorn", "hot_dog", "tentacle", "hat", "toffee_apple", "tshirt",
+    "doughnut", "coffee", "chicken", "lemonade", "wow", "wow2", "watched", "balloon_much",
+    "toy_much", "map_much", "photo_much", "umbrella_much", "drink_much", "burger_much",
+    "chips_much", "ice_cream_much", "candyfloss_much", "pizza_much", "popcorn_much",
+    "hot_dog_much", "tentacle_much", "hat_much", "toffee_apple_much", "tshirt_much",
+    "doughnut_much", "coffee_much", "chicken_much", "lemonade_much", "photo2", "photo3",
+    "photo4", "pretzel", "hot_chocolate", "iced_tea", "funnel_cake", "sunglasses",
+    "beef_noodles", "fried_rice_noodles", "wonton_soup", "meatball_soup", "fruit_juice",
+    "soybean_milk", "sujongkwa", "sub_sandwich", "cookie", "roast_sausage", "photo2_much",
+    "photo3_much", "photo4_much", "pretzel_much", "hot_chocolate_much", "iced_tea_much",
+    "funnel_cake_much", "sunglasses_much", "beef_noodles_much", "fried_rice_noodles_much",
+    "wonton_soup_much", "meatball_soup_much", "fruit_juice_much", "soybean_milk_much",
+    "sujongkwa_much", "sub_sandwich_much", "cookie_much", "roast_sausage_much", "help",
+    "running_out", "new_ride", "nice_ride_deprecated", "excited_deprecated", "here_we_are"
+];
+
+/** Where each thought type sits in `THOUGHT_TYPE_ORDER`, built once. */
+const THOUGHT_TYPE_RANK: Record<string, number> = (function () {
+    const rank: Record<string, number> = {};
+
+    for (let i = 0; i < THOUGHT_TYPE_ORDER.length; i++) {
+        rank[THOUGHT_TYPE_ORDER[i]] = i;
+    }
+
+    return rank;
+})();
 
 export interface RideSummary {
     id: number;
@@ -44,6 +97,14 @@ export interface RideSummary {
     /** Fixed-point: 652 means 6.52. Null until the ride has been rated. */
     excitement: number | null;
     intensity: number | null;
+    /**
+     * The third of the three numbers the game works out together and shows together in the
+     * ride window. It was the one missing here, and it is not a spare: nausea is what sends
+     * guests looking for a bin or a toilet and leaves the mess a handyman then has to sweep,
+     * so a park with a queue of sick guests reads exactly like a healthy one without it.
+     * Null until the ride has been rated, on the same test as the other two.
+     */
+    nausea: number | null;
     price: number;
     /** What the ride is worth to a guest. Charge far above this and they refuse to ride.
      *  Null until the ride has been rated, which is when the game works it out. */
@@ -103,6 +164,8 @@ export interface ParkStatus {
     ground: GroundCensus;
     parkOpen: boolean;
     date: { year: number; month: number; day: number };
+    /** What the sky is doing, which nothing here reported and a person never stops seeing. */
+    weather: WeatherReading;
     /**
      * The game's own speed setting, 1 to 4, and whether the clock is stopped. Nothing else
      * reported either, so a paused game looked exactly like a running one that nothing was
@@ -119,12 +182,52 @@ export interface ParkStatus {
     suggestedGuestMaximum: number;
     entranceFee: number;
     companyValue: number;
-    /** Net profit for the last four months, index 0 is this month. */
+    /** Net profit for the last four months, index 0 is this month. The sum, per month, of
+     *  every line in `monthlyExpenditure` and nothing else. */
     monthlyProfit: number[];
+    /**
+     * The same four months broken into the game's own expenditure streams, keyed by the
+     * game's name for each, in the game's own ExpenditureType order: the lines a person
+     * reads down the Finances window. Signed as the game signs them, so takings are
+     * positive and costs negative, and each array is four months with index 0 this month.
+     *
+     * Every stream is present whether or not anything moved through it, because a zero is
+     * a reading and an absent key is not. The fourteen add up to `monthlyProfit` month by
+     * month - which is all the total ever was, and all it could say: a park losing money on
+     * wages and a park losing the same money on ride upkeep were one number here, and the
+     * two want opposite things done about them.
+     */
+    monthlyExpenditure: Record<string, number[]>;
     staff: Record<string, number>;
     /** The game's own notifications, newest last. It names problems before you find them. */
     messages: ParkMessageReading[];
     rides: RideSummary[];
+}
+
+/**
+ * The weather, read off the game's `climate`.
+ *
+ * Nothing in `src/` touched `climate` before this. Rain in OpenRCT2 is not scenery: guests
+ * stop boarding rides that have no shelter, buy umbrellas, head for cover and leave, and
+ * every one of those shows up here as a takings figure or a guest count falling for no
+ * reason park_status could name. A person sees it in the toolbar continuously and sees the
+ * forecast beside it, so a turn planned in the sun that lands in a storm is a turn the model
+ * was reading a park a person was not.
+ *
+ * Read and reported, not interpreted: which of these weathers is worth changing a plan for
+ * is the model's call, and nothing here ranks them or says a ride will close.
+ */
+export interface WeatherReading {
+    /** The scenario's climate, the game's own `climate.type`: the weather pattern this park
+     *  runs on, not today's weather. One of `coolAndWet`, `warm`, `hotAndDry`, `cold`. */
+    climate: string;
+    /** Right now. `weather` is the game's own name for it - `sunny`, `partiallyCloudy`,
+     *  `cloudy`, `rain`, `heavyRain`, `thunder`, `snow`, `heavySnow`, `blizzard` - and
+     *  `temperature` is the game's own number, which its display renders in °C or °F
+     *  depending on a setting this bridge cannot read. */
+    current: { weather: string; temperature: number };
+    /** What the game says is coming: its own `climate.future`, in the same two fields. */
+    next: { weather: string; temperature: number };
 }
 
 /**
@@ -305,6 +408,7 @@ export function readParkStatus(): ParkStatus {
             status: ride.status,
             excitement: rated ? ride.excitement : null,
             intensity: rated ? ride.intensity : null,
+            nausea: rated ? ride.nausea : null,
             price: ride.price.length > 0 ? ride.price[0] : 0,
             // Already null from the API when the game has not worked one out. Passed through.
             value: ride.value,
@@ -332,15 +436,24 @@ export function readParkStatus(): ParkStatus {
         };
     });
 
-    // Expenditure comes back signed, so summing the streams gives net profit per month.
+    // Expenditure comes back signed, so summing the streams gives net profit per month. Each
+    // stream is kept as it was read as well as added in, so the total is an arithmetic fact
+    // about the lines beside it rather than a figure with nothing to check it against.
     const profit: number[] = [0, 0, 0, 0];
+    const expenditure: Record<string, number[]> = {};
 
     for (let s = 0; s < EXPENDITURE_STREAMS.length; s++) {
         const months = park.getMonthlyExpenditure(EXPENDITURE_STREAMS[s]);
+        const reported: number[] = [];
 
-        for (let i = 0; i < profit.length && i < months.length; i++) {
-            profit[i] += months[i] || 0;
+        for (let i = 0; i < profit.length; i++) {
+            const value = i < months.length ? months[i] || 0 : 0;
+
+            reported.push(value);
+            profit[i] += value;
         }
+
+        expenditure[EXPENDITURE_STREAMS[s]] = reported;
     }
 
     return {
@@ -349,6 +462,11 @@ export function readParkStatus(): ParkStatus {
         ground: readGroundCensus(DEFAULT_CENSUS_BLOCK),
         parkOpen: park.getFlag("open"),
         date: { year: date.year, month: date.month, day: date.day },
+        weather: {
+            climate: climate.type,
+            current: { weather: climate.current.weather, temperature: climate.current.temperature },
+            next: { weather: climate.future.weather, temperature: climate.future.temperature }
+        },
         speed: typeof context.gameSpeed === "number" ? context.gameSpeed : 0,
         paused: context.paused === true,
         cash: park.cash,
@@ -360,58 +478,136 @@ export function readParkStatus(): ParkStatus {
         entranceFee: park.entranceFee,
         companyValue: park.companyValue,
         monthlyProfit: profit,
+        monthlyExpenditure: expenditure,
         staff: staff,
         messages: recentMessages(12),
         rides: rides
     };
 }
 
+/**
+ * One kind of thought, with how many of them were read and how stale the game says they are.
+ *
+ * `freshness` is here because every thought slot a guest is carrying used to be counted the
+ * same, and a slot the game has stopped showing counts the same as one it is showing right
+ * now: a complaint that was answered two months ago goes on inflating its own count until
+ * the game finally drops it. Filtering the stale ones out would be this tool deciding which
+ * complaints still stand, which is the reading a person does for themselves. So nothing is
+ * filtered, and the number the game does that reading from is reported beside the count.
+ */
+export interface GuestThoughtReading {
+    /** The game's own name for the thought, e.g. `queuing_ages`, `cant_find`, `hungry`. */
+    thought: string;
+    /**
+     * Thought slots of this kind across the guests read. Slots, not guests: a guest holding
+     * two thoughts contributes to two counts, exactly as the game stores them.
+     */
+    count: number;
+    /**
+     * The game's own `freshness` on those slots, counted per value: each key is a number the
+     * game held and each value is how many of the slots read carried it, so the counts here
+     * add up to `count`.
+     *
+     * The plugin API documents the field as "the larger the number, the less fresh the
+     * thought" and documents nothing else about it - no unit, no scale, and no number at
+     * which the game stops showing a thought - so it is passed through exactly as the game
+     * holds it and described in the one direction the game states.
+     *
+     * A count per value rather than a row per value, because the rows cost what they carry:
+     * measured on the worst read this tool can be asked for - 500 guests, all 125 thought
+     * types, every one of them at 28 different freshness numbers - `{"1":8}` came to 23,000
+     * characters where `[{"value":1,"count":8}]` came to 63,000 for the same figures.
+     */
+    freshness: Record<string, number>;
+}
+
 export interface GuestFeedback {
-    /** Guests in the park. */
+    /** Guests in the park: the length of the game's own guest list. */
     guests: number;
-    /** How many of them these counts came from. */
-    sampled: number;
-    /** Every thought guests are having, most common first. */
-    thoughts: { thought: string; count: number }[];
+    /**
+     * How many guests were read, which is where every count and average below comes from.
+     *
+     * This was called `sampled` and it was not a sample. The read walks the game's guest
+     * list from the front and stops, so it is the same end of the same list every call, and
+     * whatever that end has in common - it is the game's entity order, which no part of the
+     * API says anything about - is what the counts over-represent. Named for what it does
+     * rather than for a sampling method that was never implemented.
+     */
+    guestsRead: number;
+    /**
+     * Every kind of thought found, in the game's own thought enumeration order. That order
+     * is arbitrary with respect to the park: it is not by count, not by severity and not by
+     * anything else that would amount to saying which complaint matters. See
+     * `THOUGHT_TYPE_ORDER`.
+     */
+    thoughts: GuestThoughtReading[];
+    /** Mean over the guests read, out of 255. */
     averageHappiness: number;
+    /** Mean over the guests read, in tenths of a currency unit. */
     averageCash: number;
 }
 
-export function readGuestFeedback(sampleSize: number): GuestFeedback {
+/** The thought types found, in the game's enumeration order, unlisted ones last. */
+function inThoughtTypeOrder(found: string[]): string[] {
+    const known: string[] = [];
+    const unknown: string[] = [];
+
+    for (let i = 0; i < found.length; i++) {
+        if (typeof THOUGHT_TYPE_RANK[found[i]] === "number") {
+            known.push(found[i]);
+        } else {
+            unknown.push(found[i]);
+        }
+    }
+
+    known.sort(function (left, right) {
+        return THOUGHT_TYPE_RANK[left] - THOUGHT_TYPE_RANK[right];
+    });
+
+    return known.concat(unknown);
+}
+
+export function readGuestFeedback(readLimit: number): GuestFeedback {
     const guests = map.getAllEntities("guest");
     const counts: Record<string, number> = {};
+    const freshness: Record<string, Record<string, number>> = {};
+    const found: string[] = [];
     let happiness = 0;
     let cash = 0;
-    let sampled = 0;
+    let read = 0;
 
-    for (let i = 0; i < guests.length && sampled < sampleSize; i++) {
+    for (let i = 0; i < guests.length && read < readLimit; i++) {
         const guest = guests[i];
-        sampled++;
+        read++;
         happiness += guest.happiness;
         cash += guest.cash;
 
         const thoughts = guest.thoughts;
 
         for (let t = 0; t < thoughts.length; t++) {
-            const type = thoughts[t].type;
-            counts[type] = (counts[type] || 0) + 1;
+            const type = thoughts[t].type as string;
+
+            if (typeof counts[type] !== "number") {
+                counts[type] = 0;
+                freshness[type] = {};
+                found.push(type);
+            }
+
+            counts[type] += 1;
+
+            const value = String(thoughts[t].freshness);
+            freshness[type][value] = (freshness[type][value] || 0) + 1;
         }
     }
 
-    const ordered: { thought: string; count: number }[] = [];
-    Object.keys(counts).forEach(function (thought) {
-        ordered.push({ thought: thought, count: counts[thought] });
-    });
-    ordered.sort(function (left, right) {
-        return right.count - left.count;
-    });
-
     return {
         guests: guests.length,
-        sampled: sampled,
-        thoughts: ordered,
-        averageHappiness: sampled > 0 ? Math.round(happiness / sampled) : 0,
-        averageCash: sampled > 0 ? Math.round(cash / sampled) : 0
+        guestsRead: read,
+        thoughts: inThoughtTypeOrder(found).map(function (thought) {
+            return { thought: thought, count: counts[thought], freshness: freshness[thought] };
+        }),
+        averageHappiness: read > 0 ? Math.round(happiness / read) : 0,
+        averageCash: read > 0 ? Math.round(cash / read) : 0
     };
 }
 

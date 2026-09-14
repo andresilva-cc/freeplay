@@ -110,6 +110,7 @@ function addRide(game: FakeGame, options?: {
         }],
         excitement: 500,
         intensity: 300,
+        nausea: 200,
         totalCustomers: 0,
         totalProfit: 0,
         downtime: 0,
@@ -482,7 +483,7 @@ test("a built ride with no doors is told that, not something else", function () 
     game.rides.push({
         id: 0, name: "Merry-Go-Round 1", type: 33, status: "closed", price: [10],
         stations: [{ start: { x: 448, y: 320, z: 96 }, entrance: null, exit: null, length: 0, queueTime: 0 }],
-        excitement: -1, intensity: -1, totalCustomers: 0, totalProfit: 0,
+        excitement: -1, intensity: -1, nausea: -1, totalCustomers: 0, totalProfit: 0,
         downtime: 0, reliability: 100, flags: 0, value: 40
     });
 

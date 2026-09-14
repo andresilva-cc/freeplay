@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { FakeGame } from "./fakeGame.ts";
@@ -90,7 +91,7 @@ function ride(
         id: id, name: "Ride " + String(id), type: extra && typeof extra.type === "number" ? extra.type : 33,
         status: "open", price: [10],
         stations: [{ start: start, entrance: spot(entrance), exit: spot(exit), length: 1, queueTime: 4 }],
-        excitement: 600, intensity: 400, totalCustomers: 0, totalProfit: 0,
+        excitement: 600, intensity: 400, nausea: 250, totalCustomers: 0, totalProfit: 0,
         downtime: 0, reliability: 100, flags: 0, value: 40
     };
 }
@@ -136,8 +137,32 @@ function queueBinding(game: FakeGame, x: number, y: number): number | null | und
     return undefined;
 }
 
+/**
+ * A guest as the fixtures below write one: thoughts are `type` or `type@freshness`, so a
+ * test that cares about staleness says so and one that does not gets the game's freshest
+ * value rather than a silent default buried in a helper.
+ */
+interface CrowdMember {
+    happiness: number;
+    cash: number;
+    thoughts: string[];
+}
+
+/** The freshest value the game uses for a thought it is showing right now. */
+const FRESH = 1;
+
+/** `"hungry@9"` is a hungry thought the game has let go stale nine steps; `"hungry"` is fresh. */
+function thoughtSlot(written: string): { type: string; freshness: number } {
+    const split = written.split("@");
+
+    return {
+        type: split[0],
+        freshness: split.length > 1 ? Number(split[1]) : FRESH
+    };
+}
+
 /** Replaces the fake's empty crowd, which is all it offers, with guests that have thoughts. */
-function putGuestsInPark(crowd: { happiness: number; cash: number; thoughts: string[] }[]): void {
+function putGuestsInPark(crowd: CrowdMember[]): void {
     const scope = globalThis as unknown as Record<string, unknown>;
     const gameMap = scope.map as Record<string, unknown>;
 
@@ -150,7 +175,7 @@ function putGuestsInPark(crowd: { happiness: number; cash: number; thoughts: str
             return {
                 happiness: guest.happiness,
                 cash: guest.cash,
-                thoughts: guest.thoughts.map(function (thought) { return { type: thought }; })
+                thoughts: guest.thoughts.map(thoughtSlot)
             };
         });
     };
@@ -750,7 +775,7 @@ test("guest feedback says how many guests it read, next to how many there are", 
         const feedback = readGuestFeedback(10);
 
         assert.equal(feedback.guests, 50, "there are fifty guests in the park");
-        assert.equal(feedback.sampled, 10, "only ten of them were read");
+        assert.equal(feedback.guestsRead, 10, "only ten of them were read");
 
         let counted = 0;
 
@@ -758,8 +783,11 @@ test("guest feedback says how many guests it read, next to how many there are", 
             counted += feedback.thoughts[i].count;
         }
 
-        assert.equal(counted, 10, "the thought counts add up to the sample, not to the park");
-        assert.equal(feedback.thoughts[0].thought, "hungry", "the commonest thought in the sample comes first");
+        assert.equal(counted, 10, "the thought counts add up to the guests read, not to the park");
+        assert.deepEqual(
+            feedback.thoughts.map(function (row) { return { thought: row.thought, count: row.count }; }),
+            [{ thought: "hungry", count: 5 }, { thought: "thirsty", count: 5 }],
+            "the ten read off the front of the list are the five hungry guests and five thirsty ones");
     });
 });
 
@@ -769,7 +797,7 @@ test("an empty park reports no guests rather than an average of nothing", functi
         const feedback = readGuestFeedback(100);
 
         assert.equal(feedback.guests, 0);
-        assert.equal(feedback.sampled, 0, "nothing was read, and it says so");
+        assert.equal(feedback.guestsRead, 0, "nothing was read, and it says so");
         assert.deepEqual(feedback.thoughts, []);
         assert.equal(feedback.averageHappiness, 0, "an average of no guests is reported as zero, not as NaN");
         assert.equal(feedback.averageCash, 0);
@@ -800,7 +828,7 @@ test("the guest sample argument declares the ceiling it is silently clamped to",
         putGuestsInPark(crowd);
         const tools = new StatusTools();
 
-        assert.equal(tools.guestFeedback({ sample: 9999 }).sampled, sample.maximum,
+        assert.equal(tools.guestFeedback({ sample: 9999 }).guestsRead, sample.maximum,
             "and asking for more reads exactly the declared maximum");
     });
 });
@@ -1050,6 +1078,7 @@ test("a ride the game has not rated reports no ratings rather than the sentinel"
         // Exactly what the game holds for a ride it has not rated.
         game.rides[0].excitement = -1;
         game.rides[0].intensity = 0;
+        game.rides[0].nausea = 0;
         game.rides[0].value = null;
     }, function (game) {
         const held = game.rides[0];
@@ -1061,6 +1090,7 @@ test("a ride the game has not rated reports no ratings rather than the sentinel"
 
         assert.equal(found.excitement, null, "-1 is not a rating and must not be reported as one");
         assert.equal(found.intensity, null, "and 0 alongside it is not a measurement either");
+        assert.equal(found.nausea, null, "nor is the 0 the game leaves in nausea until it rates the ride");
         assert.equal(found.value, null);
     });
 });
@@ -1070,15 +1100,17 @@ test("once the game rates a ride, the ratings it worked out are reported unchang
         game.rides = [ride(0, null, null)];
         game.rides[0].excitement = -1;
         game.rides[0].intensity = 0;
+        game.rides[0].nausea = 0;
         game.rides[0].value = null;
         // The numbers the same ride came back with after the game rated it.
-        game.rateRide(0, { excitement: 182, intensity: 140, value: 39 });
+        game.rateRide(0, { excitement: 182, intensity: 140, nausea: 96, value: 39 });
     }, function (game) {
         const held = game.rides[0];
         const found = summary(0);
 
         assert.equal(found.excitement, held.excitement, "182, the number the game holds");
         assert.equal(found.intensity, held.intensity);
+        assert.equal(found.nausea, held.nausea, "and the third rating, which was not reported at all");
         assert.equal(found.value, held.value);
         assert.notEqual(found.excitement, null, "a rated ride must not read as an unrated one");
     });
@@ -1089,7 +1121,7 @@ test("a rated ride that scored zero is a measurement, not a missing one", functi
     // low rating would report a rated stall as never measured. Only the sentinel means it.
     withPark(function (game) {
         game.rides = [ride(0, null, null)];
-        game.rateRide(0, { excitement: 0, intensity: 0, value: 0 });
+        game.rateRide(0, { excitement: 0, intensity: 0, nausea: 0, value: 0 });
     }, function (game) {
         assert.equal(game.rides[0].excitement, 0, "the game holds a real rating of 0.00");
 
@@ -1097,6 +1129,7 @@ test("a rated ride that scored zero is a measurement, not a missing one", functi
 
         assert.equal(found.excitement, 0, "which is a measurement and comes back as the number it is");
         assert.equal(found.intensity, 0);
+        assert.equal(found.nausea, 0, "a shop's nausea of 0.00 is a rating, the same as the other two");
         assert.equal(found.value, 0);
     });
 });
@@ -1116,6 +1149,7 @@ test("a ride the game has only just created has no ratings and no value", functi
 
         assert.equal(found.excitement, null, "so park_status has nothing to report for it");
         assert.equal(found.intensity, null);
+        assert.equal(found.nausea, null);
         assert.equal(found.value, null);
     });
 });
@@ -1210,7 +1244,7 @@ test("average happiness and average cash are means of the sample, not sums of it
 
         const feedback = readGuestFeedback(100);
 
-        assert.equal(feedback.sampled, held.length, "both guests in the park were read");
+        assert.equal(feedback.guestsRead, held.length, "both guests in the park were read");
         assert.equal(feedback.averageHappiness, happiness / held.length,
             "happiness is the average of the two, 150, and not their sum");
         assert.equal(feedback.averageCash, cash / held.length, "and cash carried is an average too");
@@ -1557,5 +1591,419 @@ test("a message the clock has not caught up with reads 0 rather than a negative 
         assert.equal(readParkStatus().messages[0].gameDaysAgo, 0,
             "a save loaded backwards leaves messages stamped ahead of the clock, and"
                 + " a negative age is a number nothing downstream knows what to do with");
+    });
+});
+
+/* ---------------------------------------------------------------------------------------
+ * The order guest thoughts come back in.
+ *
+ * `readGuestFeedback` sorted the thought counts by size and the tool said "most common
+ * first". That is the construct `find_build_sites` was deleted for: a preference-ordered
+ * option list, in a harness where the model took item #1 in 11 of 12 and then 12 of 12
+ * recorded cases. OpenRCT2 shows no aggregated complaint histogram anywhere - a person
+ * clicks guests, reads thought bubbles, and decides for themselves which complaint is the
+ * park's real problem - so ranking them was this tool making that call every turn.
+ *
+ * The counts stay: a count is a measurement. The order is now the game's own thought
+ * enumeration, which is arbitrary with respect to any park and stable between calls.
+ *
+ * The expectation below is read out of the plugin API's own `ThoughtType` union rather than
+ * out of `THOUGHT_TYPE_ORDER`, so the test fails if that table drifts from the game instead
+ * of agreeing with it by construction.
+ */
+
+/** OpenRCT2's own PeepThoughtType order, read off the plugin API's type declarations. */
+function thoughtTypesAsTheGameDeclaresThem(): string[] {
+    const declarations = readFileSync(
+        new URL("../node_modules/@openrct2/types/openrct2.d.ts", import.meta.url), "utf8");
+    const union = /type ThoughtType\s*=([\s\S]*?);/.exec(declarations);
+
+    assert.ok(union, "the plugin API still declares a ThoughtType union");
+
+    const names = (union as RegExpExecArray)[1].match(/"[a-z0-9_]+"/g) || [];
+
+    assert.ok(names.length > 100, "and it still lists every thought the game has");
+
+    return names.map(function (quoted) { return quoted.slice(1, -1); });
+}
+
+test("guest thoughts come back in the game's own order and not in order of size", function () {
+    const declared = thoughtTypesAsTheGameDeclaresThem();
+
+    withPark(function () { /* no scenery needed */ }, function () {
+        // Chosen so the two orders disagree completely: by count this is thirsty, hungry,
+        // cant_afford_ride, and the game declares them in exactly the opposite order.
+        const crowd: CrowdMember[] = [];
+
+        for (let i = 0; i < 6; i++) {
+            crowd.push({ happiness: 128, cash: 50, thoughts: ["thirsty"] });
+        }
+
+        for (let i = 0; i < 3; i++) {
+            crowd.push({ happiness: 128, cash: 50, thoughts: ["hungry"] });
+        }
+
+        crowd.push({ happiness: 128, cash: 50, thoughts: ["cant_afford_ride"] });
+
+        putGuestsInPark(crowd);
+        const thoughts = readGuestFeedback(100).thoughts;
+        const order = thoughts.map(function (row) { return row.thought; });
+        const bySize = thoughts.slice().sort(function (left, right) { return right.count - left.count; })
+            .map(function (row) { return row.thought; });
+
+        assert.deepEqual(bySize, ["thirsty", "hungry", "cant_afford_ride"],
+            "the fixture is one where size order and the game's order are opposites");
+        assert.deepEqual(order, ["cant_afford_ride", "hungry", "thirsty"],
+            "which the reply comes back in is the game's, and nothing to do with the counts");
+        assert.notDeepEqual(order, bySize, "the commonest complaint is not handed over as the answer");
+
+        const ranks = order.map(function (thought) { return declared.indexOf(thought); });
+
+        assert.deepEqual(ranks.slice().sort(function (l, r) { return l - r; }), ranks,
+            "and the order is the plugin API's own ThoughtType declaration order, read from it here");
+
+        assert.deepEqual(thoughts.map(function (row) { return row.count; }), [1, 3, 6],
+            "the counts themselves are untouched: a count is a measurement");
+    });
+});
+
+test("a thought type the table does not know is still reported, after the ones it does", function () {
+    withPark(function () { /* no scenery needed */ }, function () {
+        putGuestsInPark([
+            { happiness: 128, cash: 50, thoughts: ["a_thought_from_a_newer_openrct2"] },
+            { happiness: 128, cash: 50, thoughts: ["hungry"] }
+        ]);
+
+        const order = readGuestFeedback(100).thoughts.map(function (row) { return row.thought; });
+
+        assert.deepEqual(order, ["hungry", "a_thought_from_a_newer_openrct2"],
+            "an unrecognised thought is reported, not dropped: dropping one would decide it does not count");
+    });
+});
+
+test("guest_feedback no longer promises a ranking", function () {
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "guestFeedback";
+    });
+
+    const text = String(definitions[0].description);
+
+    assert.doesNotMatch(text, /most common first|commonest|worst first|in order of/i,
+        "the description promised an ordering the payload no longer has, and should not have had");
+    assert.match(text, /NOT by count/,
+        "and says outright that position in the list is not a ranking");
+    assert.match(text, /which\s+complaint is worth acting on is yours/,
+        "the decision is named and handed back, the way docs/tool-design.md always said it was");
+});
+
+/* ---------------------------------------------------------------------------------------
+ * What the guest read actually is.
+ *
+ * The loop reads `guests[0]` to `guests[n - 1]` and the field was called `sampled`, with a
+ * description saying "counted over a sample of them". Reading one end of a list is not a
+ * sample of it, and the distance between the two is exactly the kind of thing a benchmark
+ * cannot afford to state wrongly: whatever the game's entity order correlates with, the
+ * counts are weighted towards it and nothing in the reply said so.
+ */
+
+test("the guests read are the front of the game's list, and the field is named for that", function () {
+    withPark(function () { /* no scenery needed */ }, function () {
+        const crowd: CrowdMember[] = [];
+
+        // Front of the list and back of it disagree completely, which is the whole point:
+        // a read that says "sample" and takes one end reports the front's view as the park's.
+        for (let i = 0; i < 20; i++) {
+            crowd.push({ happiness: 10, cash: 0, thoughts: ["go_home"] });
+        }
+
+        for (let i = 0; i < 20; i++) {
+            crowd.push({ happiness: 250, cash: 900, thoughts: ["was_great"] });
+        }
+
+        putGuestsInPark(crowd);
+        const feedback = readGuestFeedback(20);
+
+        assert.equal(feedback.guests, 40, "forty guests in the park");
+        assert.equal(feedback.guestsRead, 20, "twenty of them read");
+        assert.equal("sampled" in feedback, false,
+            "the field that claimed a sampling method nothing implements is gone");
+        assert.deepEqual(feedback.thoughts.map(function (row) { return row.thought; }), ["go_home"],
+            "and what came back is the front twenty's view of the park, not the park's");
+        assert.equal(feedback.averageHappiness, 10,
+            "so is the average: 10, the front of the list, and not 130, the park");
+    });
+});
+
+test("guest_feedback says it reads one end of the list rather than sampling", function () {
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "guestFeedback";
+    });
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /it is not a random sample/,
+        "the one thing the old description got wrong, stated plainly");
+    assert.match(text, /walks the game's guest list from the front/, "and what it does instead");
+    assert.match(text, /`guestsRead`/, "under the name the payload uses");
+});
+
+/* ---------------------------------------------------------------------------------------
+ * Stale thoughts.
+ *
+ * Every thought slot on a guest was counted the same. The game keeps a slot after it has
+ * stopped showing it, so a complaint answered weeks ago went on inflating its own count
+ * against a complaint raised this minute, and nothing in the reply could tell them apart.
+ *
+ * Filtering the stale ones out would be this tool deciding what still stands. The field the
+ * game provides is reported instead. Its direction is asserted below against the plugin
+ * API's own documentation of it, because a freshness number described backwards is worse
+ * than no freshness number at all.
+ */
+
+test("a stale thought is counted and its freshness reported, not quietly dropped", function () {
+    withPark(function () { /* no scenery needed */ }, function () {
+        putGuestsInPark([
+            { happiness: 128, cash: 50, thoughts: ["cant_find@21"] },
+            { happiness: 128, cash: 50, thoughts: ["cant_find@21"] },
+            { happiness: 128, cash: 50, thoughts: ["cant_find"] },
+            { happiness: 128, cash: 50, thoughts: ["queuing_ages@7"] }
+        ]);
+
+        const thoughts = readGuestFeedback(100).thoughts;
+
+        assert.deepEqual(thoughts.map(function (row) { return row.thought; }),
+            ["queuing_ages", "cant_find"], "both kinds are here, in the game's order");
+
+        const cantFind = thoughts.filter(function (row) { return row.thought === "cant_find"; })[0];
+
+        assert.equal(cantFind.count, 3,
+            "all three are counted: which of them still stands is not this tool's call to make");
+        assert.deepEqual(cantFind.freshness, { "1": 1, "21": 2 },
+            "and the game's own number on each slot comes back, counted per value");
+        assert.equal(cantFind.freshness["1"] + cantFind.freshness["21"], cantFind.count,
+            "the freshness counts account for every slot counted, so neither can quietly drift");
+
+        const queuing = thoughts.filter(function (row) { return row.thought === "queuing_ages"; })[0];
+
+        assert.deepEqual(queuing.freshness, { "7": 1 },
+            "freshness is per thought type and never pooled across types");
+    });
+});
+
+test("freshness is described in the direction the plugin API documents", function () {
+    const declarations = readFileSync(
+        new URL("../node_modules/@openrct2/types/openrct2.d.ts", import.meta.url), "utf8");
+
+    assert.match(declarations, /The freshness of the thought - the larger the number, the less fresh/,
+        "the game's own documentation of the field, which is the only statement of its direction");
+    assert.doesNotMatch(declarations, /readonly freshness: number;[\s\S]{0,200}?\bseconds\b/,
+        "and it gives no unit, so no unit may be reported");
+
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "guestFeedback";
+    });
+    const text = String(definitions[0].description);
+
+    assert.match(text, /the larger the number, the less\s+fresh the thought/,
+        "reported in the game's own words and direction, not in an invented scale");
+    assert.match(text, /Nothing is dropped or discounted by it/,
+        "and the model is told nothing was filtered, so the counts are its to weigh");
+});
+
+/* ---------------------------------------------------------------------------------------
+ * The finances, itemised.
+ *
+ * `monthlyProfit` added fourteen expenditure streams into one number. A person opens the
+ * Finances window and reads them as fourteen lines. Two parks losing the same money - one
+ * on wages, one on ride upkeep - are one number here and two different repairs.
+ */
+
+test("every expenditure stream is reported on its own line, and they add up to the total", function () {
+    withPark(function (game) {
+        // Distinct per stream and read back off the fake's own record below, so nothing is
+        // being compared against a second copy of the arithmetic under test.
+        game.expenditure.wages = [-500, -480, -460, -440];
+        game.expenditure.ride_runningcosts = [-120, -110, -100, -90];
+        game.expenditure.park_ride_tickets = [900, 880, 860, 840];
+        game.expenditure.shop_sales = [70, 60, 50, 40];
+        game.expenditure.land_purchase = [-2000, 0, 0, 0];
+    }, function (game) {
+        const status = readParkStatus();
+        const streams = Object.keys(status.monthlyExpenditure);
+
+        assert.equal(streams.length, 14, "all fourteen of the game's streams are lines of their own");
+
+        Object.keys(game.expenditure).forEach(function (stream) {
+            assert.deepEqual(status.monthlyExpenditure[stream], game.expenditure[stream],
+                stream + " is reported exactly as the game holds it, four months, index 0 this month");
+        });
+
+        assert.deepEqual(status.monthlyExpenditure.marketing, [0, 0, 0, 0],
+            "a stream nothing moved through is a zero line and not a missing key");
+
+        for (let month = 0; month < 4; month++) {
+            let total = 0;
+
+            for (let i = 0; i < streams.length; i++) {
+                total += status.monthlyExpenditure[streams[i]][month];
+            }
+
+            assert.equal(status.monthlyProfit[month], total,
+                "month " + String(month) + ": the total is the sum of the lines beside it");
+        }
+
+        assert.equal(status.monthlyProfit[0], -1650, "hand-added: -500 -120 +900 +70 -2000");
+    });
+});
+
+test("two parks with the same net profit and different causes no longer read alike", function () {
+    const bleedingWages: Record<string, number[]> =
+        { wages: [-800, 0, 0, 0], park_ride_tickets: [300, 0, 0, 0] };
+    const bleedingUpkeep: Record<string, number[]> =
+        { ride_runningcosts: [-800, 0, 0, 0], park_ride_tickets: [300, 0, 0, 0] };
+    const readings: Record<string, number[]>[] = [];
+    let profit: number[] = [];
+
+    [bleedingWages, bleedingUpkeep].forEach(function (books) {
+        withPark(function (game) {
+            Object.keys(books).forEach(function (stream) {
+                game.expenditure[stream] = books[stream];
+            });
+        }, function () {
+            const status = readParkStatus();
+
+            readings.push(status.monthlyExpenditure);
+            profit = profit.concat([status.monthlyProfit[0]]);
+        });
+    });
+
+    assert.deepEqual(profit, [-500, -500], "the same net loss, which is all the total ever said");
+    assert.notDeepEqual(readings[0], readings[1], "and two different parks, which is what the lines say");
+    assert.equal(readings[0].wages[0], -800, "one is paying staff it cannot afford");
+    assert.equal(readings[1].ride_runningcosts[0], -800, "the other is running rides it cannot afford");
+});
+
+test("park_status names the streams it sends and claims no advice about them", function () {
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "parkStatus";
+    });
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /`monthlyExpenditure` breaks those same four months into the game's fourteen/,
+        "what the field is");
+    assert.match(text, /add up to `monthlyProfit` month/, "and the arithmetic that makes it checkable");
+    assert.match(text, /takings positive and costs/, "and the sign convention, which is the game's");
+});
+
+/* ---------------------------------------------------------------------------------------
+ * Two things a person sees and the bridge did not read: a ride's nausea, and the weather.
+ */
+
+test("a ride's nausea is its own number and not a copy of another rating", function () {
+    withPark(function (game) {
+        game.rides = [ride(0, null, null)];
+        // All three deliberately different: a field carrying another's value shows up here.
+        game.rateRide(0, { excitement: 612, intensity: 488, nausea: 355, value: 41 });
+    }, function (game) {
+        const held = game.rides[0];
+        const found = summary(0);
+
+        assert.deepEqual(
+            { excitement: found.excitement, intensity: found.intensity, nausea: found.nausea },
+            { excitement: held.excitement, intensity: held.intensity, nausea: held.nausea },
+            "each of the three ratings the game shows in one window is the number the game holds");
+        assert.notEqual(found.nausea, found.intensity,
+            "nausea and intensity are different measurements and a high one of each is a different park");
+    });
+});
+
+test("park_status reports the weather the game is running, and what it says comes next", function () {
+    withPark(function (game) {
+        // Everything distinct, so a field copied from a neighbour fails here.
+        game.climate.type = "coolAndWet";
+        game.climate.current = { weather: "heavyRain", temperature: 11 };
+        game.climate.future = { weather: "thunder", temperature: 9 };
+    }, function (game) {
+        const weather = readParkStatus().weather;
+
+        assert.equal(weather.climate, game.climate.type, "the scenario's climate, as the game names it");
+        assert.deepEqual(weather.current, game.climate.current, "what the sky is doing now");
+        assert.deepEqual(weather.next, game.climate.future, "and the game's own forecast beside it");
+        assert.notDeepEqual(weather.current, weather.next,
+            "the forecast is read from `climate.future` and is not an echo of the current weather");
+    });
+});
+
+test("the weather is read again each call rather than remembered", function () {
+    withPark(function () { /* the fake starts sunny */ }, function (game) {
+        assert.equal(readParkStatus().weather.current.weather, "sunny", "the fake's opening sky");
+
+        game.climate.current = { weather: "blizzard", temperature: -4 };
+
+        assert.equal(readParkStatus().weather.current.weather, "blizzard",
+            "and a park that is now in a blizzard says so, rather than what it said last turn");
+    });
+});
+
+test("park_status describes the weather it sends without telling the model what to do about it", function () {
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "parkStatus";
+    });
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /`weather` is the toolbar/, "the field is described");
+    assert.match(text, /`next` is the\s+game's own forecast/, "including that the forecast is the game's");
+    assert.match(text, /Rain is not decoration in OpenRCT2/,
+        "and what rain does to a park, which is a rule of the game and not readable anywhere else");
+    assert.match(text, /`nausea` is the third rating/, "the ride rating that was missing is described too");
+});
+
+/* ---------------------------------------------------------------------------------------
+ * How big the two replies get.
+ *
+ * Itemised finances add fourteen lines to `park_status` and freshness adds a row per
+ * distinct value to every thought in `guest_feedback`. `sanitizeToolResult` caps arrays at
+ * 500 entries and strings at 4000 characters, so neither of these can be silently trimmed -
+ * but a reply that doubles is still paid for in context every turn, and a number nobody
+ * measured is a number that grows.
+ */
+
+test("the two readers stay the size they are believed to be", function () {
+    withPark(function (game) {
+        game.expenditure.wages = [-4000, -3900, -3800, -3700];
+        game.expenditure.park_ride_tickets = [12500, 11900, 10400, 9800];
+    }, function () {
+        const status = JSON.stringify(readParkStatus());
+
+        assert.ok(status.length < 8000,
+            "park_status on a small park is " + String(status.length) + " characters");
+
+        // The worst guest_feedback this tool can produce: the largest read it accepts, with
+        // every guest holding the game's maximum of five thoughts, all of different types
+        // and every one of them at a different freshness.
+        const crowd: CrowdMember[] = [];
+        const types = thoughtTypesAsTheGameDeclaresThem();
+
+        for (let i = 0; i < 500; i++) {
+            const thoughts: string[] = [];
+
+            for (let t = 0; t < 5; t++) {
+                thoughts.push(types[(i * 5 + t) % types.length] + "@" + String(i % 28));
+            }
+
+            crowd.push({ happiness: 128, cash: 50, thoughts: thoughts });
+        }
+
+        putGuestsInPark(crowd);
+        const feedback = JSON.stringify(readGuestFeedback(500));
+
+        // Measured, not guessed: 22,971 characters for a read no real park can produce -
+        // every one of the game's 125 thought types present, each at 28 different freshness
+        // values. The same read with one row per slot instead of a count per value was
+        // 62,971. A realistic 100-guest read with a dozen thought types is under 1,000.
+        assert.ok(feedback.length < 25000,
+            "the worst guest_feedback is " + String(feedback.length) + " characters");
     });
 });

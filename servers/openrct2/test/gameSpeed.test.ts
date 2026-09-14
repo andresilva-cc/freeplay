@@ -286,7 +286,7 @@ test("while paused the game refuses a map change and lets a ride setting through
                 exit: { x: 32, y: 96, z: 96, direction: 1 },
                 length: 0, queueTime: 0
             }],
-            excitement: 500, intensity: 300, totalCustomers: 0, totalProfit: 0,
+            excitement: 500, intensity: 300, nausea: 200, totalCustomers: 0, totalProfit: 0,
             downtime: 0, reliability: 100, flags: 0, value: 40
         });
     }, function (game) {

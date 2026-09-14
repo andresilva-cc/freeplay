@@ -62,9 +62,15 @@ export interface FakeRide {
     /**
      * Fixed-point ratings. -1 in `excitement` is the game's RIDE_RATING_UNDEFINED, which the
      * plugin API hands over raw; `intensity` and `nausea` sit at 0 while it does.
+     *
+     * All three, because the game works all three out in one step and shows all three in the
+     * ride window. This fake carried excitement and intensity only, which is the same field
+     * `status.ts` was missing, so no test could have caught the omission: the fixture agreed
+     * with the bug.
      */
     excitement: number;
     intensity: number;
+    nausea: number;
     totalCustomers: number;
     totalProfit: number;
     downtime: number;
@@ -78,7 +84,14 @@ export interface FakeRide {
 export interface FakeGuest {
     happiness: number;
     cash: number;
-    thoughts: { type: string }[];
+    /**
+     * Thought slots, as the game holds them. `freshness` is the game's own field and is
+     * required here on purpose: it carried the type alone, which is exactly the field
+     * `readGuestFeedback` was throwing away, so a stale thought and a current one were
+     * indistinguishable in the fixture as well as in the code. The plugin API documents the
+     * number in one direction only - the larger it is, the less fresh the thought.
+     */
+    thoughts: { type: string; freshness: number }[];
 }
 
 export interface FakeStaff {
@@ -295,6 +308,17 @@ export class FakeGame {
      * A stream nothing was set for reads as four zero months.
      */
     public readonly expenditure: Record<string, number[]> = {};
+    /**
+     * The weather, as `climate` reports it. The fake had no climate at all, which matched a
+     * bridge that never read one: rain closes unsheltered rides and empties a park, and a
+     * person sees it in the toolbar every second they play. `future` is the game's own name
+     * for the forecast. Set any of it from a test.
+     */
+    public readonly climate = {
+        type: "warm",
+        current: { weather: "sunny", temperature: 21 },
+        future: { weather: "rain", temperature: 16 }
+    };
     /** The scenario being played, as `scenario` reports it. */
     public readonly scenario = {
         name: "Forest Frontiers",
@@ -605,7 +629,10 @@ export class FakeGame {
      * The step the game runs a little after a ride opens: it works the ratings out and
      * fills `value` in from them, which is why an unrated ride has neither.
      */
-    public rateRide(id: number, ratings: { excitement: number; intensity: number; value: number }): void {
+    public rateRide(
+        id: number,
+        ratings: { excitement: number; intensity: number; nausea: number; value: number }
+    ): void {
         const ride = this.findRide(id);
 
         if (!ride) {
@@ -614,6 +641,7 @@ export class FakeGame {
 
         ride.excitement = ratings.excitement;
         ride.intensity = ratings.intensity;
+        ride.nausea = ratings.nausea;
         ride.value = ratings.value;
     }
 
@@ -734,7 +762,7 @@ export class FakeGame {
                 // excitement is the RIDE_RATING_UNDEFINED sentinel, intensity and nausea are
                 // left at 0, and value comes back null. A fake that handed out a rating and a
                 // value here would let the unrated case pass untested.
-                excitement: -1, intensity: 0, totalCustomers: 0, totalProfit: 0,
+                excitement: -1, intensity: 0, nausea: 0, totalCustomers: 0, totalProfit: 0,
                 downtime: 0, reliability: 100, flags: 0, value: null
             });
             return { error: 0, ride: id };
@@ -1393,13 +1421,14 @@ function installGlobals(game: FakeGame): () => void {
 
     const previous = {
         map: scope.map, context: scope.context, park: scope.park,
-        scenario: scope.scenario, date: scope.date
+        scenario: scope.scenario, date: scope.date, climate: scope.climate
     };
     scope.map = fakeMap;
     scope.context = fakeContext;
     scope.park = fakePark;
     scope.scenario = game.scenario;
     scope.date = game.date;
+    scope.climate = game.climate;
 
     return function () {
         scope.map = previous.map;
@@ -1407,5 +1436,6 @@ function installGlobals(game: FakeGame): () => void {
         scope.park = previous.park;
         scope.scenario = previous.scenario;
         scope.date = previous.date;
+        scope.climate = previous.climate;
     };
 }

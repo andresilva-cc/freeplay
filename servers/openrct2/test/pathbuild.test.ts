@@ -159,7 +159,7 @@ function rideWithAnEntranceAt(game: FakeGame, id: number, name: string, at: Tile
             entrance: { x: at.x * 32, y: at.y * 32, z: 96, direction: direction },
             exit: null, length: 0, queueTime: 0
         }],
-        excitement: 500, intensity: 300, totalCustomers: 0, totalProfit: 0,
+        excitement: 500, intensity: 300, nausea: 200, totalCustomers: 0, totalProfit: 0,
         downtime: 0, reliability: 100, flags: 0, value: 40
     };
 
