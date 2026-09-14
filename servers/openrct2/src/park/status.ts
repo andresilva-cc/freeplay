@@ -1,5 +1,6 @@
 import { currentDayNumber, dayNumberFromElapsedMonths } from "../gameClock.js";
-import { pauseRefusesActions } from "../clockGate.js";
+import { clockHeldBy, pauseRefusesActions } from "../clockGate.js";
+import type { ClockHolder } from "../clockGate.js";
 import { flatRideShape, shopServingTile } from "./flatRides.js";
 import { DIRECTION_VECTORS } from "./map.js";
 import { DEFAULT_CENSUS_BLOCK, readGroundCensus, readPathNetwork } from "./network.js";
@@ -183,6 +184,21 @@ export interface ParkStatus {
      * the game window reads as false here.
      */
     paused: boolean;
+    /**
+     * Who is holding the clock still: `nobody`, `you`, `bridge` or `unknown`.
+     *
+     * `paused` above cannot say. It answers whether the pause in force refuses actions, which
+     * is false both while the clock runs and while the bridge holds it between calls - so
+     * every turn of a normal run reads exactly like a park whose clock is running, and there
+     * was nothing in this payload that said otherwise. A person sees the pause in the game's
+     * own toolbar; this is that reading, and it is the bridge's own bookkeeping rather than
+     * anything derivable from the other fields.
+     *
+     * `bridge` covers a pause someone set in the game window as well: the hold claims one it
+     * finds, the gate opens a window through either, and nothing in the plugin API says who
+     * set the flag. src/clockGate.ts has the rest.
+     */
+    clockHeldBy: ClockHolder;
     cash: number;
     bankLoan: number;
     maxBankLoan: number;
@@ -478,6 +494,7 @@ export function readParkStatus(): ParkStatus {
         },
         speed: typeof context.gameSpeed === "number" ? context.gameSpeed : 0,
         paused: pauseRefusesActions(),
+        clockHeldBy: clockHeldBy(),
         cash: park.cash,
         bankLoan: park.bankLoan,
         maxBankLoan: park.maxBankLoan,

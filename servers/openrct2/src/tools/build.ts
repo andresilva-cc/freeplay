@@ -81,7 +81,8 @@ export class BuildTools {
             "A pause YOU set with `set_game_speed` refuses the track and door actions, so this builds nothing",
             "and refuses through one: the ride record `ridecreate` would leave behind has no track and cannot",
             "be demolished until you unpause. The clock being stopped between your calls is a different thing",
-            "and builds go through it — `park_status` tells the two apart as `clockHeldBy`.",
+            "and builds go through it — `park_status` tells the two apart as `clockHeldBy`, which reads",
+            "`you` for the pause you set and `bridge` for the hold.",
             "This does not build roller coasters; those need track laid piece by piece with `evaluate`."
         ].join(" "),
         inputSchema: {

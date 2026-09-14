@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { FakeGame } from "./fakeGame.ts";
 import type { FakeRide } from "./fakeGame.ts";
+import { holdClockBetweenCalls, recordPlayerPause, resetClockGate } from "../src/clockGate.ts";
 import { readGuestFeedback, readParkStatus } from "../src/park/status.ts";
 import type { RideObjectInfo, RideSummary } from "../src/park/status.ts";
 import { tileIsWalkable, walkableFromParkEntrance } from "../src/park/paths.ts";
 import { StatusTools } from "../src/tools/status.ts";
 import { getMcpToolDefinitions } from "../src/tools/decorators.ts";
+import { getMcpTools } from "../src/tools/index.ts";
 import { openPark } from "../src/tools/openPark.ts";
 import type { OpenParkOutcome } from "../src/tools/openPark.ts";
 
@@ -2006,4 +2009,293 @@ test("the two readers stay the size they are believed to be", function () {
         assert.ok(feedback.length < 25000,
             "the worst guest_feedback is " + String(feedback.length) + " characters");
     });
+});
+
+/* ---------------------------------------------------------------------------------------
+ * Who is holding the clock.
+ *
+ * `paused` answers one question - whether the pause in force is refusing what the model does -
+ * and it answers false in two states a person tells apart at a glance: a running park, and a
+ * park the bridge is holding still between calls. Every turn of a normal run is the second
+ * one, so the payload read exactly like a park whose clock was running and nothing in it said
+ * the clock was stopped at all.
+ *
+ * The gate knows the answer. It is bookkeeping the model cannot derive from any other field,
+ * which is the test for whether a reading belongs in a reply.
+ */
+
+/** Put the gate back where the game starts, so nothing here leaks into another test. */
+function withClockGate(run: () => void): void {
+    resetClockGate();
+
+    try {
+        run();
+    } finally {
+        resetClockGate();
+        recordPlayerPause(false);
+    }
+}
+
+test("park_status names who is holding the clock, which `paused` cannot", function () {
+    withPark(function () { /* the fake starts at speed 1, running */ }, function (game) {
+        withClockGate(function () {
+            const running = readParkStatus();
+
+            assert.deepEqual({ held: running.clockHeldBy, paused: running.paused },
+                { held: "nobody", paused: false },
+                "a running park has nobody holding the clock");
+
+            holdClockBetweenCalls();
+            const held = readParkStatus();
+
+            assert.equal(game.gameValues.paused, true, "the hold really did stop the game");
+            assert.deepEqual({ held: held.clockHeldBy, paused: held.paused },
+                { held: "bridge", paused: false },
+                "the hold between calls is the bridge's, and it refuses nothing - which is why"
+                + " `paused` alone cannot tell this state from the running one above");
+
+            recordPlayerPause(true);
+            const asked = readParkStatus();
+
+            assert.deepEqual({ held: asked.clockHeldBy, paused: asked.paused },
+                { held: "you", paused: true },
+                "a pause set with set_game_speed is the model's, and that one does refuse");
+        });
+    });
+});
+
+test("a pause the bridge neither set nor was told about is not reported as its own", function () {
+    withPark(function () { /* nothing to build */ }, function (game) {
+        withClockGate(function () {
+            game.gameValues.paused = true;
+
+            const status = readParkStatus();
+
+            assert.deepEqual({ held: status.clockHeldBy, paused: status.paused },
+                { held: "unknown", paused: true },
+                "the game is stopped by something outside this bridge's bookkeeping, and saying"
+                + " `bridge` there would name a holder that is not holding it");
+        });
+    });
+});
+
+test("a pause already in force when the hold arrives is claimed, not guessed about", function () {
+    withPark(function () { /* nothing to build */ }, function (game) {
+        withClockGate(function () {
+            // What a person clicking pause in the OpenRCT2 window leaves behind. Nothing in
+            // the plugin API says who set the flag, and the hold claims it either way.
+            game.gameValues.paused = true;
+            holdClockBetweenCalls();
+
+            assert.equal(readParkStatus().clockHeldBy, "bridge",
+                "the hold is holding that pause and opens a window through it like its own, so"
+                + " `bridge` is what this can say - telling a person's pause from the bridge's"
+                + " would be a distinction nothing here can read");
+        });
+    });
+});
+
+test("the description says what `clockHeldBy` cannot tell apart", function () {
+    const definitions = getMcpToolDefinitions(StatusTools).filter(function (definition) {
+        return definition.handlerName === "parkStatus";
+    });
+
+    const text = String(definitions[0].description);
+
+    assert.match(text, /`clockHeldBy` says who is holding the clock/, "the field is described");
+    assert.match(text, /A pause set in the game window reads as `bridge`/,
+        "and the one distinction the gate cannot draw is stated rather than guessed at: nothing"
+        + " in the plugin API says who set the pause flag");
+});
+
+/* ---------------------------------------------------------------------------------------
+ * A field name promised to the model that no tool returns.
+ *
+ * Two refusal messages - `wait`'s and `build_flat_ride`'s - sent the model to `clockHeldBy`
+ * in `park_status` while `park_status` reported `speed` and `paused` and nothing else about
+ * the clock. A model that follows such a message reads the whole payload looking for a name
+ * that is not in it, and the turn is spent. It is the same defect as the queue rule and the
+ * slope rule before it: the bridge stating something to the model that nothing backs.
+ *
+ * Those two were each fixed with an assertion about the one sentence that was wrong. This is
+ * the class instead. Every backticked name in every published description and in every
+ * refusal string in `src` is checked against the names the tools actually carry, which is why
+ * the answer side is read off real replies and real declarations rather than restated here.
+ */
+
+const SOURCE_ROOT = fileURLToPath(new URL("../src", import.meta.url));
+
+/** Every `.ts` file under `src`, where descriptions and refusal strings both live. */
+function sourceFiles(directory: string): string[] {
+    const found: string[] = [];
+
+    readdirSync(directory).forEach(function (entry) {
+        const full = directory + "/" + entry;
+
+        if (statSync(full).isDirectory()) {
+            found.push(...sourceFiles(full));
+        } else if (entry.endsWith(".ts")) {
+            found.push(full);
+        }
+    });
+
+    return found;
+}
+
+/** Comments are where a field name is discussed rather than promised, so they are not text. */
+function withoutComments(source: string): string {
+    return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
+/** Every key in a reply, however deep: the names the model is actually handed. */
+function keysWithin(value: unknown, into: Set<string>): Set<string> {
+    if (Array.isArray(value)) {
+        value.forEach(function (entry) { keysWithin(entry, into); });
+    } else if (value !== null && typeof value === "object") {
+        Object.keys(value as Record<string, unknown>).forEach(function (key) {
+            into.add(key);
+            keysWithin((value as Record<string, unknown>)[key], into);
+        });
+    }
+
+    return into;
+}
+
+/**
+ * Every name a tool can put in front of the model: the keys of the readers' real replies, the
+ * members of every result interface in `src` for the shapes a fixture cannot produce, the
+ * arguments the schemas take, and the two fields the MCP layer attaches to every result, which
+ * live as constants rather than as interface members.
+ */
+function namesTheToolsCarry(): Set<string> {
+    const names = new Set<string>();
+
+    withPark(function () { /* an empty park is enough; the interfaces cover the rest */ },
+        function () {
+            const tools = new StatusTools();
+
+            keysWithin(readParkStatus(), names);
+            keysWithin(readGuestFeedback(100), names);
+            keysWithin(tools.listRideObjects({}), names);
+        });
+
+    sourceFiles(SOURCE_ROOT).forEach(function (file) {
+        const source = withoutComments(readFileSync(file, "utf8"));
+        const interfaces = source.match(/\binterface\s+\w+[^{]*\{[\s\S]*?\n\}/g) || [];
+
+        interfaces.forEach(function (block) {
+            const members = block.matchAll(/(?:^|[{;])\s*(\w+)\??\s*:/gm);
+
+            for (const member of members) {
+                names.add(member[1]);
+            }
+        });
+
+        const attached = source.matchAll(/const\s+\w*FIELD\s*=\s*"(\w+)"/g);
+
+        for (const field of attached) {
+            names.add(field[1]);
+        }
+    });
+
+    getMcpTools().forEach(function (tool) {
+        Object.keys(tool.inputSchema.properties || {}).forEach(function (argument) {
+            names.add(argument);
+        });
+    });
+
+    return names;
+}
+
+/**
+ * The game's own words, read off the plugin API's declarations the way the thought order is.
+ * `partiallyCloudy` and `hotAndDry` are shaped exactly like field names and are values the
+ * weather fields carry, so they are the one thing backticked text can name that is neither a
+ * field nor a mistake.
+ */
+function wordsTheGameDeclares(): Set<string> {
+    const declarations = readFileSync(
+        new URL("../node_modules/@openrct2/types/openrct2.d.ts", import.meta.url), "utf8");
+    const words = new Set<string>();
+
+    ["WeatherType", "ClimateType"].forEach(function (name) {
+        const union = new RegExp("type " + name + "\\s*=([\\s\\S]*?);").exec(declarations);
+
+        assert.ok(union, "the plugin API still declares a " + name + " union");
+
+        ((union as RegExpExecArray)[1].match(/"[A-Za-z0-9_]+"/g) || []).forEach(function (quoted) {
+            words.add(quoted.slice(1, -1));
+        });
+    });
+
+    return words;
+}
+
+/**
+ * A backticked `likeThis` is a field claim. Tool names are `snake_case`, values are quoted
+ * whole (`ok: true`), and the game's own words are excluded by name, so what is left of the
+ * camel-cased ones is text telling the model to go and read a field.
+ */
+const FIELD_CLAIM = /^[a-z][a-z0-9]*(?:[A-Z][A-Za-z0-9]*)+$/;
+
+function fieldClaimsIn(text: string): string[] {
+    const claims: string[] = [];
+    const quoted = text.matchAll(/`([^`]+)`/g);
+
+    for (const match of quoted) {
+        const name = match[1].trim().split(/[\s:,.(]/)[0];
+
+        if (FIELD_CLAIM.test(name)) {
+            claims.push(name);
+        }
+    }
+
+    return claims;
+}
+
+test("no description or refusal sends the model to a field no tool returns", function () {
+    const carried = namesTheToolsCarry();
+    const gameWords = wordsTheGameDeclares();
+    const promised: { where: string; name: string }[] = [];
+
+    assert.ok(carried.has("researchedCount"),
+        "the answer side is read off real replies, so a reply built without an interface counts");
+    assert.ok(carried.has("gameDaysSinceLastCall"), "and the fields the MCP layer attaches");
+
+    getMcpTools().forEach(function (tool) {
+        const properties = (tool.inputSchema.properties || {}) as Record<string, { description?: string }>;
+
+        fieldClaimsIn(String(tool.description || "")).forEach(function (name) {
+            promised.push({ where: tool.name, name: name });
+        });
+
+        Object.keys(properties).forEach(function (argument) {
+            fieldClaimsIn(String(properties[argument].description || "")).forEach(function (name) {
+                promised.push({ where: tool.name + "." + argument, name: name });
+            });
+        });
+    });
+
+    sourceFiles(SOURCE_ROOT).forEach(function (file) {
+        const source = withoutComments(readFileSync(file, "utf8"));
+        const literals = source.matchAll(/"([^"\\]*`[^"\\]*)"/g);
+
+        for (const literal of literals) {
+            fieldClaimsIn(literal[1]).forEach(function (name) {
+                promised.push({ where: file.slice(SOURCE_ROOT.length + 1), name: name });
+            });
+        }
+    });
+
+    assert.ok(promised.length > 50,
+        "the scan found " + String(promised.length) + " field names named in model-facing text");
+
+    const unbacked = promised.filter(function (claim) {
+        return !carried.has(claim.name) && !gameWords.has(claim.name);
+    }).map(function (claim) {
+        return claim.where + " names `" + claim.name + "`";
+    });
+
+    assert.deepEqual(Array.from(new Set(unbacked)), [],
+        "every field a description or a refusal names has to be one the model can find in a reply");
 });

@@ -85,6 +85,9 @@ const FRAME_MS = 25;
  */
 const CLOSE_POLL_LIMIT = 20;
 
+/** Who the stopped clock belongs to. See `clockHeldBy`, which is the whole reading. */
+export type ClockHolder = "nobody" | "you" | "bridge" | "unknown";
+
 /** True while the pause in force is the bridge's own, put there between tool calls. */
 let bridgeHolds = false;
 
@@ -164,6 +167,41 @@ export function playerPausedTheGame(): boolean {
  */
 export function pauseRefusesActions(): boolean {
     return isPausedNow() && !bridgeHolds;
+}
+
+/**
+ * Whose the stopped clock is, as far as this gate can tell.
+ *
+ * - `nobody`: the game is running.
+ * - `you`: the model asked for this pause with `set_game_speed`, and the game refuses map
+ *   changes and `wait` through it.
+ * - `bridge`: the pause in force is one this bridge is holding, so tools act through it.
+ * - `unknown`: the game is paused, and the bridge neither set that pause nor was told about
+ *   it. Actions are refused through it and the bridge is not the one that can lift it.
+ *
+ * This is the reading `park_status` had no field for. `paused` answers a different question -
+ * whether the pause in force refuses actions - and it answers false both when the clock is
+ * running and when the bridge is holding it, which are the two states a person tells apart at
+ * a glance from the pause the game draws in its own toolbar.
+ *
+ * `bridge` is what this bridge is holding and not a claim about who first set it: a pause
+ * someone sets in the OpenRCT2 window is claimed by `holdClockBetweenCalls` the same as one
+ * the bridge set itself, nothing in the plugin API says who set the flag, and the gate opens
+ * a window through either. So the two are one value here rather than a guess between them.
+ *
+ * `you` and `bridge` are never both true: `recordPlayerPause` clears `bridgeHolds` the moment
+ * the model asks for a pause, and `holdClockBetweenCalls` leaves the model's pause alone.
+ */
+export function clockHeldBy(): ClockHolder {
+    if (!isPausedNow()) {
+        return "nobody";
+    }
+
+    if (playerPaused) {
+        return "you";
+    }
+
+    return bridgeHolds ? "bridge" : "unknown";
 }
 
 /**

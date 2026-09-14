@@ -839,6 +839,37 @@ the bridge's own hold, because the plugin API does not say who set the flag. It 
 answer anyway — the gate opens a window through that pause exactly as through its own — and it
 is recorded here rather than papered over.
 
+### The stopped clock nothing reported
+
+Redefining `paused` left a hole. It answers whether the pause in force refuses what the model
+does, so it reads false both while the clock is running and while the bridge is holding it
+between calls — which is every turn of a normal run. The payload therefore read exactly like a
+park whose clock was running, with nothing in it saying the clock was stopped at all, and a
+person watching sees the pause in the game's own toolbar the whole time.
+
+Two refusals were already written against the field that would have closed it: `wait` and
+`build_flat_ride` both sent the model to `clockHeldBy` in `park_status`, and `park_status`
+returned no such thing. A refusal naming a field that does not exist is the failure
+"Corollary: tools must not lie" is about — the model reads the whole payload for a name that is
+not in it, and the turn is spent.
+
+`park_status.clockHeldBy` is that reading: `nobody` when the game is running, `you` for the
+pause the model set with `set_game_speed`, `bridge` for the hold, and `unknown` when the game
+is paused by something the bridge neither set nor was told about. It states what the gate read
+and nothing about what to do with it.
+
+`bridge` is deliberately one value and not two. A pause someone sets in the game window is
+claimed by `holdClockBetweenCalls` and acted through exactly like the bridge's own, and nothing
+in the plugin API says who set the flag, so splitting them would be a guess dressed as a
+reading. The tool description says so in as many words rather than leaving the model to infer
+authorship the bridge cannot establish.
+
+`test/status.test.ts` now checks the class rather than these two sentences: every backticked
+field name in every published description and every refusal string in `src` is matched against
+the names the tools really carry — the keys of real replies, the members of the result
+interfaces, the arguments the schemas take, and the fields the MCP layer attaches. It found one
+name that nothing backed, which was this one.
+
 ### The scenario ends and nothing said so
 
 `scenario.status` has no hook. Until `src/scenarioVerdict.ts` the only way to learn a run was

@@ -229,9 +229,13 @@ function describe(asked: number, milliseconds: number, before: Snapshot, complet
                     + " twenty real seconds this call has: at speed " + String(speed) + " a game day"
                     + " costs about " + (SECONDS_PER_DAY_AT_SPEED[speed] || "13") + " real seconds."
                     + " Call wait again, or raise the speed with set_game_speed first.")
+            // No cause named. Which pause stopped it is exactly what this cannot read - the
+            // hold claims a pause it finds, so a pause set in the game window is the bridge's
+            // by the time anything asks - and the old wording asserted one outside the bridge.
             + (ticks === 0
-                ? " The clock did not move at all, so something outside this bridge is holding"
-                    + " the game: check `clockHeldBy` in park_status."
+                ? " The clock did not move at all, so nothing in the park advanced: the game was not"
+                    + " running while this call let it. `park_status` reports which pause is in force"
+                    + " as `clockHeldBy`."
                 : "")
     };
 }

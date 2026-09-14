@@ -78,6 +78,13 @@ export class StatusTools {
             "it is NOT the clock being stopped between your calls, which is how this bridge always runs and",
             "which every tool acts through. `speed` changes only how much REAL time a `wait` costs and never",
             "how much of the scenario a run spends.",
+            "`clockHeldBy` says who is holding the clock still, which `paused` cannot: `nobody` means the",
+            "game is running, `you` means the pause you set with `set_game_speed` — the one `paused` reports —",
+            "`bridge` means the hold this bridge keeps between your calls, which your calls act through, and",
+            "`unknown` means the game is paused by something this bridge neither set nor was told about, which",
+            "refuses actions the same way and which `set_game_speed {paused: false}` is your lever on.",
+            "A pause set in the game window reads as `bridge`: the hold claims it, acts through it the same",
+            "way, and nothing in the game says who set it, so that is not a distinction this can draw.",
             "`brokenDown` on a ride means it stays shut until a mechanic reaches it.",
             "It is cheaper than piecing the same picture together with evaluate."
         ].join(" "),
