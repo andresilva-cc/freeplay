@@ -35,14 +35,47 @@ after(() => {
 });
 
 interface BridgeStub {
-	/** What park_status answers with, or "throw" to make the call fail. */
+	/** What the bridge answers with, or "throw" to make every call fail. */
 	status: "inProgress" | "completed" | "failed" | "throw";
 	calls: string[];
+	/**
+	 * An older plugin, whose `GET /v1` reports controllers and state guards and no scenario.
+	 * The poller then falls back to park_status over MCP, which is the path this used to take
+	 * every time.
+	 */
+	indexHasNoScenario?: boolean;
+	/** The in-game day `GET /v1` says the scenario ended on, where it says one. */
+	endedOn?: { year: number; month: number; day: number };
 }
 
-/** A fake bridge that speaks just enough MCP Streamable HTTP for the poller. */
+/** A fake bridge that speaks just enough HTTP and MCP Streamable HTTP for the poller. */
 function installBridge(stub: BridgeStub): void {
 	globalThis.fetch = (async (input: any, init: any) => {
+		if (!init?.body) {
+			// GET /v1, the cheap read the poller tries first.
+			assert.match(String(input), /\/v1$/);
+			stub.calls.push("GET /v1");
+
+			if (stub.status === "throw") throw new Error("bridge is not answering");
+
+			const index: Record<string, unknown> = { buildId: "test", controllers: [], stateGuards: {} };
+			if (!stub.indexHasNoScenario) {
+				index.scenario = {
+					name: "Forest Frontiers",
+					objective: { type: "guestsBy" },
+					status: stub.status,
+					endedOn: stub.endedOn ?? null,
+				};
+			}
+
+			return {
+				ok: true,
+				status: 200,
+				headers: { get: () => null },
+				text: async () => JSON.stringify(index),
+			};
+		}
+
 		const body = JSON.parse(String(init.body));
 		stub.calls.push(body.method);
 
@@ -230,18 +263,59 @@ test("a scenario the model reads as failed ends the run the same way", async () 
 
 test("the blind spot is covered: a flip the model never reads is found by the poll", async () => {
 	// The model calls nothing at all this turn, so a result-watching extension would see
-	// nothing. The bridge says the scenario is over.
-	const stub: BridgeStub = { status: "completed", calls: [] };
+	// nothing. The bridge says the scenario is over, and says it on one plain GET: no MCP
+	// session is opened, so there is no per-session gameDaysSinceLastCall to disturb.
+	const stub: BridgeStub = { status: "completed", calls: [], endedOn: { year: 2, month: 3, day: 14 } };
 	const h = await start(stub);
 	await h.fire("turn_end", { turnIndex: 0, message: { role: "assistant" }, toolResults: [] });
 	// turn_end does not await its own poll, on purpose: see the handler.
 	await sleep(20);
 
-	assert.deepEqual(stub.calls, ["initialize", "notifications/initialized", "tools/call"]);
+	assert.deepEqual(stub.calls, ["GET /v1"], "the poll must not open an MCP session of its own");
 	const record = h.record();
 	assert.ok(record, "the poll must be able to end a run on its own");
 	assert.equal(record.condition, "scenario_decided");
+	assert.equal(record.scenario.source, "bridge_index");
+	assert.deepEqual(record.scenario.endedOn, { year: 2, month: 3, day: 14 },
+		"the in-game day the scenario ended is the figure a benchmark cites, and the record has to carry it");
+});
+
+test("a bridge too old to carry the scenario on its index is polled the way it always was", async () => {
+	// The plugin is copied into OpenRCT2's plugin directory by hand, so a bridge older than
+	// the scenario field is a real state. Losing the verdict there would be silent: no end
+	// condition, ever, and every run stopping on the wall-clock budget instead.
+	const stub: BridgeStub = { status: "failed", calls: [], indexHasNoScenario: true };
+	const h = await start(stub);
+	await h.fire("turn_end", { turnIndex: 0, message: { role: "assistant" }, toolResults: [] });
+	await sleep(20);
+
+	assert.deepEqual(stub.calls, ["GET /v1", "initialize", "notifications/initialized", "tools/call"]);
+	const record = h.record();
+	assert.ok(record, "the fallback is the whole point of keeping park_status");
+	assert.equal(record.condition, "scenario_decided");
 	assert.equal(record.scenario.source, "poll");
+	assert.equal(record.scenario.endedOn, null, "an old bridge has no day to give, and none is invented");
+});
+
+test("the verdict on any tool result ends the run, not only on park_status", async () => {
+	// `scenarioEnded` rides on EVERY tool result, so a turn that called view_map and nothing
+	// else shows the flip. Before that field the free path could only see a park_status.
+	const h = await start({ status: "inProgress", calls: [] });
+	await h.fire("tool_result", {
+		toolCallId: "c9",
+		toolName: "view_map",
+		input: {},
+		content: [{ type: "text", text: JSON.stringify({ rows: [], scenarioEnded: { status: "failed", year: 1, month: 5, day: 12 } }) }],
+		isError: false,
+	});
+	await h.fire("turn_end", { turnIndex: 0, message: { role: "assistant" }, toolResults: [] });
+
+	const record = h.record();
+	assert.ok(record, "a run that ended must be recorded whichever tool showed it");
+	assert.equal(record.condition, "scenario_decided");
+	assert.equal(record.scenario.status, "failed");
+	assert.equal(record.scenario.source, "tool_result");
+	assert.deepEqual(record.scenario.endedOn, { year: 1, month: 5, day: 12 });
 });
 
 test("a poll that throws never ends the run", async () => {

@@ -78,9 +78,10 @@ export class BuildTools {
             "and this is what it cost. Empty is the normal answer.",
             "The only build that leaves nothing behind is `ok: false`; anything else means a ride is standing, and",
             "`operate_ride` with `demolish` is how it goes away.",
-            "A paused game refuses the track and door actions, so this builds nothing and refuses while the clock",
-            "is stopped: the ride record `ridecreate` would leave behind has no track and cannot be demolished",
-            "until the game runs again. `set_game_speed` is what starts the clock.",
+            "A pause YOU set with `set_game_speed` refuses the track and door actions, so this builds nothing",
+            "and refuses through one: the ride record `ridecreate` would leave behind has no track and cannot",
+            "be demolished until you unpause. The clock being stopped between your calls is a different thing",
+            "and builds go through it — `park_status` tells the two apart as `clockHeldBy`.",
             "This does not build roller coasters; those need track laid piece by piece with `evaluate`."
         ].join(" "),
         inputSchema: {

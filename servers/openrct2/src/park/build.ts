@@ -7,6 +7,7 @@ import { neighboursOf, tileName, tileState } from "./neighbours.js";
 import { ridesServedByQueue, ridesThatLostTheirQueue } from "./pathremove.js";
 import type { MapGrid } from "./map.js";
 import type { RideWithoutQueue } from "./pathremove.js";
+import { pauseRefusesActions } from "../clockGate.js";
 
 /** Game actions apply on a later tick, so every step waits before verifying. */
 const STEP_DELAY_MS = 150;
@@ -21,10 +22,15 @@ const STEP_DELAY_MS = 150;
  * after a failed track do not. That split is the whole problem: a build started while
  * paused creates the ride, cannot lay a single tile of its track, and cannot take the ride
  * back out again either - and the remedy the failure would otherwise name, `operate_ride`
- * with `demolish`, is the same refused action.
+ * with `demolish`, is the same refused action. *
+ * `context.paused` is NOT the question any more. The bridge holds the game paused between
+ * tool calls, so that flag is true on essentially every turn, and `runActionWithClock` opens
+ * a window round any action that hold would have refused - so the actions below go through.
+ * `pauseRefusesActions` is the narrower fact this file needs: a pause the clock gate will
+ * not open a window through, which is the one the model asked for with `set_game_speed`.
  */
 function gamePaused(): boolean {
-    return context.paused === true;
+    return pauseRefusesActions();
 }
 
 /**
@@ -505,7 +511,9 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
         steps.push({
             step: "paused",
             ok: false,
-            detail: "The game is paused, and OpenRCT2 refuses construction while it is: trackplace and"
+            detail: "The game is paused by something this call cannot build through - the hold the"
+                + " bridge puts on between your calls is not it, builds go through that one - and"
+                + " OpenRCT2 refuses construction while it is: trackplace and"
                 + " rideentranceexitplace both come back \"Construction not possible while game is paused!\"."
                 + " ridecreate is not refused, so going ahead would create the ride, put no track on the"
                 + " ground, and then fail to remove it - leaving a ride in the park with no track that"

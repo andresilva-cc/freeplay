@@ -144,6 +144,29 @@ export function playerPausedTheGame(): boolean {
 }
 
 /**
+ * True when the pause in force is one OpenRCT2 will actually refuse actions through.
+ *
+ * The bridge's own hold is not one of those: `runActionWithClock` opens a window round any
+ * action the hold would have refused, so a tool acts through it exactly as it did before
+ * there was a hold, and `wait` spends game days through it too. Reading `context.paused`
+ * instead - which is what every tool here used to do, and what `park_status` used to report -
+ * now answers true on essentially every turn and calls a build impossible when it is not.
+ *
+ * What is left when the hold is excluded is the pause the model asked for with
+ * `set_game_speed`, which is deliberately not lifted, plus the case where the clock is
+ * stopped and the bridge neither set it nor was told about it.
+ *
+ * A pause a HUMAN sets in the OpenRCT2 window is not distinguishable from the bridge's own
+ * hold and reads as false here. There is nothing in the plugin API that says who set the
+ * flag, and by the time this is asked `holdClockBetweenCalls` has claimed the pause either
+ * way. It is the right answer regardless: the gate opens a window through that pause the
+ * same as through its own, so nothing is being refused.
+ */
+export function pauseRefusesActions(): boolean {
+    return isPausedNow() && !bridgeHolds;
+}
+
+/**
  * Hold the clock still, which is what "between tool calls" means.
  *
  * Called on both sides of a tool call: once when it arrives, so a turn spent thinking has

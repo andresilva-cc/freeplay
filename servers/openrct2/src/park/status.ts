@@ -1,4 +1,5 @@
 import { currentDayNumber, dayNumberFromElapsedMonths } from "../gameClock.js";
+import { pauseRefusesActions } from "../clockGate.js";
 import { flatRideShape, shopServingTile } from "./flatRides.js";
 import { DIRECTION_VECTORS } from "./map.js";
 import { DEFAULT_CENSUS_BLOCK, readGroundCensus, readPathNetwork } from "./network.js";
@@ -167,12 +168,20 @@ export interface ParkStatus {
     /** What the sky is doing, which nothing here reported and a person never stops seeing. */
     weather: WeatherReading;
     /**
-     * The game's own speed setting, 1 to 4, and whether the clock is stopped. Nothing else
-     * reported either, so a paused game looked exactly like a running one that nothing was
-     * happening in: the date, the guest count and every ride read back unchanged turn after
-     * turn with no field saying why.
+     * The game's own speed setting, 1 to 4. Under the clock gate it buys nothing but real
+     * time inside a `wait`: the game days a run spends are whatever `wait` is asked for.
      */
     speed: number;
+    /**
+     * A pause that is refusing what the model does - which since the clock gate is only ever
+     * one the model asked for with `set_game_speed`.
+     *
+     * This was `context.paused` verbatim. The bridge now holds the game paused between tool
+     * calls, so that flag is true on essentially every turn while nothing whatever is being
+     * refused, and a field that says "paused" every single turn is a field that says the game
+     * is stuck. src/clockGate.ts has the whole reading, including why a pause a human sets in
+     * the game window reads as false here.
+     */
     paused: boolean;
     cash: number;
     bankLoan: number;
@@ -468,7 +477,7 @@ export function readParkStatus(): ParkStatus {
             next: { weather: climate.future.weather, temperature: climate.future.temperature }
         },
         speed: typeof context.gameSpeed === "number" ? context.gameSpeed : 0,
-        paused: context.paused === true,
+        paused: pauseRefusesActions(),
         cash: park.cash,
         bankLoan: park.bankLoan,
         maxBankLoan: park.maxBankLoan,

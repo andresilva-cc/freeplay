@@ -1706,16 +1706,22 @@ test("a running game gets no pause clause on either failure", function () {
     }
 });
 
-test("build_flat_ride's description states that a paused game builds nothing", function () {
+test("build_flat_ride's description states which pause builds nothing, and which does not", function () {
     // The refusal above is reachable - no schema can check the clock - but the description
     // is what the model reads before it decides to pause, and the fact belongs there too.
+    //
+    // It has to name WHOSE pause since the clock gate: the bridge holds the game paused
+    // between every pair of tool calls, and a description saying "a paused game builds
+    // nothing" reads, on every single turn, as a tool that cannot be used.
     const definition = getMcpToolDefinitions(BuildTools)
         .filter(function (tool) { return tool.name === "build_flat_ride"; })[0];
 
     assert.ok(definition, "build_flat_ride is not registered");
-    assert.match(String(definition.description), /paused game refuses the track and door actions/,
-        "the description never says a paused game cannot build");
-    assert.match(String(definition.description), /set_game_speed/, "nor names what starts the clock");
+    assert.match(String(definition.description), /pause YOU set with `set_game_speed` refuses the track and door actions/,
+        "the description never says which pause stops a build");
+    assert.match(String(definition.description), /clock being stopped between your calls is a different thing/,
+        "nor that the hold the bridge keeps on the clock is not that pause");
+    assert.match(String(definition.description), /set_game_speed/, "nor names what lifts the one that is");
 });
 
 

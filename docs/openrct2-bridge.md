@@ -264,7 +264,7 @@ The listener binds `127.0.0.1:8080`, loopback only.
 | Path | What it is |
 |---|---|
 | `POST /mcp` | The MCP endpoint. Streamable HTTP. |
-| `GET /v1` | Build id, the state guard summary, and the index of registered REST controllers |
+| `GET /v1` | Build id, the state guard summary, the scenario's name, objective, live status and the in-game day it ended on, and the index of registered REST controllers |
 | `GET /v1/eval?q=` | Upstream's expression evaluator |
 | `GET /openapi.yaml` | Generated OpenAPI document |
 | `GET /swagger` | Swagger UI over the above |
@@ -355,6 +355,42 @@ through it — so the refusals the actor tools describe are still reachable and 
 And `set_game_speed`'s `speed` is now a bill in real time rather than a lever on the
 outcome: it sets what a game day costs inside a `wait`, about 13 real seconds at speed 1
 and 1.7 at speed 4, and so how far one call can reach.
+
+Which is also why nothing reads `context.paused` any more to decide whether an action will
+be refused. That flag is true on essentially every turn now. `pauseRefusesActions()` in
+`src/clockGate.ts` is the narrower question — is this a pause the gate will NOT open a
+window through — and it is what `build_flat_ride`'s up-front refusal, the three path and
+ride tools' failure messages, and `park_status`'s `paused` field all ask. A pause a human
+sets in the game window is indistinguishable from the bridge's own hold and reads as false,
+which is the right answer: the gate opens a window through it just the same.
+
+## Saying that the scenario is over
+
+`scenario.status` goes `inProgress` → `completed` or `failed`, and OpenRCT2 has **no hook**
+for it: `HookType` carries the intervals, the map, the ride and the network hooks and
+nothing about the objective. It used to be read in one place only, `park_status`, so a model
+that stopped asking never found out — one recorded run played on past a failure it never
+saw, where a person gets a news item and a window the instant it happens.
+
+`src/scenarioVerdict.ts` subscribes to `interval.day` and reads the status once an in-game
+day. That the game is now held paused almost all the time costs this nothing: a paused game
+runs no update logic and so decides nothing, and the hook fires inside a `wait` or inside
+the window an acting tool opens, which is exactly when the status can move. It is also
+sampled opportunistically wherever the answer is about to be reported, which covers a build
+that will not take the hook; the first reading wins, so the day recorded is the day it
+happened rather than the day it was next asked about.
+
+It surfaces in two places and no others:
+
+- Every MCP tool result, from that day on, carries `scenarioEnded: {status, year, month,
+  day}` — attached in `createToolResult`, the one choke point both the immediate and the
+  deferred path pass through. Absent entirely while the scenario is in progress, so the
+  field being there is the whole signal. A field rather than a sentence: one run carried 117
+  pre-written sentences of advice and none was acted on.
+- `GET /v1` carries `scenario: {name, objective, status, endedOn}`, so a harness can read
+  the verdict with one plain GET and no MCP session — which is what `pi/extensions/run-end`
+  now polls, in place of a `park_status` call that had to keep its own session to avoid
+  resetting the `gameDaysSinceLastCall` the model is shown.
 
 ## Adding a tool
 

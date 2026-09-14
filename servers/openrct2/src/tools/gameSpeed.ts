@@ -97,7 +97,7 @@ function describe(request: GameSpeedRequest, state: SpeedReview): GameSpeedOutco
         detail: notes.length === 0
             ? (state.paused
                 ? "The game is paused, so no scenario time passes until it is unpaused, and it"
-                    + " refuses the map changes listed on `paused`. Its speed setting is "
+                    + " refuses the map changes listed on this tool's `paused` argument. Its speed setting is "
                     + describeSpeed(state.speed) + ", which is what a game day costs in real"
                     + " seconds inside a wait."
                 : "The game is running at speed " + describeSpeed(state.speed) + ". The bridge"
@@ -114,11 +114,12 @@ function isWholeSpeedInRange(value: number): boolean {
 /**
  * Set how fast the simulation runs, and pause or unpause it.
  *
- * The scenario clock runs while the model decides what to do, so thinking time is charged
- * against the scenario the same way playing time is. Both levers are ordinary game actions
- * with undiscoverable shapes: `gamesetspeed` takes an index that looks like a multiplier
- * and is not, and `pausetoggle` flips rather than sets, so asking for "paused" twice
- * unpauses unless something reads the state first. Nothing here decides when to use either.
+ * Neither lever spends scenario time any more: src/clockGate.ts holds the game still between
+ * tool calls, so thinking is free and `speed` only sets what a game day costs in real seconds
+ * inside a `wait`. Both are ordinary game actions with undiscoverable shapes: `gamesetspeed`
+ * takes an index that looks like a multiplier and is not, and `pausetoggle` flips rather than
+ * sets, so asking for "paused" twice unpauses unless something reads the state first. Nothing
+ * here decides when to use either.
  */
 export function setGameSpeed(request: GameSpeedRequest, done: (outcome: GameSpeedOutcome) => void): void {
     const wantsSpeed = typeof request.speed === "number";

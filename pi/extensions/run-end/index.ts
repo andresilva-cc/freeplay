@@ -18,12 +18,13 @@
  * A fourth, `interrupted`, is written when pi shuts down with none of the above having fired.
  * It is not a result. It exists so the file says out loud that a human stopped this one.
  *
- * WHY POLL. Watching tool results for scenario.status is free but has a blind spot that would
- * defeat the whole condition: a model that stops calling park_status never shows the flip.
- * The one recorded run that did reach a verdict only proved it by being told to call
- * park_status. So the bridge is polled as well — see scenario.ts for why the poll uses the
- * MCP tool rather than the eval route, and why it keeps its own MCP session. A poll that
- * fails is "unknown", never "decided": a bridge that is down cannot end a run.
+ * WHY POLL. Watching tool results is free, and much less blind than it was: the bridge puts
+ * `scenarioEnded` on EVERY tool result from the day the game decides, not only on park_status,
+ * so any tool the model calls shows the flip. What is left is a model that stops calling tools
+ * at all, which shows nothing — so the bridge is polled as well. The poll is a plain
+ * `GET /v1`; see scenario.ts for why that replaced a park_status call on its own MCP session,
+ * and for the park_status fallback that survives it. A poll that fails is "unknown", never
+ * "decided": a bridge that is down cannot end a run.
  *
  * WHY WALL CLOCK AND NOT TURNS. A turn here has run from under a second to over three
  * minutes, so a turn cap would be a different amount of time for every model and for every
@@ -69,7 +70,11 @@ const DEFAULT_BUDGET_MINUTES = 45;
 /** The bridge's fixed port, set in servers/openrct2/src/index.ts. */
 const DEFAULT_BRIDGE_URL = "http://127.0.0.1:8080";
 
-/** park_status walks the whole park, so polling is throttled rather than run every turn. */
+/**
+ * Throttled rather than run every turn. `GET /v1` is cheap enough that this is now about the
+ * bridge's game thread rather than about the request, and the park_status fallback behind it
+ * still walks the whole park.
+ */
 const POLL_INTERVAL_MS = 30_000;
 
 /** A poll is loopback to a local process; anything slower than this has gone wrong. */
@@ -212,6 +217,10 @@ export default function (pi: ExtensionAPI) {
 				objective: scenario?.objective ?? null,
 				source: scenario?.source ?? "unknown",
 				observedAt: scenario?.observedAt ?? null,
+				// The in-game day the game decided, which is the figure a benchmark cites:
+				// the wall clock says how long a machine took, this says how much scenario
+				// was played. Null where the bridge never recorded one.
+				endedOn: scenario?.endedOn ?? null,
 			},
 			elapsedMs: elapsed(),
 			elapsedMinutes: Math.round((elapsed() / 60_000) * 100) / 100,

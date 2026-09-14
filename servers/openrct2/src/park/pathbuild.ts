@@ -5,6 +5,7 @@ import { countPathTiles, tileIsWalkable, walkableFromParkEntrance } from "./path
 import type { Tile } from "./paths.js";
 import { ridesServedByQueue, ridesThatLostTheirQueue } from "./pathremove.js";
 import type { RideWithoutQueue } from "./pathremove.js";
+import { pauseRefusesActions } from "../clockGate.js";
 
 const STEP_DELAY_MS = 200;
 export const DEFAULT_QUEUE_OBJECT = 11;
@@ -25,10 +26,15 @@ const MAX_NAMED_TILES = 12;
  * paused run lays nothing. The run is still made rather than refused up front: a refused
  * placement creates nothing and charges nothing, so there is no orphan to protect against
  * the way `src/park/build.ts` has to, and letting it run quotes the reason the game gave
- * instead of restating a rule this file would have to transcribe.
+ * instead of restating a rule this file would have to transcribe. *
+ * `context.paused` is NOT the question any more. The bridge holds the game paused between
+ * tool calls, so that flag is true on essentially every turn, and `runActionWithClock` opens
+ * a window round any action that hold would have refused - so the actions below go through.
+ * `pauseRefusesActions` is the narrower fact this file needs: a pause the clock gate will
+ * not open a window through, which is the one the model asked for with `set_game_speed`.
  */
 function gamePaused(): boolean {
-    return context.paused === true;
+    return pauseRefusesActions();
 }
 
 /**

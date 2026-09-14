@@ -322,6 +322,20 @@ export class FakeGame {
         status: "inProgress"
     };
     /**
+     * Hook subscribers by hook name, exactly as `context.subscribe` registers them. Only
+     * `interval.day` is ever fired - from `advanceTicks`, once per in-game day the clock
+     * actually crosses - because it is the only hook this bridge takes.
+     */
+    public readonly subscribers: Record<string, (() => void)[]> = {};
+    /**
+     * A verdict the game reaches on its own, on the day number given. OpenRCT2 decides the
+     * objective as game time passes and there is no hook for it, so a fixture that flips
+     * `scenario.status` by hand has proved nothing about when the bridge would have seen it.
+     * This flips it as the day turns, before that day's subscribers run, which is the order
+     * the real game reaches them in.
+     */
+    private scenarioDecision: { day: number; status: string } | undefined;
+    /**
      * The in-game date, as `date` reports it. Month is the index within the year, 0 being
      * March. Every field is derived from the tick count by `advanceTicks`, so nothing can
      * move the day without the clock having actually run.
@@ -677,6 +691,56 @@ export class FakeGame {
             return;
         }
 
+        // Run to each day boundary in turn rather than in one jump. The end state is the
+        // same arithmetic either way - the progress counter is integers - but a jump would
+        // put the clock on the last day before any of the days it crossed had a chance to
+        // happen, and the whole point of the day hook is which day a thing happened on.
+        let left = ticks;
+
+        while (left > 0) {
+            const before = this.dayNumber();
+            const step = Math.min(left, this.ticksToNextDay());
+
+            this.applyTicks(step);
+            left -= step;
+
+            if (this.dayNumber() > before) {
+                this.turnDay();
+            }
+        }
+    }
+
+    /** Whole days since the scenario began, on the fake's own clock. */
+    public dayNumber(): number {
+        let days = Math.floor(this.date.monthsElapsed / FakeGame.MONTHS_PER_YEAR)
+            * FakeGame.DAYS_IN_MONTH.reduce(function (total, d) { return total + d; }, 0);
+
+        for (let month = 0; month < this.date.monthsElapsed % FakeGame.MONTHS_PER_YEAR; month++) {
+            days += FakeGame.DAYS_IN_MONTH[month];
+        }
+
+        return days + this.date.day - 1;
+    }
+
+    /**
+     * Have the game decide the scenario on this day number, the way an objective check does:
+     * as the day turns, and before that day's `interval.day` subscribers run.
+     */
+    public decideScenarioOn(day: number, status: string): void {
+        this.scenarioDecision = { day: day, status: status };
+    }
+
+    /** Ticks until the day of the month turns over, which a month ending also counts as. */
+    private ticksToNextDay(): number {
+        const perDay = FakeGame.MONTH_PROGRESS_PER_MONTH / FakeGame.DAYS_IN_MONTH[this.date.month];
+        const target = this.date.day * perDay;
+
+        return Math.max(1, Math.ceil(
+            (target - this.date.monthProgress) / FakeGame.MONTH_PROGRESS_PER_TICK
+        ));
+    }
+
+    private applyTicks(ticks: number): void {
         this.date.ticksElapsed += ticks;
         this.date.monthProgress += ticks * FakeGame.MONTH_PROGRESS_PER_TICK;
 
@@ -692,6 +756,22 @@ export class FakeGame {
             this.date.monthProgress * FakeGame.DAYS_IN_MONTH[this.date.month]
                 / FakeGame.MONTH_PROGRESS_PER_MONTH
         ) + 1;
+    }
+
+    /** A new day: the objective is checked, and then the day's subscribers run. */
+    private turnDay(): void {
+        const decision = this.scenarioDecision;
+
+        if (decision && this.dayNumber() >= decision.day) {
+            this.scenario.status = decision.status;
+            this.scenarioDecision = undefined;
+        }
+
+        const listeners = this.subscribers["interval.day"] || [];
+
+        for (let i = 0; i < listeners.length; i++) {
+            listeners[i]();
+        }
     }
 
     /**
@@ -1353,6 +1433,25 @@ function installGlobals(game: FakeGame): () => void {
             }
         },
         getAllObjects: function () { return game.rideObjects; },
+        /**
+         * The plugin API's own hook registry. The fake fires `interval.day` from its clock
+         * and nothing else, so a subscriber to any other hook is registered and never run -
+         * which is the honest answer rather than a hook the fake would have to pretend about.
+         */
+        subscribe: function (hook: string, callback: () => void) {
+            const listeners = game.subscribers[hook] || [];
+
+            listeners.push(callback);
+            game.subscribers[hook] = listeners;
+
+            return {
+                dispose: function () {
+                    game.subscribers[hook] = (game.subscribers[hook] || []).filter(function (fn) {
+                        return fn !== callback;
+                    });
+                }
+            };
+        },
         getTrackSegment: function (type: number) {
             const offsets = TRACK_PIECE_OFFSETS[type];
 
@@ -1433,6 +1532,23 @@ function installGlobals(game: FakeGame): () => void {
         }
     };
 
+    /**
+     * Accessors, not the plain object behind them, because OpenRCT2 registers `scenario`'s
+     * members with `dukglue_register_property` and a plugin therefore reads getters.
+     *
+     * It matters here and nowhere else: `installStateGuards` freezes `scenario.status`
+     * against assignment, and its freeze keeps a live read only where one already existed -
+     * a DATA property is captured and served back forever. Handing the guards a plain object
+     * would have pinned the fake at "inProgress" for the life of the test while the real game
+     * went on reporting the truth, so every scenario-end test would have failed against a
+     * bridge that works. The game writes its own C++ side; `game.scenario` is that side.
+     */
+    const fakeScenario = {
+        get name() { return game.scenario.name; },
+        get objective() { return game.scenario.objective; },
+        get status() { return game.scenario.status; }
+    };
+
     const previous = {
         map: scope.map, context: scope.context, park: scope.park,
         scenario: scope.scenario, date: scope.date, climate: scope.climate
@@ -1440,7 +1556,7 @@ function installGlobals(game: FakeGame): () => void {
     scope.map = fakeMap;
     scope.context = fakeContext;
     scope.park = fakePark;
-    scope.scenario = game.scenario;
+    scope.scenario = fakeScenario;
     scope.date = game.date;
     scope.climate = game.climate;
 

@@ -2,31 +2,47 @@
  * Where the scenario stands: read off a tool result when the model happens to look, polled
  * off the bridge when it does not.
  *
- * OpenRCT2 reports `scenario.status` as `inProgress`, `completed` or `failed`, and
- * `park_status` carries it. Watching results alone has one blind spot that matters: a model
- * that never calls `park_status` again after the objective resolves never shows the flip, and
- * a result-watching extension would sit there forever. So this also polls.
+ * OpenRCT2 reports `scenario.status` as `inProgress`, `completed` or `failed`, and there is
+ * no hook for it changing — so the bridge samples it once an in-game day and reports the
+ * verdict two ways. `GET /v1` carries `scenario` with the live status and the in-game day it
+ * ended on; every MCP tool result carries `scenarioEnded` from the day it happens. Watching
+ * results alone still has the blind spot that matters — a model that stops calling tools
+ * altogether shows nothing — so this polls as well.
  *
- * The poll goes through `POST /mcp` — the same public tool the model calls — rather than
- * `GET /v1/eval?q=scenario.status`, which would be one cheap property read. Two reasons. The
- * eval route runs model-authored JavaScript through the same guards the run's honesty rests
- * on, and the harness is the last thing that should be typing into it. And `GET /v1` reports
- * controllers and state guards only; it carries no scenario at all.
+ * The poll is now `GET /v1`, one plain HTTP read with no MCP session behind it. It replaced a
+ * `POST /mcp` park_status call that walked the whole park for one string. That call had to
+ * keep its OWN MCP session, because `gameDaysSinceLastCall` is measured per session
+ * (`McpSession.lastResultAt` in servers/openrct2/src/mcp.ts) and polling on the model's
+ * session would have reset the figure the model is shown. `GET /v1` has no session to keep,
+ * so that whole concern is gone rather than managed.
  *
- * The poller keeps its OWN MCP session. That is load-bearing rather than tidy:
- * `gameDaysSinceLastCall` is measured per MCP session (`McpSession.lastResultAt` in
- * servers/openrct2/src/mcp.ts), so polling on the model's session would silently reset the
- * clock the model is shown. On its own session the model's figures are untouched.
+ * park_status stays as a fallback, reached only when `GET /v1` answers without a scenario.
+ * The plugin is copied into OpenRCT2's own plugin directory by hand (`npm run copy`), so a
+ * bridge older than this field is a real state and not a hypothetical, and the failure it
+ * would otherwise cause is silent: no verdict, ever, and every run ending on the budget.
+ *
+ * What is NOT used is `GET /v1/eval?q=scenario.status`. It runs JavaScript through the same
+ * guards the run's honesty rests on, and the harness is the last thing that should be typing
+ * into it.
  */
 
 export type ScenarioStatus = "inProgress" | "completed" | "failed";
+
+/** An in-game date, in the three numbers the bridge reports dates in. */
+export interface GameDay {
+	year: number;
+	month: number;
+	day: number;
+}
 
 export interface ScenarioReading {
 	status: ScenarioStatus;
 	name?: string;
 	objective?: unknown;
-	/** Where this reading came from: the model's own tool result, or our poll. */
-	source: "tool_result" | "poll";
+	/** The in-game day the scenario ended, where the bridge recorded one. */
+	endedOn?: GameDay;
+	/** Where this reading came from: the model's own tool result, our index read, or our poll. */
+	source: "tool_result" | "bridge_index" | "poll";
 	observedAt: string;
 }
 
@@ -36,6 +52,15 @@ export function isDecided(status: ScenarioStatus | undefined): boolean {
 
 function asStatus(value: unknown): ScenarioStatus | undefined {
 	return value === "inProgress" || value === "completed" || value === "failed" ? value : undefined;
+}
+
+function asGameDay(value: unknown): GameDay | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const day = value as Record<string, unknown>;
+	if (typeof day.year !== "number" || typeof day.month !== "number" || typeof day.day !== "number") {
+		return undefined;
+	}
+	return { year: day.year, month: day.month, day: day.day };
 }
 
 /**
@@ -67,22 +92,44 @@ export function readScenarioFromToolResult(content: readonly unknown[] | undefin
 	return undefined;
 }
 
+/**
+ * Two shapes are read here, because the bridge says this in two places.
+ *
+ * `scenario: {name, objective, status, endedOn}` is what `GET /v1` carries and what
+ * `park_status` has always carried (without `endedOn`). `scenarioEnded: {status, year,
+ * month, day}` is the field every MCP tool result carries once the scenario is over — so a
+ * turn that called `view_map` and nothing else now shows the verdict too, which is exactly
+ * the blind spot that let one recorded run play on past a failure.
+ */
 export function readScenarioFromValue(value: unknown, source: ScenarioReading["source"]): ScenarioReading | undefined {
 	if (!value || typeof value !== "object") return undefined;
-	const scenario = (value as Record<string, unknown>).scenario;
-	if (!scenario || typeof scenario !== "object") return undefined;
+	const root = value as Record<string, unknown>;
+	const observedAt = new Date().toISOString();
 
-	const record = scenario as Record<string, unknown>;
-	const status = asStatus(record.status);
-	if (!status) return undefined;
+	const ended = root.scenarioEnded as Record<string, unknown> | undefined;
+	const endedStatus = ended ? asStatus(ended.status) : undefined;
+	const endedOn = ended ? asGameDay(ended) : undefined;
 
-	return {
-		status,
-		name: typeof record.name === "string" ? record.name : undefined,
-		objective: record.objective,
-		source,
-		observedAt: new Date().toISOString(),
-	};
+	const scenario = root.scenario;
+	if (scenario && typeof scenario === "object") {
+		const record = scenario as Record<string, unknown>;
+		const status = asStatus(record.status);
+		if (status) {
+			return {
+				status,
+				name: typeof record.name === "string" ? record.name : undefined,
+				objective: record.objective,
+				endedOn: asGameDay(record.endedOn) ?? endedOn,
+				source,
+				observedAt,
+			};
+		}
+	}
+
+	// No scenario block, but the result says the run is over. That is still a reading.
+	if (endedStatus) return { status: endedStatus, endedOn, source, observedAt };
+
+	return undefined;
 }
 
 export type FetchLike = (input: string, init?: Record<string, unknown>) => Promise<{
@@ -103,9 +150,10 @@ export interface PollerOptions {
 const PROTOCOL_VERSION = "2025-11-25";
 
 /**
- * One poll is three requests on a cold session (initialize, notifications/initialized,
- * tools/call) and one on a warm one. The session is reused for the life of the run and
- * re-established once if the game restarts and forgets it.
+ * One poll is one `GET /v1`. On a bridge too old to carry the scenario there it is three
+ * requests on a cold MCP session (initialize, notifications/initialized, tools/call) and one
+ * on a warm one; the session is reused for the life of the run and re-established once if the
+ * game restarts and forgets it.
  */
 export function createScenarioPoller(options: PollerOptions) {
 	const baseUrl = options.baseUrl.replace(/\/+$/, "");
@@ -113,6 +161,8 @@ export function createScenarioPoller(options: PollerOptions) {
 	const timeoutMs = options.timeoutMs ?? 15000;
 	let sessionId: string | undefined;
 	let nextId = 1;
+	/** False once `GET /v1` has answered without a scenario: an older bridge, so stop asking. */
+	let indexCarriesScenario = true;
 
 	async function post(body: Record<string, unknown>, withSession: boolean) {
 		const headers: Record<string, string> = {
@@ -156,6 +206,29 @@ export function createScenarioPoller(options: PollerOptions) {
 		await post({ jsonrpc: "2.0", method: "notifications/initialized" }, true);
 	}
 
+	/**
+	 * The cheap read. A throw is the bridge being unreachable and is the caller's "unknown";
+	 * `undefined` is a bridge that answered without a scenario, which is an older plugin and
+	 * is what the park_status fallback below is for.
+	 */
+	async function readIndex(): Promise<ScenarioReading | undefined> {
+		const response = await doFetch(`${baseUrl}/v1`, {
+			method: "GET",
+			headers: { Accept: "application/json" },
+			signal: AbortSignal.timeout(timeoutMs),
+		});
+		if (!response.ok) return undefined;
+
+		let body: unknown;
+		try {
+			body = JSON.parse(await response.text());
+		} catch {
+			return undefined;
+		}
+
+		return readScenarioFromValue(body, "bridge_index");
+	}
+
 	async function callParkStatus() {
 		return post(
 			{ jsonrpc: "2.0", id: nextId++, method: "tools/call", params: { name: "park_status", arguments: {} } },
@@ -168,6 +241,12 @@ export function createScenarioPoller(options: PollerOptions) {
 	 * condition: a bridge that is down is not a scenario that is decided.
 	 */
 	return async function poll(): Promise<ScenarioReading | undefined> {
+		if (indexCarriesScenario) {
+			const fromIndex = await readIndex();
+			if (fromIndex) return fromIndex;
+			indexCarriesScenario = false;
+		}
+
 		if (!sessionId) await openSession();
 
 		let response = await callParkStatus();

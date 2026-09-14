@@ -231,7 +231,7 @@ function describe(asked: number, milliseconds: number, before: Snapshot, complet
                     + " Call wait again, or raise the speed with set_game_speed first.")
             + (ticks === 0
                 ? " The clock did not move at all, so something outside this bridge is holding"
-                    + " the game: check `paused` in park_status."
+                    + " the game: check `clockHeldBy` in park_status."
                 : "")
     };
 }

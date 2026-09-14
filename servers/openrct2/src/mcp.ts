@@ -4,6 +4,7 @@ import { isAllowedOrigin } from "./http/origin.js";
 import { BUILD_ID } from "./buildInfo.js";
 import { gameDaysBetween, readGameDayPosition } from "./gameClock.js";
 import { holdClockBetweenCalls } from "./clockGate.js";
+import { readScenarioVerdict, sampleScenarioStatus } from "./scenarioVerdict.js";
 import { sanitizeToolResult } from "./scripting.js";
 import { getMcpTools, invokeMcpTool, isDeferredMcpResult } from "./tools/index.js";
 import type { DeferredMcpResult, McpToolDefinition, McpToolSchema } from "./tools/index.js";
@@ -38,6 +39,22 @@ const DEFERRED_TIMEOUT_MS = 30000;
  * the model's to spend.
  */
 const ELAPSED_FIELD = "gameDaysSinceLastCall";
+
+/**
+ * The scenario is over, what the game decided, and the in-game day it decided it - carried on
+ * every tool result from then on, and absent entirely while the scenario is still being
+ * played, so its presence is the whole signal.
+ *
+ * OpenRCT2 has no hook for `scenario.status` changing, so until src/scenarioVerdict.ts the
+ * only way to learn the run had ended was to call `park_status` and look. One recorded run
+ * never looked and went on playing past a failure. A person gets a news item and a window.
+ *
+ * It is a field and not a sentence for the reason the rest of this bridge is: one run
+ * carried 117 pre-written sentences of advice and none of them was acted on, while the short
+ * numeric and enum fields beside them were read. `{status, year, month, day}` is four values
+ * a model can compare against the date it already has.
+ */
+const VERDICT_FIELD = "scenarioEnded";
 
 type DeferredFailureHandler = (error: unknown) => void;
 
@@ -410,12 +427,26 @@ function markToolResult(session: McpSession): void {
     session.lastResultAt = readGameDayPosition();
 }
 
+/**
+ * The one choke point both the immediate and the deferred path pass through, which is why
+ * `gameDaysSinceLastCall` and the scenario verdict are both attached here and nowhere else.
+ */
 function createToolResult(rawResult: unknown, sinceLastCall?: number): Record<string, unknown> {
     const result = sanitizeToolResult(rawResult);
+
+    // The day hook has normally recorded this already; this is what covers a build that
+    // would not take the hook, and it costs one property read.
+    sampleScenarioStatus();
+
+    const verdict = readScenarioVerdict();
 
     if (isRecord(result)) {
         if (typeof sinceLastCall === "number") {
             result[ELAPSED_FIELD] = sinceLastCall;
+        }
+
+        if (typeof verdict !== "undefined") {
+            result[VERDICT_FIELD] = verdict as unknown as Record<string, unknown>;
         }
 
         return {
@@ -692,7 +723,10 @@ export class McpServer {
                 "Every tool result carries `gameDaysSinceLastCall`: the game days that elapsed between the",
                 "previous result and this call arriving. The game is held still between calls, so it",
                 "reads 0 unless a tool that acts let the clock run while it worked.",
-                "The first call of a session has no previous result and carries no figure."
+                "The first call of a session has no previous result and carries no figure.",
+                "A result carrying `scenarioEnded` is the game saying the scenario is over:",
+                "`status` is `completed` or `failed` and `year`, `month` and `day` are the in-game day it",
+                "ended. Nothing carries that field while the scenario is still being played."
             ].join(" ")
         });
     }

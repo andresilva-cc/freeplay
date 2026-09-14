@@ -73,8 +73,11 @@ export class StatusTools {
             "`ground` counts owned land per map-aligned block of `block` tiles a side: `clear` is flat and",
             "empty, `scenery` flat with something standing on it, `sloped` not flat, then `water`, `path`",
             "and `built`. The six add up to `owned`, and ground the park does not own is not counted.",
-            "`speed` and `paused` are the two values `set_game_speed` sets. While `paused` is true nothing",
-            "here changes however long you wait: the date, the guest count and every ride read back the same.",
+            "`speed` and `paused` are the two values `set_game_speed` sets. `paused` true means a pause you",
+            "asked for is in force and is refusing map changes and refusing `wait` until you unpause it;",
+            "it is NOT the clock being stopped between your calls, which is how this bridge always runs and",
+            "which every tool acts through. `speed` changes only how much REAL time a `wait` costs and never",
+            "how much of the scenario a run spends.",
             "`brokenDown` on a ride means it stays shut until a mechanic reaches it.",
             "It is cheaper than piecing the same picture together with evaluate."
         ].join(" "),

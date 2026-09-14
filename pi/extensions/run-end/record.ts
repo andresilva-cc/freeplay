@@ -15,7 +15,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ScenarioReading } from "./scenario.ts";
+import type { GameDay, ScenarioReading } from "./scenario.ts";
 
 /** Why the run stopped. */
 export type EndCondition =
@@ -48,6 +48,8 @@ export interface RunEndRecord {
 		objective: unknown;
 		source: ScenarioReading["source"] | "unknown";
 		observedAt: string | null;
+		/** The in-game day the game decided, as the bridge recorded it. Null where it did not. */
+		endedOn: GameDay | null;
 	};
 	elapsedMs: number;
 	elapsedMinutes: number;

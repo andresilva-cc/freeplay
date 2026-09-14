@@ -9,6 +9,7 @@ import { McpServer } from "./mcp.js";
 import { embeddedStaticFiles } from "./embeddedStaticAssets.js";
 import { BUILD_ID } from "./buildInfo.js";
 import { installStateGuards, stateGuardSummary } from "./scripting.js";
+import { readScenarioIndexEntry, watchScenarioStatus } from "./scenarioVerdict.js";
 
 function getControllerMethods(controller: ControllerDefinition): string[] {
     const seen: Record<string, boolean> = {};
@@ -46,7 +47,13 @@ function createVersionIndex(controllers: ControllerDefinition[]): Record<string,
         }),
         // Read fresh on every request rather than captured at startup: a scenario load
         // re-guards new `park` and `scenario` objects, so the answer can change.
-        stateGuards: stateGuardSummary()
+        stateGuards: stateGuardSummary(),
+        // Whether the run is over, without running a tool. `status` is the live
+        // `scenario.status` and `endedOn` the in-game day the bridge first read it as
+        // decided - null while it is still `inProgress`. A harness asking this spends no MCP
+        // session, so it cannot disturb the per-session `gameDaysSinceLastCall` the model is
+        // shown.
+        scenario: readScenarioIndexEntry()
     };
 }
 
@@ -119,6 +126,9 @@ export function createApplication(): Application {
     // the guard report is answerable from the first `GET /v1`. Re-entrant: `runScript`
     // calls it again on every evaluate to re-guard what a scenario load replaced.
     installStateGuards();
+    // The only way the bridge learns the scenario ended: OpenRCT2 has no hook for
+    // `scenario.status`, so src/scenarioVerdict.ts reads it once an in-game day.
+    watchScenarioStatus();
 
     const router = new HttpRouter();
     const controllers = registerControllers(router, getControllers());

@@ -264,7 +264,7 @@ test("createApplication provides the automatic /v1 index and date controller res
 
         // Pinned as a whole: /v1 is what a pre-run check reads, so a field appearing or
         // disappearing is a change to that contract and should have to be said out loud.
-        assert.deepEqual(Object.keys(index).sort(), ["buildId", "controllers", "stateGuards"]);
+        assert.deepEqual(Object.keys(index).sort(), ["buildId", "controllers", "scenario", "stateGuards"]);
         assert.equal(index.buildId, BUILD_ID);
         assert.deepEqual(index.controllers, [
             {
@@ -289,6 +289,9 @@ test("createApplication provides the automatic /v1 index and date controller res
             }
         ]);
         assert.deepEqual(Object.keys(index.stateGuards as object).sort(), ["frozen", "ok", "open", "unfrozen"]);
+        // No `scenario` global in this fixture at all, which is the reading a harness gets
+        // between scenarios: named as unknown rather than guessed at as still running.
+        assert.deepEqual(index.scenario, { name: null, objective: null, status: null, endedOn: null });
         assert.deepEqual(parseJsonBody(dateResponse), {
             ticksElapsed: 123,
             monthsElapsed: 4,
