@@ -1,5 +1,6 @@
 import type { HttpRequest, RequestContext } from "./http/types.js";
 import { HttpResponse } from "./http/response.js";
+import { isAllowedOrigin } from "./http/origin.js";
 import { BUILD_ID } from "./buildInfo.js";
 import { gameDaysBetween, readGameDayPosition } from "./gameClock.js";
 import { sanitizeToolResult } from "./scripting.js";
@@ -182,34 +183,6 @@ function hasAcceptedContentType(acceptHeader: string | undefined, expectedType: 
     return acceptHeader.split(",").some(function (part) {
         return part.trim().toLowerCase().split(";")[0] === expectedType;
     });
-}
-
-/** The only hosts that are this machine. An origin is one of these, with an optional port. */
-const LOOPBACK_ORIGIN_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
-
-/**
- * This runs on a loopback port inside the player's game, so the Origin header is the only
- * thing between a web page they happen to have open and their park.
- *
- * It has to match the whole host, not a prefix: `http://localhost.evil.test` is a name an
- * attacker registers and points wherever they like, and it starts with `http://localhost`.
- * An opaque origin - the literal string `null`, which is what a sandboxed iframe sends -
- * is likewise refused rather than waved through: no legitimate client produces one, and a
- * page that wants to bypass the check can always ask for one. A real MCP client over plain
- * HTTP sends no Origin header at all, and that is the case this lets through.
- */
-function isAllowedOrigin(origin: string | undefined): boolean {
-    if (typeof origin === "undefined") {
-        return true;
-    }
-
-    const parsed = /^http:\/\/([^/?#]+)\/?$/.exec(origin.toLowerCase());
-
-    if (parsed === null) {
-        return false;
-    }
-
-    return LOOPBACK_ORIGIN_HOSTS.indexOf(parsed[1].replace(/:[0-9]+$/, "")) >= 0;
 }
 
 function createTextContent(text: string): { type: "text"; text: string } {

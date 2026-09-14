@@ -92,6 +92,11 @@ fi
 GUARDS=$(printf '%s' "$BRIDGE_INFO" | python3 -c '
 import json, sys
 
+
+def names(value):
+    return ",".join(str(name) for name in value) if isinstance(value, list) else ""
+
+
 try:
     info = json.load(sys.stdin)
 except ValueError:
@@ -99,25 +104,56 @@ except ValueError:
 
 guards = info.get("stateGuards") if isinstance(info, dict) else None
 
+# Three states, because two could not tell the truth. `unfrozen` has only ever meant "the
+# slot refused"; it never meant "nobody looked", so a whole surface nobody had listed - the
+# guest prototype, the tile elements - left both lists empty and this printed "ok". `open`
+# is the third: what the plugin knows it is leaving writable and says so by name.
 if not isinstance(guards, dict):
-    print("absent")
-elif not guards.get("frozen"):
-    print("none")
-elif guards.get("unfrozen"):
-    print("open " + ", ".join(str(name) for name in guards["unfrozen"]))
+    print("absent|||")
 else:
-    print("ok " + str(guards["frozen"]))
-') || GUARDS="absent"
+    frozen = guards.get("frozen") or 0
+    refused = names(guards.get("unfrozen"))
+    declared = names(guards.get("open"))
 
-case "$GUARDS" in
-  "ok "*)
-    GUARD_LINE="${GUARDS#ok } levers frozen"
+    if not frozen:
+        status = "none"
+    elif refused:
+        status = "refused"
+    elif declared:
+        status = "declared"
+    else:
+        status = "ok"
+
+    print("|".join([status, str(frozen), refused, declared]))
+') || GUARDS="absent|||"
+
+GUARD_STATUS="${GUARDS%%|*}"
+GUARD_REST="${GUARDS#*|}"
+GUARD_FROZEN="${GUARD_REST%%|*}"
+GUARD_REST="${GUARD_REST#*|}"
+GUARD_REFUSED="${GUARD_REST%%|*}"
+GUARD_DECLARED="${GUARD_REST#*|}"
+
+case "$GUARD_STATUS" in
+  ok)
+    GUARD_LINE="${GUARD_FROZEN} levers frozen"
     ;;
-  "open "*)
-    GUARD_LINE="open: ${GUARDS#open }"
-    echo "warning: the running plugin could not freeze these levers: ${GUARDS#open }" >&2
+  declared)
+    GUARD_LINE="${GUARD_FROZEN} frozen, open on purpose: ${GUARD_DECLARED}"
+    echo "note: the running plugin leaves these levers writable on purpose: ${GUARD_DECLARED}" >&2
+    echo "      they are free settings the game's own windows offer and freezing them would" >&2
+    echo "      stop the model playing; nothing else is open that anybody has looked at." >&2
+    ;;
+  refused)
+    GUARD_LINE="${GUARD_FROZEN} frozen, could not freeze: ${GUARD_REFUSED}"
+    echo "warning: the running plugin could not freeze these levers: ${GUARD_REFUSED}" >&2
     echo "         an evaluated script can still write them, so the run is only honest if" >&2
     echo "         the model does not. Watch what evaluate reports as unaccounted." >&2
+
+    if [ -n "$GUARD_DECLARED" ]; then
+      GUARD_LINE="${GUARD_LINE}, open on purpose: ${GUARD_DECLARED}"
+      echo "         these are writable on purpose as well: ${GUARD_DECLARED}" >&2
+    fi
     ;;
   none)
     GUARD_LINE="none installed"

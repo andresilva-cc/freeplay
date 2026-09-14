@@ -136,8 +136,10 @@ not a reachable one unless a run in `paths.runs` covers it.
   scenario has put up for sale. No tool lists which tiles those are, and a placement on
   ground the park does not own comes back with those tiles named in `blockers`.
   A rectangle that is part for sale buys the part that is rather than failing, and `buy_land`'s `notOwned` names the tiles it did not get, so the
-  purchase is itself the reading; a surface element's `ownership` through `evaluate` is
-  that reading taken beforehand. Buying a sloped tile makes it the park's, not flat —
+  purchase is itself the reading; reading a surface element's `ownership` through `evaluate`
+  is that reading taken beforehand. Reading it only: assigning `ownership` is refused, along
+  with every other write to a tile, a guest or a ride's own figures — land is bought with
+  `buy_land` and nothing else. Buying a sloped tile makes it the park's, not flat —
   there is no levelling tool, and a ride or a path needs level ground.
 - Money is in tenths: 1000 means 100.00. Admission is `entranceFee`, charged at the gate
   and set by `open_park`; ride tickets are per ride and set by `operate_ride`.

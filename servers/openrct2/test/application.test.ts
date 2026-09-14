@@ -288,7 +288,7 @@ test("createApplication provides the automatic /v1 index and date controller res
                 methods: ["GET"]
             }
         ]);
-        assert.deepEqual(Object.keys(index.stateGuards as object).sort(), ["frozen", "ok", "unfrozen"]);
+        assert.deepEqual(Object.keys(index.stateGuards as object).sort(), ["frozen", "ok", "open", "unfrozen"]);
         assert.deepEqual(parseJsonBody(dateResponse), {
             ticksElapsed: 123,
             monthsElapsed: 4,

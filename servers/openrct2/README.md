@@ -212,7 +212,7 @@ The listener binds `127.0.0.1:8080`, loopback only.
 |---|---|
 | `POST /mcp` | The MCP endpoint (Streamable HTTP) |
 | `GET /v1` | Build id, the state guard summary, and the index of inherited REST controllers |
-| `GET /v1/eval?q=` | Upstream's expression evaluator |
+| `GET /v1/eval?q=` | Upstream's expression evaluator, under the same state guards and the same Origin check as `POST /mcp` |
 | `GET /openapi.yaml` | Generated OpenAPI document |
 | `GET /swagger` | Swagger UI |
 | `GET /dashboard` | Status page |

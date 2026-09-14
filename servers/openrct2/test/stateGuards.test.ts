@@ -24,38 +24,229 @@ import { UiTools } from "../src/tools/ui.ts";
 interface RideInstance {
     id: number;
     data: Record<string, number>;
+    /** What a method on this ride actually did, so a refusal that leaked shows up here. */
+    calls: string[];
+    breakdown: string;
 }
 
 const RIDE_FIGURES = [
     "excitement", "intensity", "nausea", "value", "runningCost",
-    "totalProfit", "totalCustomers", "buildDate", "lifecycleFlags", "price"
+    "totalProfit", "totalCustomers", "buildDate", "lifecycleFlags", "price",
+    // Three the old lever table never named, to show the default-deny sweep reaches past it.
+    "mode", "liftHillSpeed", "name"
 ];
 
 /**
  * One prototype for every ride in the file, as the game has one for every ride in the
  * park. The guard lands here, so a ride built after it was installed is covered too.
  */
-const ridePrototype: Record<string, unknown> = {};
+function buildRidePrototype(): Record<string, unknown> {
+    const prototype: Record<string, unknown> = {};
 
-RIDE_FIGURES.forEach(function (key) {
-    Object.defineProperty(ridePrototype, key, {
-        get: function (this: RideInstance) { return this.data[key]; },
-        set: function (this: RideInstance, value: number) { this.data[key] = value; },
-        configurable: true,
-        enumerable: false
+    RIDE_FIGURES.forEach(function (key) {
+        Object.defineProperty(prototype, key, {
+            get: function (this: RideInstance) { return this.data[key]; },
+            set: function (this: RideInstance, value: number) { this.data[key] = value; },
+            configurable: true,
+            enumerable: false
+        });
     });
-});
 
-function makeRide(id: number): RideInstance {
-    const ride = Object.create(ridePrototype) as RideInstance;
+    /**
+     * The two methods a ride carries. `fixBreakdown()` repairs a ride with no mechanic
+     * walking to it, which is the whole of what hire_staff exists for, and `setBreakdown()`
+     * writes the figure the game works out from reliability and inspections. Both really do
+     * the thing here, so a guard that did not bite would show up in `calls` and `breakdown`.
+     */
+    prototype.fixBreakdown = function (this: RideInstance) {
+        this.calls.push("fixBreakdown");
+        this.breakdown = "none";
+    };
+
+    prototype.setBreakdown = function (this: RideInstance, breakdown: string) {
+        this.calls.push("setBreakdown:" + breakdown);
+        this.breakdown = breakdown;
+    };
+
+    return prototype;
+}
+
+/** One prototype for every ride in this file, as the game has one for the whole process. */
+const ridePrototype = buildRidePrototype();
+
+function makeRideOn(prototype: object, id: number): RideInstance {
+    const ride = Object.create(prototype) as RideInstance;
 
     ride.id = id;
+    ride.calls = [];
+    ride.breakdown = "safetyCutOut";
     ride.data = {
         excitement: 5.1, intensity: 4.2, nausea: 3.3, value: 40, runningCost: 30,
-        totalProfit: 0, totalCustomers: 0, buildDate: 0, lifecycleFlags: 0, price: 10
+        totalProfit: 0, totalCustomers: 0, buildDate: 0, lifecycleFlags: 0, price: 10,
+        mode: 1, liftHillSpeed: 5, name: 0
     };
 
     return ride;
+}
+
+function makeRide(id: number): RideInstance {
+    return makeRideOn(ridePrototype, id);
+}
+
+/* ------------------------------------------------------------------ *
+ * Guests, staff, tiles and the elements on them
+ *
+ * Shaped the way the plugin API shapes them, which is the only shape worth testing here:
+ * `Guest extends Peep extends Entity` is three prototypes in a chain, every entity of a
+ * kind shares one, and OpenRCT2 declares every tile element type's members on a single
+ * element class - so one guard on one prototype has to cover every guest in the park and
+ * every element on every tile, including ones that arrive later.
+ *
+ * Every figure below is an accessor whose setter really writes into the instance's own
+ * store, and `assertWritable` proves it against an unguarded twin built by the same
+ * factory. A double made of bare getters would swallow `g.happiness = 255` in non-strict
+ * code and every refusal in this file would pass with the guards deleted.
+ * ------------------------------------------------------------------ */
+
+interface Backed {
+    /**
+     * Named `store` and not `data`, because `Tile.data` is a real member of the plugin API
+     * and an instance field of the same name would shadow the accessor under test.
+     */
+    store: Record<string, unknown>;
+    calls: string[];
+}
+
+const ENTITY_FIGURES = ["x", "y", "z"];
+const PEEP_FIGURES = ["name", "energy", "energyTarget", "destination", "direction"];
+const GUEST_FIGURES = [
+    "happiness", "happinessTarget", "nausea", "nauseaTarget", "hunger", "thirst", "toilet",
+    "cash", "mass", "minIntensity", "maxIntensity", "nauseaTolerance", "lostCountdown",
+    "favouriteRide", "tshirtColour"
+];
+const STAFF_FIGURES = ["staffType", "colour", "orders", "costume"];
+const ELEMENT_FIGURES = [
+    // The one the reviewer bought a tile with, then the rest of the prototype: free
+    // terraforming, a free bench, a bin a handyman is paid to empty, free footpath
+    // construction, and the track the ride ratings are calculated from.
+    "ownership", "type", "baseZ", "slope", "surfaceStyle", "waterHeight", "grassLength",
+    "isQueue", "edges", "addition", "additionStatus", "trackType", "isHidden"
+];
+
+function defineBackedFigures(prototype: object, keys: string[]): void {
+    keys.forEach(function (key) {
+        Object.defineProperty(prototype, key, {
+            get: function (this: Backed) { return this.store[key]; },
+            set: function (this: Backed, value: unknown) { this.store[key] = value; },
+            configurable: true,
+            enumerable: false
+        });
+    });
+}
+
+interface Prototypes {
+    entity: Record<string, unknown>;
+    peep: Record<string, unknown>;
+    guest: Record<string, unknown>;
+    staff: Record<string, unknown>;
+    element: Record<string, unknown>;
+    tile: Record<string, unknown>;
+}
+
+/**
+ * One set of prototypes. Called once for the world every test shares - the game has one
+ * prototype per kind for the life of the process, and so does this - and again, untouched
+ * by any guard, whenever a test needs to prove that a write really lands when nothing is
+ * stopping it.
+ */
+function buildPrototypes(): Prototypes {
+    const entity: Record<string, unknown> = {};
+    defineBackedFigures(entity, ENTITY_FIGURES);
+    entity.remove = function (this: Backed) {
+        this.calls.push("remove");
+        this.store.removed = true;
+    };
+
+    const peep = Object.create(entity) as Record<string, unknown>;
+    defineBackedFigures(peep, PEEP_FIGURES);
+    peep.getFlag = function (this: Backed, flag: string) { return this.store["flag:" + flag] === true; };
+    peep.setFlag = function (this: Backed, flag: string, value: boolean) {
+        this.calls.push("setFlag:" + flag + "=" + String(value));
+        this.store["flag:" + flag] = value;
+    };
+
+    const guest = Object.create(peep) as Record<string, unknown>;
+    defineBackedFigures(guest, GUEST_FIGURES);
+    guest.hasItem = function (this: Backed, item: string) { return this.store["item:" + item] === true; };
+    guest.giveItem = function (this: Backed, item: string) {
+        this.calls.push("giveItem:" + item);
+        this.store["item:" + item] = true;
+    };
+    guest.removeItem = function (this: Backed, item: string) {
+        this.calls.push("removeItem:" + item);
+        this.store["item:" + item] = false;
+    };
+    guest.removeAllItems = function (this: Backed) { this.calls.push("removeAllItems"); };
+
+    const staff = Object.create(peep) as Record<string, unknown>;
+    defineBackedFigures(staff, STAFF_FIGURES);
+
+    const element: Record<string, unknown> = {};
+    defineBackedFigures(element, ELEMENT_FIGURES);
+
+    const tile: Record<string, unknown> = {};
+    Object.defineProperty(tile, "elements", {
+        get: function (this: Backed) { return this.store.elements; },
+        configurable: true,
+        enumerable: false
+    });
+    Object.defineProperty(tile, "data", {
+        get: function (this: Backed) { return this.store.bytes; },
+        set: function (this: Backed, value: unknown) { this.store.bytes = value; },
+        configurable: true,
+        enumerable: false
+    });
+    tile.getElement = function (this: Backed, index: number) {
+        return (this.store.elements as unknown[])[index];
+    };
+    tile.insertElement = function (this: Backed, index: number) {
+        this.calls.push("insertElement:" + String(index));
+        const added = makeInstance(element, { type: "small_scenery" });
+        (this.store.elements as unknown[]).push(added);
+        return added;
+    };
+    tile.removeElement = function (this: Backed, index: number) {
+        this.calls.push("removeElement:" + String(index));
+        (this.store.elements as unknown[]).splice(index, 1);
+    };
+
+    return { entity: entity, peep: peep, guest: guest, staff: staff, element: element, tile: tile };
+}
+
+function makeInstance(prototype: object, store: Record<string, unknown>): Backed {
+    const instance = Object.create(prototype) as Backed;
+
+    instance.store = store;
+    instance.calls = [];
+
+    return instance;
+}
+
+/** The prototypes the world installs, shared for the life of this file as the game's are. */
+const worldPrototypes = buildPrototypes();
+
+/**
+ * A write that really lands, against a twin no guard has ever seen. Every refusal in the
+ * entity and element tests below is only worth something if this passes first: a double
+ * that cannot be written to refuses on its own and proves nothing about the guard.
+ */
+function assertWritable(prototype: object, key: string, value: unknown): void {
+    const twin = makeInstance(prototype, {});
+
+    (twin as unknown as Record<string, unknown>)[key] = value;
+
+    assert.equal(twin.store[key], value,
+        key + " does not write on the unguarded double, so a refusal on it would prove nothing");
 }
 
 const PARK_FIGURES = [
@@ -63,7 +254,7 @@ const PARK_FIGURES = [
     "guests", "totalAdmissions", "totalIncomeFromAdmissions", "entranceFee"
 ];
 
-const SCENARIO_FIGURES = ["status", "completedCompanyValue", "companyValueRecord", "parkRatingWarningDays"];
+const SCENARIO_FIGURES = ["status", "completedCompanyValue", "companyValueRecord", "parkRatingWarningDays", "filename"];
 
 const OBJECTIVE_FIGURES = ["type", "guests", "year", "parkValue"];
 
@@ -75,6 +266,13 @@ interface World {
     objective: Record<string, unknown>;
     cheats: Record<string, unknown>;
     rides: RideInstance[];
+    /** The one guest, the one handyman and the one piece of litter, with their own stores. */
+    guest: Backed;
+    staffMember: Backed;
+    litter: Backed;
+    /** The store behind the tile's only element, and the tile's raw bytes. */
+    element: Record<string, unknown>;
+    tileBytes: Uint8Array;
     executed: string[];
     queried: string[];
     calls: string[];
@@ -106,6 +304,12 @@ interface WorldOptions {
      * Stands in for a route neither the guard nor its author thought of.
      */
     stubborn?: string[];
+    /**
+     * A park with nothing in it yet - no rides, no guests, no staff - which is what a
+     * pre-run check looks at. The surfaces those levers live on cannot be found here, so
+     * anything the report only says once it has found one would read clean.
+     */
+    bare?: boolean;
 }
 
 function defineFigures(prototype: object, keys: string[], store: Record<string, unknown>, stubborn: string[]): void {
@@ -122,6 +326,7 @@ function defineFigures(prototype: object, keys: string[], store: Record<string, 
 function installWorld(options?: WorldOptions): World {
     const scope = globalThis as unknown as Record<string, unknown>;
     const stubborn = (options && options.stubborn) || [];
+    const bare = options !== undefined && options.bare === true;
 
     const parkStore: Record<string, number> = {
         cash: 100000, rating: 700, bankLoan: 70000, maxBankLoan: 100000,
@@ -129,7 +334,8 @@ function installWorld(options?: WorldOptions): World {
         totalIncomeFromAdmissions: 8000, entranceFee: 15
     };
     const scenarioStore: Record<string, unknown> = {
-        status: "inProgress", completedCompanyValue: 0, companyValueRecord: 180000, parkRatingWarningDays: 0
+        status: "inProgress", completedCompanyValue: 0, companyValueRecord: 180000, parkRatingWarningDays: 0,
+        filename: "Forest Frontiers.sc6"
     };
     const objectiveStore: Record<string, unknown> = { type: "guestsBy", guests: 250, year: 4, parkValue: 0 };
     const cheatStore: Record<string, unknown> = {
@@ -175,10 +381,64 @@ function installWorld(options?: WorldOptions): World {
     const scheduled: string[] = [];
     const subscribed: string[] = [];
 
+    const guests: Backed[] = [makeInstance(worldPrototypes.guest, {
+        x: 320, y: 640, z: 96, name: "Guest 1", energy: 90, energyTarget: 90,
+        happiness: 128, happinessTarget: 128, nausea: 10, nauseaTarget: 10,
+        hunger: 140, thirst: 140, toilet: 20, cash: 350, mass: 60,
+        minIntensity: 0, maxIntensity: 6, nauseaTolerance: 1, lostCountdown: 200,
+        favouriteRide: null, tshirtColour: 4, direction: 0, destination: { x: 0, y: 0 }
+    })];
+
+    const staff: Backed[] = [makeInstance(worldPrototypes.staff, {
+        x: 320, y: 320, z: 96, name: "Handyman 1", energy: 100, energyTarget: 100,
+        staffType: "handyman", colour: 2, orders: 0, costume: 0, direction: 0,
+        destination: { x: 0, y: 0 }
+    })];
+
+    const litter: Backed[] = [makeInstance(worldPrototypes.entity, { x: 96, y: 96, z: 96 })];
+
+    /**
+     * One tile, handed back as a fresh wrapper on every call the way the game hands one
+     * back, so a guard put on an instance rather than the prototype would cover nothing.
+     */
+    const elementStores: Record<string, unknown>[] = [{
+        type: "surface", ownership: 0, baseZ: 96, slope: 0, surfaceStyle: 0, waterHeight: 0,
+        grassLength: 3, isQueue: false, edges: 0, addition: null, additionStatus: null,
+        trackType: null, isHidden: false
+    }];
+    const tileBytes = new Uint8Array([1, 2, 3, 4]);
+
     const fakeMap = {
-        get rides() { return rides; },
+        get rides() { return bare ? [] : rides; },
         getRide: function (id: number) {
             return rides.filter(function (ride) { return ride.id === id; })[0];
+        },
+        getTile: function (_x: number, _y: number) {
+            return makeInstance(worldPrototypes.tile, {
+                elements: elementStores.map(function (store) {
+                    return makeInstance(worldPrototypes.element, store);
+                }),
+                bytes: tileBytes
+            });
+        },
+        getAllEntities: function (type: string) {
+            if (bare) {
+                return [];
+            }
+
+            if (type === "guest") {
+                return guests;
+            }
+
+            if (type === "staff") {
+                return staff;
+            }
+
+            if (type === "litter") {
+                return litter;
+            }
+
+            return [];
         },
         createEntity: function (type: string, _initializer: object) {
             created.push(type);
@@ -327,6 +587,11 @@ function installWorld(options?: WorldOptions): World {
         objective: objectiveStore,
         cheats: cheatStore,
         rides: rides,
+        guest: guests[0],
+        staffMember: staff[0],
+        litter: litter[0],
+        element: elementStores[0],
+        tileBytes: tileBytes,
         executed: executed,
         queried: queried,
         calls: calls,
@@ -1367,7 +1632,7 @@ test("a callback a script hands to an action runs under the same guards the scri
 interface V1Index {
     buildId: string;
     controllers: { name: string; path: string; methods: string[] }[];
-    stateGuards: { ok: boolean; frozen: number; unfrozen: string[] };
+    stateGuards: { ok: boolean; frozen: number; unfrozen: string[]; open: string[] };
 }
 
 function getV1(app: ReturnType<typeof createApplication>): V1Index {
@@ -1402,9 +1667,18 @@ test("GET /v1 carries the build id and a machine-readable guard state", function
         assert.equal(index.buildId, BUILD_ID, "the build id must survive the new field");
         assert.ok(index.controllers.length > 0, "and so must the controller list");
 
-        assert.equal(index.stateGuards.ok, true, "every lever froze in this world");
         assert.ok(index.stateGuards.frozen > 0, "and the count says the guards really ran");
-        assert.deepEqual(index.stateGuards.unfrozen, [], "with nothing left open");
+        assert.deepEqual(index.stateGuards.unfrozen, [], "nothing in this world refused to freeze");
+
+        // Not `ok: true`. This world has rides in it, and `ride.price` is a write the build
+        // leaves open on purpose, so the honest answer is false with the reason named. The
+        // field used to read true here while a script could set every guest's happiness,
+        // buy land by assigning `ownership` and turn off nine of thirteen scenario rules,
+        // because none of those were on either list.
+        assert.deepEqual(index.stateGuards.open,
+            ["ride.price", "staff.orders", "staff.costume", "staff.patrolArea"],
+            "every write left open on purpose is named: " + JSON.stringify(index.stateGuards.open));
+        assert.equal(index.stateGuards.ok, false, "and naming it is not the same as being clean");
     } finally {
         world.restore();
     }
@@ -1438,6 +1712,432 @@ test("an empty report is not a clean one", function () {
     // serve. `ok` has to be false there or the preflight passes on no evidence at all.
     const summary = stateGuardSummary();
 
-    assert.equal(summary.ok, summary.frozen > 0 && summary.unfrozen.length === 0,
+    assert.equal(summary.ok,
+        summary.frozen > 0 && summary.unfrozen.length === 0 && summary.open.length === 0,
         "ok must mean installed and complete, never merely 'nothing complained'");
+});
+
+/* ------------------------------------------------------------------ *
+ * Part 5 - the surfaces nobody had looked at
+ *
+ * Each of these was demonstrated live against a build whose `/v1` endpoint answered
+ * `{"ok":true,"frozen":56,"unfrozen":[]}`. They are asked through a real MCP session, the
+ * way the model asks them, and every one of them first proves that the double it is asking
+ * against can be written to when nothing is stopping it.
+ * ------------------------------------------------------------------ */
+
+test("the doubles these guards are tested against really are writable", function () {
+    // A twin of every prototype the world installs, built by the same factory and never
+    // handed to the guards. If any of these writes failed to land, every refusal in this
+    // part would pass with `freezeValue` deleted - which is exactly how a guest prototype
+    // that was never guarded at all sat behind 56 frozen levers and a clean bill.
+    const twin = buildPrototypes();
+
+    assertWritable(twin.guest, "happiness", 255);
+    assertWritable(twin.guest, "happinessTarget", 255);
+    assertWritable(twin.guest, "nausea", 0);
+    assertWritable(twin.guest, "cash", 1000000);
+    assertWritable(twin.guest, "maxIntensity", 15);
+    assertWritable(twin.guest, "energy", 128);
+    assertWritable(twin.guest, "x", 4096);
+    assertWritable(twin.staff, "staffType", "mechanic");
+    assertWritable(twin.staff, "orders", 15);
+    assertWritable(twin.element, "ownership", 160);
+    assertWritable(twin.element, "baseZ", 200);
+    assertWritable(twin.element, "isQueue", true);
+    assertWritable(twin.element, "trackType", 42);
+
+    const peep = makeInstance(twin.guest, {});
+
+    (peep as unknown as { setFlag(flag: string, value: boolean): void }).setFlag("leavingPark", false);
+    assert.equal(peep.store["flag:leavingPark"], false, "setFlag must really set a flag on the double");
+
+    (peep as unknown as { giveItem(item: string): void }).giveItem("map");
+    assert.equal(peep.store["item:map"], true, "giveItem must really give an item on the double");
+
+    const entity = makeInstance(twin.entity, {});
+
+    (entity as unknown as { remove(): void }).remove();
+    assert.equal(entity.store.removed, true, "remove must really remove on the double");
+
+    const tile = makeInstance(twin.tile, { elements: [], bytes: new Uint8Array([1, 2]) });
+
+    (tile as unknown as { insertElement(index: number): void }).insertElement(0);
+    assert.equal((tile.store.elements as unknown[]).length, 1, "insertElement must really add on the double");
+
+    const ride = makeRideOn(buildRidePrototype(), 99);
+
+    (ride as unknown as { fixBreakdown(): void }).fixBreakdown();
+    assert.equal(ride.breakdown, "none", "fixBreakdown must really repair on the double");
+});
+
+test("guest state is frozen, and the figure the park rating is worked out from does not move", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        // The exact script that returned {"ok":true,"result":255}.
+        const refusal = expectMcpRefusal(evaluate,
+            "map.getAllEntities('guest').forEach(function (g) { g.happiness = 255; });");
+
+        assert.match(refusal, /guest\.happiness cannot be assigned/);
+        assert.match(refusal, /park rating is worked out from it/,
+            "the refusal must name what really moves it: " + refusal);
+        assert.equal(world.guest.store.happiness, 128, "and the guest must be exactly as unhappy as before");
+
+        ["happinessTarget", "nausea", "nauseaTarget", "hunger", "thirst", "toilet", "energy",
+            "energyTarget", "cash", "mass", "minIntensity", "maxIntensity", "nauseaTolerance",
+            "lostCountdown", "favouriteRide", "tshirtColour", "x", "y", "z", "direction", "name"
+        ].forEach(function (key) {
+            const before = world.guest.store[key];
+
+            expectMcpRefusal(evaluate,
+                "map.getAllEntities('guest')[0]." + key + " = 7;");
+            assert.equal(world.guest.store[key], before, key + " moved behind its refusal");
+        });
+    } finally {
+        world.restore();
+    }
+});
+
+test("a guest can still be read, because playing the park needs reading it", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+        const outcome = evaluate("map.getAllEntities('guest').map(function (g) {"
+            + " return { happiness: g.happiness, cash: g.cash, hunger: g.hunger, energy: g.energy }; })");
+
+        assert.equal(outcome.ok, true, "reading guest state must keep working: " + JSON.stringify(outcome));
+        assert.deepEqual(outcome.result, [{ happiness: 128, cash: 350, hunger: 140, energy: 90 }]);
+    } finally {
+        world.restore();
+    }
+});
+
+test("a peep's flags and its pockets are the game's, not a script's", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        assert.match(expectMcpRefusal(evaluate,
+            "map.getAllEntities('guest')[0].setFlag('leavingPark', false)"),
+        /guest\.setFlag\(\) cannot be called/);
+        assert.match(expectMcpRefusal(evaluate, "map.getAllEntities('guest')[0].giveItem('map')"),
+            /guest\.giveItem\(\) cannot be called/);
+        expectMcpRefusal(evaluate, "map.getAllEntities('guest')[0].removeItem('map')");
+        expectMcpRefusal(evaluate, "map.getAllEntities('guest')[0].removeAllItems()");
+
+        assert.deepEqual(world.guest.calls, [], "nothing may have reached the guest");
+    } finally {
+        world.restore();
+    }
+});
+
+test("litter is cleared by the handymen the park pays, not by removing the entity", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+        const refusal = expectMcpRefusal(evaluate,
+            "map.getAllEntities('litter').forEach(function (l) { l.remove(); });");
+
+        assert.match(refusal, /cannot be called/);
+        assert.match(refusal, /handymen/, "the refusal must name what really clears it: " + refusal);
+        assert.deepEqual(world.litter.calls, [], "and nothing may have been removed");
+        assert.equal(world.litter.store.removed, undefined);
+    } finally {
+        world.restore();
+    }
+});
+
+test("staff cannot be turned into a different kind of staff, but can still be told what to do", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+        const refusal = expectMcpRefusal(evaluate,
+            "map.getAllEntities('staff')[0].staffType = 'mechanic'");
+
+        assert.match(refusal, /staff\.staffType cannot be assigned/);
+        assert.match(refusal, /staffhire/, "the refusal must name the action that hires: " + refusal);
+        assert.equal(world.staffMember.store.staffType, "handyman");
+
+        // The two this build leaves open on purpose, and says so in the summary rather than
+        // in a comment: hire_staff hires with no orders at all and tells the model to set
+        // them here, so freezing them would leave handymen standing about doing nothing.
+        const orders = evaluate("map.getAllEntities('staff')[0].orders = 15");
+
+        assert.equal(orders.ok, true, "setting a handyman's orders must keep working: " + JSON.stringify(orders));
+        assert.equal(world.staffMember.store.orders, 15, "and must really land");
+
+        assert.deepEqual(stateGuardSummary().open.indexOf("staff.orders") >= 0, true,
+            "a lever left open has to be named: " + JSON.stringify(stateGuardSummary().open));
+    } finally {
+        world.restore();
+    }
+});
+
+test("land cannot be bought by assigning ownership, and every other element setter goes with it", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        // The exact script that returned {"ok":true,"result":160} - park ownership plus
+        // construction rights on a tile, for no cash and past the landbuyrights action.
+        const refusal = expectMcpRefusal(evaluate, "map.getTile(5, 5).elements[0].ownership = 160");
+
+        assert.match(refusal, /map\.element\.ownership cannot be assigned/);
+        assert.match(refusal, /landbuyrights action at park\.landPrice/,
+            "the refusal must name what really buys land: " + refusal);
+        assert.equal(world.element.ownership, 0, "and the tile must still not be the park's");
+
+        // Everything else the element prototype declares, because a list of one is how this
+        // was open in the first place.
+        ["type", "baseZ", "slope", "surfaceStyle", "waterHeight", "grassLength", "isQueue",
+            "edges", "addition", "additionStatus", "trackType", "isHidden"
+        ].forEach(function (key) {
+            const before = world.element[key];
+
+            expectMcpRefusal(evaluate, "map.getTile(5, 5).elements[0]." + key + " = 9;");
+            assert.equal(world.element[key], before, key + " moved behind its refusal");
+        });
+    } finally {
+        world.restore();
+    }
+});
+
+test("the map can still be read, because every build tool reads it", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+        const outcome = evaluate("(function () { var e = map.getTile(5, 5).elements[0];"
+            + " return { type: e.type, ownership: e.ownership, baseZ: e.baseZ, edges: e.edges }; })()");
+
+        assert.equal(outcome.ok, true, "reading the map must keep working: " + JSON.stringify(outcome));
+        assert.deepEqual(outcome.result, { type: "surface", ownership: 0, baseZ: 96, edges: 0 });
+    } finally {
+        world.restore();
+    }
+});
+
+test("a tile's elements cannot be added, removed, or rewritten through its raw bytes", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        assert.match(expectMcpRefusal(evaluate, "map.getTile(5, 5).insertElement(0)"),
+            /map\.tile\.insertElement\(\) cannot be called/);
+        assert.match(expectMcpRefusal(evaluate, "map.getTile(5, 5).removeElement(0)"),
+            /map\.tile\.removeElement\(\) cannot be called/);
+        expectMcpRefusal(evaluate, "map.getTile(5, 5).data = new Uint8Array([9, 9, 9, 9])");
+
+        // The one a frozen slot does not close: the game hands back a view of the tile's
+        // bytes, and writing into what was read would go past every guard in the file. The
+        // getter hands back a copy, so it lands on the copy.
+        const outcome = evaluate("(function () { var d = map.getTile(5, 5).data; d[0] = 9; return d[0]; })()");
+
+        assert.equal(outcome.ok, true, "reading the bytes must keep working: " + JSON.stringify(outcome));
+        assert.equal(outcome.result, 9, "and the copy must be writable, or this proves nothing");
+        assert.equal(world.tileBytes[0], 1, "but the tile's own bytes must not have moved");
+    } finally {
+        world.restore();
+    }
+});
+
+test("a ride cannot be repaired or broken without a mechanic", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+        const refusal = expectMcpRefusal(evaluate, "map.rides[0].fixBreakdown()");
+
+        assert.match(refusal, /ride\.fixBreakdown\(\) cannot be called/);
+        assert.match(refusal, /mechanic/, "the refusal must name who really repairs it: " + refusal);
+
+        expectMcpRefusal(evaluate, "map.rides[0].setBreakdown('none')");
+
+        assert.deepEqual(world.rides[0].calls, [], "neither may have reached the ride");
+        assert.equal(world.rides[0].breakdown, "safetyCutOut", "and the ride is still broken");
+    } finally {
+        world.restore();
+    }
+});
+
+test("a ride setting nobody thought to list is frozen too, and price is still the model's", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        // None of these were in the lever table; all three write past the ride action that
+        // would have validated them against the ride that was actually built.
+        ["mode", "liftHillSpeed", "name"].forEach(function (key) {
+            const before = world.rides[0].data[key];
+            const refusal = expectMcpRefusal(evaluate, "map.rides[0]." + key + " = 3");
+
+            assert.match(refusal, /ride\./);
+            assert.equal(world.rides[0].data[key], before, key + " moved behind its refusal");
+        });
+
+        const priced = evaluate("map.rides[0].price = 25");
+
+        assert.equal(priced.ok, true, "charging what you like is playing: " + JSON.stringify(priced));
+        assert.equal(world.rides[0].data.price, 25);
+    } finally {
+        world.restore();
+    }
+});
+
+test("every scenario rule is refused by setFlag, and opening the park still works", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        // Nine of these were reachable: the deny list named four of the thirteen flags the
+        // API declares, and two of the nine were demonstrated live.
+        ["freeParkEntry", "forbidMarketingCampaigns", "forbidHighConstruction", "forbidLandscapeChanges",
+            "forbidTreeRemoval", "preferLessIntenseRides", "preferMoreIntenseRides",
+            "scenarioCompleteNameInput", "noMoney", "unlockAllPrices", "difficultGuestGeneration",
+            "difficultParkRating"
+        ].forEach(function (flag) {
+            const refusal = expectMcpRefusal(evaluate, "park.setFlag('" + flag + "', false)");
+
+            assert.match(refusal, new RegExp("park\\.setFlag\\(\"" + flag + "\""),
+                "the refusal must name the flag: " + refusal);
+        });
+
+        // And one the plugin API has not grown yet, because an allow list is only honest if
+        // it refuses what nobody has heard of rather than waving it through.
+        assert.match(expectMcpRefusal(evaluate, "park.setFlag('somethingNewInTheApi', true)"),
+            /Only the park's open flag is a player's to set/);
+
+        assert.deepEqual(world.calls, [], "nothing may have reached the game");
+
+        const opened = evaluate("park.setFlag('open', true)");
+
+        assert.equal(opened.ok, true, "opening the park is play: " + JSON.stringify(opened));
+        assert.deepEqual(world.calls, ["setFlag:open=true"]);
+    } finally {
+        world.restore();
+    }
+});
+
+test("admission is refused a script and still set by the tool that owns it", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+        const refusal = expectMcpRefusal(evaluate, "park.entranceFee = 500");
+
+        assert.match(refusal, /park\.entranceFee cannot be assigned from an evaluated script/);
+        assert.match(refusal, /parksetentrancefee/, "the refusal must name the action: " + refusal);
+        assert.equal(world.park.entranceFee, 15, "and the gate must still charge what it charged");
+
+        // open_park falls back to this setter when the action does not take, and runs
+        // outside any script, so the same slot has to keep working there.
+        const scope = globalThis as unknown as { park: Record<string, unknown> };
+
+        scope.park.entranceFee = 30;
+        assert.equal(world.park.entranceFee, 30, "the plugin's own fallback must still land");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the scenario file the game files a score against cannot be swapped", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+        const refusal = expectMcpRefusal(evaluate, "scenario.filename = 'Mega Park.sc6'");
+
+        assert.match(refusal, /scenario\.filename cannot be assigned/);
+        assert.equal(world.scenario.filename, "Forest Frontiers.sc6");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the endpoint that evaluates script over a GET asks the same origin question POST /mcp does", function () {
+    const world = installWorld();
+
+    try {
+        const app = createApplication();
+        const path = "GET /v1/eval?q=" + encodeURIComponent("park.cash");
+
+        // A simple cross-origin GET: any page the player has open can make one, and there is
+        // no preflight to refuse it. This ran arbitrary script inside their game.
+        const foreign = app.handleRawRequest(path + " HTTP/1.1\r\nOrigin: http://evil.test\r\n\r\n");
+
+        assert.equal(foreign.statusCode, 403, "a foreign origin must be refused: " + foreign.getBody());
+        assert.match(foreign.getBody(), /Forbidden origin/);
+
+        // The prefix trick the MCP check was written to refuse, asked of this route too.
+        const lookalike = app.handleRawRequest(
+            path + " HTTP/1.1\r\nOrigin: http://localhost.evil.test\r\n\r\n");
+
+        assert.equal(lookalike.statusCode, 403, "a host that merely starts with localhost is not localhost");
+
+        // The dashboard's own fetch, and a real MCP client over plain HTTP, both still work.
+        const dashboard = app.handleRawRequest(path + " HTTP/1.1\r\nOrigin: http://localhost:8080\r\n\r\n");
+
+        assert.equal(dashboard.statusCode, 200, "the dashboard must still be able to ask: " + dashboard.getBody());
+        assert.equal((JSON.parse(dashboard.getBody()) as { result: number }).result, world.park.cash);
+
+        const noOrigin = app.handleRawRequest(path + " HTTP/1.1\r\n\r\n");
+
+        assert.equal(noOrigin.statusCode, 200, "and a client that sends no Origin at all still works");
+    } finally {
+        world.restore();
+    }
+});
+
+test("a script cannot write anything at all through a guest that arrived after the guards went in", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        evaluate("1 + 1");
+
+        // The guard lives on the prototype, so a guest handed out later - which is every
+        // guest, because the game builds a fresh wrapper per call - is covered by the same
+        // install. A guard on an instance would cover an object thrown away a line later.
+        const refusal = expectMcpRefusal(evaluate,
+            "(function () { var g = map.getAllEntities('guest')[0]; g.cash = 1000000; return g.cash; })()");
+
+        assert.match(refusal, /guest\.cash cannot be assigned/);
+        assert.equal(world.guest.store.cash, 350);
+    } finally {
+        world.restore();
+    }
+});
+
+test("a park with nothing in it yet still names every write left open on purpose", function () {
+    // The pre-run check reads `/v1` on a freshly loaded scenario: no rides built, nobody
+    // through the gate, no staff hired. If the open list were discovered from the park
+    // rather than declared by the build, this is the one moment it would read clean - and
+    // the one moment anybody looks.
+    const world = installWorld({ bare: true });
+
+    try {
+        const index = getV1(createApplication());
+
+        assert.deepEqual(index.stateGuards.open,
+            ["ride.price", "staff.orders", "staff.costume", "staff.patrolArea"],
+            "an empty park must still say what this build leaves writable: "
+            + JSON.stringify(index.stateGuards.open));
+        assert.equal(index.stateGuards.ok, false, "and must not call itself clean over them");
+        assert.deepEqual(index.stateGuards.unfrozen, [],
+            "while nothing that was tried actually refused: " + JSON.stringify(index.stateGuards.unfrozen));
+    } finally {
+        world.restore();
+    }
 });

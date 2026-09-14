@@ -759,6 +759,8 @@ const SCENARIO_LEVERS: Record<string, string> = {
     completedBy: OBJECTIVE_IS_THE_SCENARIO,
     completedCompanyValue: "The game records this when the scenario completes.",
     companyValueRecord: "The game records the highest company value the park has reached.",
+    filename: "The scenario file is which scenario is being played, and the game files a completion score"
+        + " against that name.",
     parkRatingWarningDays: "This counts the consecutive days the park rating has sat under the scenario's"
         + " threshold, and resets itself when the rating comes back up."
 };
@@ -776,9 +778,19 @@ const OBJECTIVE_LEVERS: Record<string, string> = {
 
 /**
  * `Ride` members, guarded on the shared prototype so every ride - including ones built
- * later - is covered by one install. `price` is deliberately absent: charging what you
- * like is playing the game, and operate_ride sets it through the ridesetprice action.
+ * later - is covered by one install.
+ *
+ * The named ones carry the mechanism that really moves them; everything else the prototype
+ * declares writable is frozen too, with `RIDE_IS_BUILT` as the reason. That way round on
+ * purpose: this table was a list of nine and the prototype has thirty-odd setters, so the
+ * twenty that nobody had listed - `mode`, `liftHillSpeed`, `trackType`'s neighbours, the
+ * lot - were open. Each of them has a game action that does the same thing with the game's
+ * own validation in front of it, so freezing the setter costs the model nothing.
  */
+const RIDE_IS_BUILT = "A ride's own settings move through the ride actions - ridesetprice, ridesetsetting,"
+    + " ridesetappearance, ridesetname - which validate what they are given against the ride that was"
+    + " actually built. Assigning the field writes past that check.";
+
 const RIDE_LEVERS: Record<string, string> = {
     excitement: RIDE_RATINGS_ARE_THE_TRACK,
     intensity: RIDE_RATINGS_ARE_THE_TRACK,
@@ -791,17 +803,187 @@ const RIDE_LEVERS: Record<string, string> = {
     lifecycleFlags: "Lifecycle flags record what the game has done to the ride, including whether it has been tested."
 };
 
+/** Skipped by the ride sweep; the reason it is skipped is in `OPEN_LEVERS`. */
+const RIDE_OPEN: Record<string, boolean> = { price: true };
+
+/** Ride methods that do a mechanic's job, or the game's, without either. */
+const RIDE_METHOD_LEVERS: Record<string, string> = {
+    fixBreakdown: "A broken ride is repaired by a mechanic walking to it, which is what hire_staff is for;"
+        + " inspection interval decides how often one comes before it breaks at all.",
+    setBreakdown: "Breakdowns are the game's, worked out from the ride's reliability and how long since"
+        + " it was last inspected."
+};
+
 /**
- * The four park flags that change the rules rather than the park. Everything else
- * `setFlag` can reach is ordinary play - open_park sets "open" on every run - so this is
- * a deny list on purpose: blocking an unlisted flag would break playing for no gain.
+ * The one park flag a player sets while playing. Everything else `ParkFlags` can reach is
+ * a rule of the scenario rather than a state of the park.
+ *
+ * This was a deny list of four against a `ParkFlags` union of thirteen, on the reasoning
+ * that blocking an unlisted flag would break playing for no gain. The reasoning does not
+ * survive the actual list: of the thirteen, twelve are scenario rules - the four forbids,
+ * the two intensity preferences, freeParkEntry, scenarioCompleteNameInput and the four
+ * already named - and exactly one, `open`, is something a player does. So an allow list of
+ * one, and a flag the plugin API grows later is refused rather than silently permitted.
  */
-const RULE_FLAGS: Record<string, string> = {
+const PLAYABLE_FLAGS: Record<string, boolean> = { open: true };
+
+const FLAG_LEVERS: Record<string, string> = {
     noMoney: "The noMoney flag switches the park's finances off entirely.",
     unlockAllPrices: "The unlockAllPrices flag lifts the scenario's own pricing rule.",
     difficultGuestGeneration: "difficultGuestGeneration is the scenario's own difficulty setting.",
-    difficultParkRating: "difficultParkRating is the scenario's own difficulty setting."
+    difficultParkRating: "difficultParkRating is the scenario's own difficulty setting.",
+    freeParkEntry: "freeParkEntry decides whether this scenario charges admission at all.",
+    forbidMarketingCampaigns: "forbidMarketingCampaigns is the scenario's own rule about advertising.",
+    forbidHighConstruction: "forbidHighConstruction is the scenario's own rule about building height.",
+    forbidLandscapeChanges: "forbidLandscapeChanges is the scenario's own rule about terraforming.",
+    forbidTreeRemoval: "forbidTreeRemoval is the scenario's own rule about clearing scenery.",
+    preferLessIntenseRides: "preferLessIntenseRides is what this scenario's guests are like.",
+    preferMoreIntenseRides: "preferMoreIntenseRides is what this scenario's guests are like.",
+    scenarioCompleteNameInput: "scenarioCompleteNameInput belongs to how the game files a completed scenario."
 };
+
+const UNLISTED_FLAG = "Only the park's open flag is a player's to set; every other flag in this API is a rule"
+    + " of the scenario rather than a state of the park.";
+
+/**
+ * Why guest state is frozen at all, when the park rating check cannot see it move.
+ *
+ * `map.getAllEntities('guest').forEach(g => { g.happiness = 255 })` returned ok:true on a
+ * build whose guard summary said every lever was frozen. The park rating is worked out by
+ * the game from guest happiness among other things, and guest cash becomes park cash the
+ * moment a guest spends it, so this reaches the objective - and the invariant check below
+ * cannot catch it, because the game recalculates the rating every 512 ticks and both of
+ * its readings are taken inside one tick.
+ */
+const GUESTS_FEEL_WHAT_THE_PARK_IS = "How a guest feels is the park's doing: rides they want to ride, short"
+    + " queues, food and drink where they are hungry, toilets, benches, a clean and well staffed park."
+    + " The park rating is worked out from it, so writing it writes the rating.";
+
+const GUEST_CASH_IS_SPENT = "What a guest is carrying is what the scenario sent them in with, minus what they"
+    + " have spent; it becomes the park's money only when they spend it.";
+
+const PEEP_IS_THE_GAMES = "Where a peep is, where it is going and what it is carrying are the game walking it"
+    + " round the park. A script that writes them is playing the guests rather than the park.";
+
+const STAFF_ARE_HIRED = "Staff are hired through the staffhire action - hire_staff - and what kind each one is"
+    + " is fixed when they are hired.";
+
+const ENTITIES_ARE_REMOVED_BY_STAFF = "Litter, vandalism and everything else lying about the park is cleared by"
+    + " handymen and mechanics walking to it, which is what hire_staff is for; removing it from a script does"
+    + " a wage's work for nothing, and the park rating counts it.";
+
+/**
+ * Why the whole tile element prototype and not a list of members.
+ *
+ * `map.getTile(5, 5).elements[0].ownership = 160` returned ok:true - park ownership plus
+ * construction rights on a tile, for no cash, past `landbuyrights` and `park.landPrice`
+ * both; park value follows owned land. Everything else the element prototype declares is
+ * the same shape of hole: `slope` and `baseZ` are free terraforming, `addition` is a free
+ * bench, `additionStatus` empties a bin a handyman is paid to empty, `isQueue` and `edges`
+ * are free footpath construction, `trackType` rebuilds a ride the ratings are calculated
+ * from. Every one of them has a game action that charges for it.
+ *
+ * So the prototype is frozen whole rather than member by member. The model has no
+ * legitimate write here at all: everything it builds, it builds through a typed tool or a
+ * game action, and both of those write the game's own C++ side rather than these setters.
+ * Reads are untouched - `ownership`, `baseZ` and the rest are how the tools and the model
+ * read the map.
+ */
+const MAP_IS_BUILT = "The map is what the construction actions have put there. Land is bought with the"
+    + " landbuyrights action at park.landPrice - buy_land - paths and rides are built by the build tools,"
+    + " and terrain is raised and lowered by the land actions. Each of those charges the park for the work.";
+
+const TILE_IS_THE_MAP = "A tile's elements are added and taken away by the construction and removal actions,"
+    + " which charge for the work and refuse what cannot be built. " + MAP_IS_BUILT;
+
+const GUEST_WILL_RIDE = "What a guest is willing to ride is who the game sent through the gate; a park that"
+    + " wants those guests on that ride builds one they will queue for.";
+
+/**
+ * `Guest`, `Peep`, `Entity` and the staff kinds all in one table, because they are one
+ * prototype chain and `findPropertyOwner` lands each member on whichever link declares it.
+ * Anything the chain declares writable and this table does not name is frozen anyway, with
+ * the surface's own fallback reason.
+ */
+const GUEST_LEVERS: Record<string, string> = {
+    happiness: GUESTS_FEEL_WHAT_THE_PARK_IS,
+    happinessTarget: GUESTS_FEEL_WHAT_THE_PARK_IS,
+    nausea: GUESTS_FEEL_WHAT_THE_PARK_IS,
+    nauseaTarget: GUESTS_FEEL_WHAT_THE_PARK_IS,
+    hunger: GUESTS_FEEL_WHAT_THE_PARK_IS,
+    thirst: GUESTS_FEEL_WHAT_THE_PARK_IS,
+    toilet: GUESTS_FEEL_WHAT_THE_PARK_IS,
+    energy: GUESTS_FEEL_WHAT_THE_PARK_IS,
+    energyTarget: GUESTS_FEEL_WHAT_THE_PARK_IS,
+    cash: GUEST_CASH_IS_SPENT,
+    mass: GUEST_WILL_RIDE,
+    minIntensity: GUEST_WILL_RIDE,
+    maxIntensity: GUEST_WILL_RIDE,
+    nauseaTolerance: GUEST_WILL_RIDE,
+    favouriteRide: GUEST_WILL_RIDE,
+    lostCountdown: "A lost guest is one the park's paths did not lead anywhere, and the park rating counts it.",
+    x: PEEP_IS_THE_GAMES,
+    y: PEEP_IS_THE_GAMES,
+    z: PEEP_IS_THE_GAMES,
+    destination: PEEP_IS_THE_GAMES,
+    direction: PEEP_IS_THE_GAMES,
+    staffType: STAFF_ARE_HIRED,
+    peepType: STAFF_ARE_HIRED
+};
+
+/**
+ * `setFlag` is here for the same reason `park.setFlag` is: `PeepFlags` carries
+ * "leavingPark", "lost", "happiness" and "nausea", so clearing one keeps a guest in the
+ * park or stops them minding what the park is like. The item methods hand a guest for
+ * nothing what a shop sells them.
+ */
+const PEEP_METHOD_LEVERS: Record<string, string> = {
+    setFlag: "A peep's flags are what the game has decided about them - whether they are leaving, lost,"
+        + " unhappy or feeling sick - worked out from the park they are walking round.",
+    giveItem: "Guests buy what they carry from the park's shops and stalls, which is where the money comes"
+        + " from; handing one over gives it away for nothing.",
+    removeItem: "What a guest is carrying is theirs until they use or drop it.",
+    removeAllItems: "What a guest is carrying is theirs until they use or drop it."
+};
+
+const ENTITY_METHOD_LEVERS: Record<string, string> = { remove: ENTITIES_ARE_REMOVED_BY_STAFF };
+
+const TILE_METHOD_LEVERS: Record<string, string> = {
+    insertElement: TILE_IS_THE_MAP,
+    removeElement: TILE_IS_THE_MAP
+};
+
+/** Skipped by the staff sweep; the reasons they are skipped are in `OPEN_LEVERS`. */
+const STAFF_OPEN: Record<string, boolean> = { orders: true, costume: true };
+
+/**
+ * Every write this build knows it is leaving open, with why.
+ *
+ * Declared as a property of the build rather than discovered as a property of the park, and
+ * so recorded on every install whether or not a ride has been built or a handyman hired.
+ * The alternative - record it when the surface turns up - reads clean on a fresh scenario,
+ * which is precisely when a pre-run check looks, and reading clean because nobody had got
+ * round to looking is the defect this whole field exists to stop.
+ *
+ * All four are free in the game's own windows and none of them hands the park anything it
+ * did not earn: prices still have to be paid by a guest who chooses to ride, and a handyman
+ * still has to walk to the litter and is paid a wage either way. They are named anyway,
+ * because "we decided this one was fine" is a thing a report should have to say out loud.
+ */
+const OPEN_LEVERS: Record<string, string> = {
+    "ride.price": "Charging what you like is playing the game, and operate_ride sets it through the"
+        + " ridesetprice action.",
+    "staff.orders": "What a handyman is set to do - sweep, water, mow, empty bins - is a free setting,"
+        + " and hire_staff hires with none of them set.",
+    "staff.costume": "An entertainer's costume is a free setting, and hire_staff hires with costume 0"
+        + " whether the park owns it or not.",
+    "staff.patrolArea": "Where staff patrol is a free setting the game's own window offers, and"
+        + " hire_staff tells the model to set it through evaluate."
+};
+
+/** Entity kinds to look through for the base prototype they all share. Litter first: it is the one
+ * whose `remove` is worth a wage. */
+const ENTITY_KINDS = ["litter", "guest", "staff", "balloon", "car", "duck", "money_effect"];
 
 type GuardOutcome = "frozen" | "absent" | "refused";
 type GuardedMethod = (this: unknown, ...args: unknown[]) => unknown;
@@ -817,7 +999,19 @@ const guardedTargets: object[] = [];
 const leverSeen: Record<string, GuardOutcome> = {};
 const frozenLevers: string[] = [];
 const unfrozenLevers: string[] = [];
+/**
+ * Writes this build knows it is leaving open, named the moment the surface carrying them
+ * is found. Not a list of everything unguarded - that is unknowable - but of the ones
+ * somebody looked at and decided against, which is the category the report could not
+ * express and the reason four fatal holes read as a clean bill.
+ */
+const openLevers: string[] = [];
 let rideGuardInstalled = false;
+let guestGuardInstalled = false;
+let staffGuardInstalled = false;
+let entityGuardInstalled = false;
+let tileElementGuardInstalled = false;
+let tileGuardInstalled = false;
 /** True only while an evaluated script is on the stack, so a typed tool is never caught. */
 let insideEvaluate = false;
 let unguardedReported = false;
@@ -865,24 +1059,67 @@ function recordLever(path: string, outcome: GuardOutcome): void {
     leverSeen[path] = outcome;
 }
 
+/**
+ * A write this build has looked at and left open, recorded from inside the install that
+ * found its surface - so a park with no rides in it does not claim a ride lever is open,
+ * and a park with one does.
+ */
+function declareOpenLevers(): void {
+    const paths = Object.keys(OPEN_LEVERS);
+
+    for (let i = 0; i < paths.length; i++) {
+        recordOpen(paths[i], OPEN_LEVERS[paths[i]]);
+    }
+}
+
+function recordOpen(path: string, because: string): void {
+    openReasons[path] = because;
+
+    if (openLevers.indexOf(path) < 0) {
+        openLevers.push(path);
+    }
+}
+
+const openReasons: Record<string, string> = {};
+
 /** What was frozen and what would not freeze, so the limits of this are inspectable. */
-export function stateGuardReport(): { frozen: string[]; unfrozen: string[] } {
-    return { frozen: frozenLevers.slice(0), unfrozen: unfrozenLevers.slice(0) };
+export function stateGuardReport(): {
+    frozen: string[];
+    unfrozen: string[];
+    open: { path: string; because: string }[];
+} {
+    return {
+        frozen: frozenLevers.slice(0),
+        unfrozen: unfrozenLevers.slice(0),
+        open: openLevers.map(function (path) {
+            return { path: path, because: openReasons[path] };
+        })
+    };
 }
 
 /**
- * The same report, small enough to serve on an endpoint that is polled: the list of
- * refusals is normally empty and the frozen levers are a count rather than forty paths.
+ * The same report, small enough to serve on an endpoint that is polled: the two lists are
+ * short and the frozen levers are a count rather than a hundred paths.
  *
- * `ok` is false when nothing froze at all as well as when something refused to. A build
- * whose guards never installed reports an empty `unfrozen` too, and that must not read
- * as clean to whatever is gating a run on this.
+ * Three states, not two, because two could not tell the truth. `unfrozen` has only ever
+ * meant "we tried and the slot refused" - it never meant "we never looked" - so a lever
+ * nobody had listed sat in neither list and `ok` stayed true over it. That is how
+ * `{"ok":true,"frozen":56,"unfrozen":[]}` was served by a build on which a script could
+ * set every guest's happiness to 255, buy land by assigning `ownership`, repair rides with
+ * no mechanic and turn off nine of thirteen scenario rules.
+ *
+ * So: `frozen` is what is shut, `unfrozen` is what would not shut, and `open` names what
+ * this build knows it is leaving open on purpose. `ok` is false for any of the three
+ * failures - nothing froze at all, something refused to freeze, or something reachable is
+ * deliberately unfrozen - because each of them means a write is available that the count
+ * on its own would read as covered.
  */
-export function stateGuardSummary(): { ok: boolean; frozen: number; unfrozen: string[] } {
+export function stateGuardSummary(): { ok: boolean; frozen: number; unfrozen: string[]; open: string[] } {
     return {
-        ok: frozenLevers.length > 0 && unfrozenLevers.length === 0,
+        ok: frozenLevers.length > 0 && unfrozenLevers.length === 0 && openLevers.length === 0,
         frozen: frozenLevers.length,
-        unfrozen: unfrozenLevers.slice(0)
+        unfrozen: unfrozenLevers.slice(0),
+        open: openLevers.slice(0)
     };
 }
 
@@ -892,13 +1129,21 @@ export function stateGuardSummary(): { ok: boolean; frozen: number; unfrozen: st
  * value that is only returned from a function nothing calls.
  */
 function reportUnguarded(): void {
-    if (unguardedReported || unfrozenLevers.length === 0 || typeof console === "undefined") {
+    if (unguardedReported || typeof console === "undefined") {
         return;
     }
 
-    unguardedReported = true;
-    console.log("freeplay: these levers would not freeze in this build and are watched only: "
-        + unfrozenLevers.join(", "));
+    if (unfrozenLevers.length > 0) {
+        unguardedReported = true;
+        console.log("freeplay: these levers would not freeze in this build and are watched only: "
+            + unfrozenLevers.join(", "));
+    }
+
+    if (openLevers.length > 0) {
+        unguardedReported = true;
+        console.log("freeplay: these levers are writable on purpose and are not guarded: "
+            + openLevers.join(", "));
+    }
 }
 
 /**
@@ -963,6 +1208,88 @@ function freezeValues(root: object, label: string, levers: Record<string, string
 
     for (let i = 0; i < keys.length; i++) {
         recordLever(label + "." + keys[i], freezeValue(root, label, keys[i], levers[keys[i]]));
+    }
+}
+
+/**
+ * Every member the object or its prototypes declare with a setter, and every writable data
+ * member that is not a function. Own properties too, because a test double and a plain
+ * object both put them there; `Object.prototype` and `Array.prototype` are where the walk
+ * stops, the same place `collectKeys` stops.
+ */
+function writableKeys(root: object): string[] {
+    const keys: string[] = [];
+    const seen: Record<string, boolean> = {};
+    let current: object | null = root;
+
+    while (current !== null && current !== Object.prototype && current !== Array.prototype) {
+        const owner = current;
+
+        Object.getOwnPropertyNames(owner).forEach(function (key) {
+            if (key === "constructor" || seen[key] === true) {
+                return;
+            }
+
+            const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+
+            if (!descriptor) {
+                return;
+            }
+
+            const isSettableAccessor = typeof descriptor.set === "function";
+            const isWritableValue = descriptor.writable === true && typeof descriptor.value !== "function";
+
+            if (isSettableAccessor || isWritableValue) {
+                seen[key] = true;
+                keys.push(key);
+            }
+        });
+
+        current = Object.getPrototypeOf(owner) as object | null;
+    }
+
+    return keys;
+}
+
+/**
+ * Freeze every writable member of a surface, rather than the ones somebody remembered.
+ *
+ * The deny-list shape is what let all of this through: `RIDE_LEVERS` named nine of a
+ * prototype's thirty setters, `RULE_FLAGS` named four of thirteen flags, and nothing at
+ * all named the guest, staff and tile-element prototypes. A surface where the model has no
+ * legitimate write is default-deny, `reasons` carries the good explanation for the members
+ * that have one, and `allow` is the short list of writes that really are play - each of
+ * which is reported by name in the guard summary rather than left in a comment.
+ */
+function freezeAllWritable(
+    root: object,
+    label: string,
+    reasons: Record<string, string>,
+    fallback: string,
+    allow: Record<string, boolean>
+): void {
+    const keys = writableKeys(root);
+
+    for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
+
+        // Left writable on purpose, and already named in OPEN_LEVERS, which is declared
+        // whether or not this surface turned up in the park.
+        if (allow[key] === true) {
+            continue;
+        }
+
+        const because = typeof reasons[key] === "string" ? reasons[key] : fallback;
+
+        recordLever(label + "." + key, freezeValue(root, label, key, because));
+    }
+}
+
+function freezeMethods(root: object, label: string, levers: Record<string, string>): void {
+    const keys = Object.keys(levers);
+
+    for (let i = 0; i < keys.length; i++) {
+        recordLever(label + "." + keys[i] + "()", freezeMethod(root, label, keys[i], levers[keys[i]]));
     }
 }
 
@@ -1049,6 +1376,99 @@ function guardWhileEvaluating(root: object, label: string, key: string, because:
     }
 
     return (owner as Record<string, unknown>)[key] === wrapper ? "frozen" : "refused";
+}
+
+/**
+ * The same read, and a setter that refuses only while an evaluated script is on the stack.
+ *
+ * For the one member the plugin itself writes: `open_park` falls back to
+ * `park.entranceFee = ...` when the parksetentrancefee action does not take, which is the
+ * route every hand-written run used and is known to work. A setter that always threw would
+ * break that tool; a setter that never threw leaves a script setting admission past the
+ * action's own eligibility check, which is what it was doing.
+ *
+ * `isOurStateGuard`, not `isStateGuarded`, for the same reason `guardWhileEvaluating` uses
+ * it: a wrapper left behind by an earlier load of the plugin reads that load's
+ * `insideEvaluate`, which no script running now will ever set, so it is an open slot and
+ * has to be reported as one rather than counted as frozen.
+ */
+function freezeValueWhileEvaluating(
+    root: object,
+    label: string,
+    key: string,
+    because: string,
+    copyOnRead?: boolean
+): GuardOutcome {
+    const owner = findPropertyOwner(root, key);
+
+    if (owner === null) {
+        return "absent";
+    }
+
+    const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+
+    if (!descriptor) {
+        return "absent";
+    }
+
+    if (isOurStateGuard(descriptor.set)) {
+        return "frozen";
+    }
+
+    const message = label + "." + key + " cannot be assigned from an evaluated script. "
+        + because + " " + EARNED_INSTEAD;
+    let captured = descriptor.value as unknown;
+    const stored = typeof descriptor.get === "function"
+        ? descriptor.get
+        : function (): unknown { return captured; };
+    const write = typeof descriptor.set === "function"
+        ? descriptor.set
+        : function (value: unknown): void { captured = value; };
+    const read = copyOnRead === true
+        ? function (this: unknown): unknown {
+            const value = stored.call(this) as { slice?: () => unknown } | null;
+
+            if (value && typeof value === "object" && typeof value.slice === "function") {
+                return (value.slice as () => unknown).call(value);
+            }
+
+            return value;
+        }
+        : stored;
+
+    try {
+        Object.defineProperty(owner, key, {
+            get: markStateGuard(read),
+            set: markStateGuard(function (this: unknown, value: unknown): void {
+                if (insideEvaluate) {
+                    throw new Error(message);
+                }
+
+                write.call(this, value);
+            }),
+            enumerable: descriptor.enumerable === true,
+            configurable: false
+        });
+    } catch (_defineError) {
+        return "refused";
+    }
+
+    return "frozen";
+}
+
+/**
+ * Hand back a copy of a buffer-valued member, so writing into what was read changes
+ * nothing.
+ *
+ * `Tile.data` is the raw bytes of a map tile. Freezing the slot stops `tile.data = ...`
+ * and nothing else: the game hands back a view, and `tile.data[0] = 9` writes through it
+ * past every guard in this file and past the construction actions with it. A property
+ * cannot intercept an index write, so the fix is at the other end - what the getter
+ * returns is a copy, and the copy is what gets written into. Reading is unaffected, which
+ * is all anything here does with it.
+ */
+function freezeBufferWhileEvaluating(root: object, label: string, key: string, because: string): GuardOutcome {
+    return freezeValueWhileEvaluating(root, label, key, because, true);
 }
 
 /** The accessor this load put over a whole namespace, so a stranger in the slot is evicted. */
@@ -1243,9 +1663,143 @@ function ridePrototype(): object | null {
         return null;
     }
 
-    const prototype = Object.getPrototypeOf(rides[0]) as object | null;
+    return instancePrototype(rides[0] as unknown as object);
+}
+
+/**
+ * The prototype an instance shares with every other of its kind, or null when it has none.
+ *
+ * Null rather than the instance: the game hands out a fresh wrapper per call for rides,
+ * entities and tile elements alike, so guarding one instance guards an object that is
+ * thrown away before the next line of the script. A surface that resolves to null is not
+ * silently skipped - `installGroup` records the levers it would have frozen as open.
+ */
+function instancePrototype(instance: object | null | undefined): object | null {
+    if (!instance || typeof instance !== "object") {
+        return null;
+    }
+
+    const prototype = Object.getPrototypeOf(instance) as object | null;
 
     return prototype === null || prototype === Object.prototype ? null : prototype;
+}
+
+/** How many entities of one kind are in the park, and 0 for a build that cannot answer. */
+function entityCount(type: string): number {
+    if (typeof map === "undefined" || !map || typeof map.getAllEntities !== "function") {
+        return 0;
+    }
+
+    try {
+        const entities = map.getAllEntities(type as EntityType);
+
+        return entities && typeof entities.length === "number" ? entities.length : 0;
+    } catch (_error) {
+        // A build that does not know this entity kind has none of them.
+        return 0;
+    }
+}
+
+/** The prototype every entity of one kind shares, found through one that is in the park. */
+function entityPrototype(type: string): object | null {
+    if (entityCount(type) === 0) {
+        return null;
+    }
+
+    const entities = map.getAllEntities(type as EntityType);
+
+    return instancePrototype(entities[0] as unknown as object);
+}
+
+/** The base every entity shares, reached through whichever kind this park happens to have. */
+function entityBasePrototype(): object | null {
+    for (let i = 0; i < ENTITY_KINDS.length; i++) {
+        const prototype = entityPrototype(ENTITY_KINDS[i]);
+
+        if (prototype !== null) {
+            return prototype;
+        }
+    }
+
+    return null;
+}
+
+/** A tile of the map, for the two prototypes hanging off it. There is always a tile 0,0. */
+function firstTile(): object | null {
+    if (typeof map === "undefined" || !map || typeof map.getTile !== "function") {
+        return null;
+    }
+
+    const tile = map.getTile(0, 0) as unknown as object | null;
+
+    return tile && typeof tile === "object" ? tile : null;
+}
+
+function tilePrototype(): object | null {
+    return instancePrototype(firstTile());
+}
+
+/**
+ * The prototype every tile element shares. OpenRCT2 declares every element type's members
+ * on one class, so `ownership`, `isQueue`, `trackType` and the rest all land here in a
+ * single install and every element of every type on every tile is covered.
+ */
+function tileElementPrototype(): object | null {
+    const tile = firstTile() as { elements?: object[]; getElement?: (index: number) => object } | null;
+
+    if (!tile) {
+        return null;
+    }
+
+    const element = tile.elements && tile.elements.length > 0
+        ? tile.elements[0]
+        : (typeof tile.getElement === "function" ? tile.getElement(0) : null);
+
+    return instancePrototype(element);
+}
+
+/**
+ * A surface whose members live on a prototype, guarded only when there is one to guard.
+ *
+ * Three outcomes, and the middle one is the whole reason this exists. Nothing of that kind
+ * in the park - no rides yet, no guests yet - records nothing, truthfully: there is no
+ * instance for a script to write to either, and the guards are reinstalled before every
+ * script, so the first guest to arrive is covered before any script can reach it. Instances
+ * that exist but share no prototype are recorded as open by name, because guarding one
+ * handed-out wrapper guards an object that is discarded before the next line runs. Only the
+ * third case, a real shared prototype, installs.
+ */
+function installPrototypeGroup(
+    label: string,
+    resolve: () => object | null,
+    exists: () => boolean,
+    install: (target: object) => void
+): void {
+    let target: object | null = null;
+
+    try {
+        target = resolve();
+    } catch (_error) {
+        target = null;
+    }
+
+    if (target === null) {
+        let present = false;
+
+        try {
+            present = exists();
+        } catch (_error) {
+            present = false;
+        }
+
+        if (present) {
+            recordLever(label, "refused");
+        }
+
+        return;
+    }
+
+    installGroup(function () { return target; }, install);
 }
 
 function installGroup(resolve: () => object | null, install: (target: object) => void): void {
@@ -1290,19 +1844,29 @@ export function installStateGuards(): void {
     // `context.executeAction` in the report the `/v1` endpoint serves.
     installActionGuards();
 
+    declareOpenLevers();
+
     installGroup(function () {
         return typeof park === "undefined" || !park ? null : park as unknown as object;
     }, function (target) {
         freezeValues(target, "park", PARK_LEVERS);
+        // The one park member the plugin itself writes, so it refuses a script and lets
+        // open_park's own fallback through. Assigning it set admission past the eligibility
+        // check parksetentrancefee makes - a scenario with free entry among them.
+        recordLever("park.entranceFee", freezeValueWhileEvaluating(target, "park", "entranceFee",
+            "Admission is set by the parksetentrancefee action - open_park - which refuses a fee"
+            + " this scenario does not allow the park to charge."));
         recordLever("park.generateGuest", freezeMethod(target, "park", "generateGuest", GUESTS_ARRIVE));
         recordLever("park.grantAward", freezeMethod(target, "park", "grantAward", AWARDS_ARE_GIVEN));
         recordLever("park.clearAwards", freezeMethod(target, "park", "clearAwards", AWARDS_ARE_GIVEN));
         recordLever("park.setFlag", replaceMethod(target, "setFlag", function (original) {
             return function (this: unknown, flag: unknown, value: unknown): unknown {
-                const why = RULE_FLAGS[String(flag)];
+                const name = String(flag);
 
-                if (why !== undefined) {
-                    throw new Error("park.setFlag(\"" + String(flag) + "\", ...) cannot be called. "
+                if (PLAYABLE_FLAGS[name] !== true) {
+                    const why = typeof FLAG_LEVERS[name] === "string" ? FLAG_LEVERS[name] : UNLISTED_FLAG;
+
+                    throw new Error("park.setFlag(\"" + name + "\", ...) cannot be called. "
                         + why + " " + EARNED_INSTEAD);
                 }
 
@@ -1362,9 +1926,75 @@ export function installStateGuards(): void {
     // The one group behind a flag rather than an identity check: finding the prototype
     // costs a `map.rides` read, and unlike `park` it is the same object for the process.
     if (!rideGuardInstalled) {
-        installGroup(ridePrototype, function (target) {
-            freezeValues(target, "ride", RIDE_LEVERS);
+        installPrototypeGroup("ride", ridePrototype, function () {
+            return typeof map !== "undefined" && !!map && !!map.rides && map.rides.length > 0;
+        }, function (target) {
+            freezeAllWritable(target, "ride", RIDE_LEVERS, RIDE_IS_BUILT, RIDE_OPEN);
+            freezeMethods(target, "ride", RIDE_METHOD_LEVERS);
             rideGuardInstalled = true;
+        });
+    }
+
+    // Guests, staff and everything else that moves. Nothing here was guarded at all, and a
+    // script could set every guest's happiness, nausea, hunger and cash outright - the park
+    // rating is worked out from exactly those, and guest cash becomes park cash as it is
+    // spent. Retried until each prototype resolves, because an empty park has none of them
+    // and a guest that arrives later has to be covered before the next script runs.
+    if (!guestGuardInstalled) {
+        installPrototypeGroup("guest", function () { return entityPrototype("guest"); }, function () {
+            return entityCount("guest") > 0;
+        }, function (target) {
+            freezeAllWritable(target, "guest", GUEST_LEVERS, GUESTS_FEEL_WHAT_THE_PARK_IS, {});
+            freezeMethods(target, "guest", PEEP_METHOD_LEVERS);
+            guestGuardInstalled = true;
+        });
+    }
+
+    if (!staffGuardInstalled) {
+        installPrototypeGroup("staff", function () { return entityPrototype("staff"); }, function () {
+            return entityCount("staff") > 0;
+        }, function (target) {
+            freezeAllWritable(target, "staff", GUEST_LEVERS, STAFF_ARE_HIRED, STAFF_OPEN);
+            freezeMethods(target, "staff", PEEP_METHOD_LEVERS);
+            staffGuardInstalled = true;
+        });
+    }
+
+    // The base every entity shares, reached through whichever kind is in the park. `remove`
+    // is the reason: litter and vandalism are cleared by handymen the park pays for, and
+    // the park rating counts what is lying about.
+    if (!entityGuardInstalled) {
+        installPrototypeGroup("entity", entityBasePrototype, function () {
+            return entityCount("litter") > 0 || entityCount("guest") > 0 || entityCount("staff") > 0;
+        }, function (target) {
+            freezeAllWritable(target, "entity", GUEST_LEVERS, PEEP_IS_THE_GAMES, {});
+            freezeMethods(target, "entity", ENTITY_METHOD_LEVERS);
+            entityGuardInstalled = true;
+        });
+    }
+
+    // The map itself. `elements[0].ownership = 160` bought a tile outright - park ownership
+    // plus construction rights, no cash, no landbuyrights action - and park value follows
+    // owned land. Frozen whole rather than member by member; see MAP_IS_BUILT.
+    if (!tileElementGuardInstalled) {
+        installPrototypeGroup("map.element", tileElementPrototype, function () {
+            return firstTile() !== null;
+        }, function (target) {
+            freezeAllWritable(target, "map.element", {}, MAP_IS_BUILT, {});
+            tileElementGuardInstalled = true;
+        });
+    }
+
+    if (!tileGuardInstalled) {
+        installPrototypeGroup("map.tile", tilePrototype, function () {
+            return firstTile() !== null;
+        }, function (target) {
+            // Not freezeAllWritable: `data` is a byte view and needs the copy-on-read guard,
+            // which a plain freeze would not give it.
+            recordLever("map.tile.data", freezeBufferWhileEvaluating(target, "map.tile", "data", TILE_IS_THE_MAP));
+            freezeAllWritable(target, "map.tile", {}, TILE_IS_THE_MAP, {});
+            freezeMethods(target, "map.tile", TILE_METHOD_LEVERS);
+            tileGuardInstalled = true;
         });
     }
 
@@ -1435,15 +2065,16 @@ interface InvariantSpec {
  * actions that could set them outright - cheatset and scenariosetsetting - are refused
  * above. So a change in one of those during a script is, by construction, not the game.
  *
- * What can actually reach this, measured rather than assumed: nothing, on a build where
- * every lever froze. Assignment throws, the cheat actions are refused by name, an
- * executeAction is queued rather than applied inside the synchronous window, and a script
- * can no longer schedule work to land outside it. The one route left is the one this exists
- * for - a lever that would not freeze, which is reported by name in `stateGuardSummary()`
- * and served on `GET /v1`, so `unfrozen` being non-empty is exactly the condition under
- * which this can fire. It is a backstop for a hole nobody has thought of yet, and it costs
- * two reads of thirteen scalars per script; do not go looking for a positive case on a
- * build whose `unfrozen` list is empty, because there is not one.
+ * What this cannot reach, which is the more useful half. It watches thirteen scalars and
+ * nothing else, so a whole surface left unguarded is invisible to it: guest happiness went
+ * to 255 on every guest in the park and `park.rating` read back identical either side,
+ * because the game recalculates the rating every 512 ticks and both readings are taken
+ * inside one tick. A tile's `ownership` is the same - park value follows owned land, but
+ * not within the tick that bought it. So this is a backstop for a lever that would not
+ * freeze, not a net under the whole API, and `unfrozen` being non-empty is the condition
+ * under which it can fire. The answer to a surface nobody guarded is to guard it, which is
+ * what the entity, tile and element groups above now do; the answer to a surface nobody
+ * has thought of is `stateGuardSummary()`, which now has a place to say so.
  *
  * Deliberately per-script, not across scripts: the game runs thousands of ticks between
  * tool calls, during which guests pay, wages go out and rides earn, so comparing the end of
