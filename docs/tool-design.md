@@ -61,7 +61,8 @@ path does not.
 | `open_park` | The two actions that admit guests and set admission | When to open, and what to charge |
 | `hire_staff` | The hiring action | Who to hire and how many |
 | `buy_land` | The purchase action, what it cost, the scenario's price per tile, and which of the tiles asked for are not for sale | Whether the park needs more ground, and where |
-| `set_game_speed` | The speed setting and the pause toggle, neither of whose argument shapes is discoverable, and what the game reads back as afterwards | When to run fast, when to run slow, and when to pause |
+| `set_game_speed` | The speed setting and the pause toggle, neither of whose argument shapes is discoverable, and what the game reads back as afterwards | How much real time to spend reaching a given number of game days, and whether to hold the game against its own actions |
+| `wait` | Advancing the clock by a stated number of game days, and what moved while it ran | How much of the scenario to spend, and when |
 | `evaluate` | The whole plugin API, unrestricted | Everything else |
 
 Note what none of them do: none rank options by "best", none choose where a ride goes,
@@ -231,8 +232,11 @@ they ship.
   three nearest tiles to a path returns one location three times, which reads as a choice
   and is not.~~ Both struck out: the measurement was honest and the decision was still
   being made by it. See "The measurement was honest and it still chose" below.
-- `guest_feedback` samples 100 guests, and says so; `park_status` reports the last dozen
-  park messages. Its `paths` samples nothing: it carries the whole reachable network as
+- `guest_feedback` reads 100 guests by default and up to 500, reports the figure as
+  `guestsRead` beside the park's `guests`, and says that it walks the game's guest list from
+  the front rather than sampling it at random — so the counts carry whatever that end of the
+  list has in common, and the result says as much rather than claiming to be representative.
+  `park_status` reports the last dozen park messages. Its `paths` samples nothing: it carries the whole reachable network as
   runs — straight lines of one kind of path, each with its ends, its tile count, a queue's
   bound ride, and `cutsIfBlocked` — plus the junctions, the dead ends, and `islands`, the
   fragments the gate cannot reach at all, with any stranded ride doors named on them. Above
@@ -762,42 +766,101 @@ That is a play failure, and it is the cleanest one the project has — nearly ev
 in this accounting is ours. This page says so plainly whenever the fault is the bridge's, so it
 has to say so here.
 
-## The clock is the model's problem, and that is a reversal
+## The clock, reversed twice
 
-A local model takes seconds to tens of seconds per decision. If the game is running
-while it thinks, thinking time is charged against the scenario clock, and a slower model
-scores worse for being slow rather than for playing worse. In a test run the game
-advanced a full scenario year while the bridge was being debugged, and the objective
-failed on time alone.
+A local model takes seconds to tens of seconds per decision. If the game is running while it
+thinks, thinking time is charged against the scenario clock, and a slower model scores worse
+for being slow rather than for playing worse.
 
-This page used to conclude from that that pacing belonged to the harness — pause while the
-model decides, advance a fixed number of ticks after it acts. That is no longer the
-decision, and the earlier one is recorded here rather than quietly deleted.
+**First position.** Pacing belongs to the harness: pause while the model decides, advance a
+fixed number of ticks after it acts.
 
-The argument that overturned it is this document's own rule pointed at the clock. A human
-playing OpenRCT2 controls game speed and the pause key, and uses them constantly: running
-fast through a quiet stretch and pausing to lay out a junction are both *playing*, not
-scaffolding around playing. A harness that paces the game for the model takes that away and
-makes a decision on its behalf, which is the thing the whole page is against — and it makes
-the runs measure a different game from the one a person plays.
+**Second position, which overturned it.** This document's own rule, pointed at the clock. A
+human playing OpenRCT2 controls game speed and the pause key and uses them constantly:
+running fast through a quiet stretch and pausing to lay out a junction are both *playing*,
+not scaffolding around playing. So `set_game_speed` handed both levers over and the model
+spent or saved scenario time the way a player does — knowingly a lever over its own scoring,
+on the argument that mispacing is a play failure and would read as one in the transcript.
 
-So `set_game_speed` hands both levers over, and the model spends or saves scenario time the
-way a player does. This is knowingly a lever over its own scoring: a model that leaves the
-game at speed 4 while it deliberates will lose months it did not mean to spend, and that
-will show up as a failed objective. That is the point. Mispacing is now a play failure and
-reads as one in the transcript, where before it was invisible in the harness's settings.
+**Third position, which is the current one.** Measured, that argument was wrong on its facts,
+and the measurement is in "The bill for thinking" below: over one scenario year, `wait` calls
+spent 62 of 248 days and 186 elapsed while the model was thinking. The clock was not being
+spent by a player's decisions. It was being spent by inference latency, at a rate the run
+never chose and the transcript never showed.
 
-The tool states the mechanic and nothing else. Both actions have undiscoverable shapes —
+That is the part the second position missed. A player's pause key and a model's thinking time
+are not the same lever. When a person pauses to think, the game stops; the pause key IS how a
+player stops the clock while deliberating, and it costs them nothing. A model with the same
+key and a 40-second turn is not playing the same game — it is being charged for having a
+slower machine. Two runs of the same model on two hosts become two different games, which
+makes the benchmark measure tokens per second and calls it park management.
+
+So the bridge holds the game paused between tool calls (`src/clockGate.ts`), and `wait` is the
+only thing that spends scenario time on purpose. What this restores is the player's actual
+position, not the harness's: a person deliberates for free and then chooses how much time to
+let pass. `wait` is that choice, denominated in game days, and the model makes it.
+
+`set_game_speed` keeps both arguments and loses its stake in the outcome. `speed` now buys
+nothing but real seconds: it sets how much real time a game day costs *inside* `wait`, and so
+how far one call's twenty-second budget reaches — about 1.5 days at speed 1 and 12 at speed 4.
+The scenario time a run spends is whatever `wait` was asked for, at any speed. A model that
+leaves the game at speed 4 no longer loses months; it just reaches further per call.
+
+`paused` survived with its name and lost its old meaning, which is the trap in this change and
+is dealt with under "A field that kept its name" below.
+
+The tool still states the mechanic and nothing else. Both actions have undiscoverable shapes —
 `gamesetspeed` takes a setting that looks like a multiplier and is not (the loop runs
 `1 << (speed - 1)` updates, so 1, 2, 3, 4 mean normal, twice, four times and eight times,
 and asking for 8 meaning eight times is out of range), and `pausetoggle` flips rather than
 sets, so asking to pause twice unpauses unless something reads the state first. Carrying
-those is mechanics. Saying when to use them would be playing, so the description says
-plainly that when to run fast, when to run slow and when to pause are the model's.
+those is mechanics. How much game time to spend, and when, stays the model's — it is the
+whole of what `wait` is for.
+
+### A field that kept its name through a redefinition
+
+`park_status.paused` was `context.paused` verbatim. Under the hold that value is true on
+essentially every turn, so the field would have reported a paused game to a model that had
+paused nothing, and every tool that read it to decide whether an action would be refused
+would have called a legal build impossible.
+
+The field now reports `pauseRefusesActions()`: the pause the MODEL asked for, which is the one
+OpenRCT2 refuses map changes through. The bridge's own hold is excluded, because a tool acts
+straight through it — `runActionWithClock` opens a window around any action the hold would
+have refused and closes it a tick later, once the action has been applied.
+
+A name that outlives its meaning is worse than a rename. A reader who knew the old field is
+not warned, and the check they write against it is wrong in a way that reads as correct. So
+the description says what the field is *not* — "it is NOT the clock being stopped between your
+calls" — and `test/prompt.test.ts` pins that sentence, not just the field name.
+
+One case is genuinely indistinguishable: a pause a human sets in the OpenRCT2 window reads as
+the bridge's own hold, because the plugin API does not say who set the flag. It is the right
+answer anyway — the gate opens a window through that pause exactly as through its own — and it
+is recorded here rather than papered over.
+
+### The scenario ends and nothing said so
+
+`scenario.status` has no hook. Until `src/scenarioVerdict.ts` the only way to learn a run was
+over was to call `park_status` and look at it, and a recorded run did not look: it went on
+building past a failure the game had already decided. A person gets a news item and a window.
+
+Every tool result now carries `scenarioEnded` once the game has decided — `{status, year,
+month, day}`, `completed` or `failed` with the in-game day — and carries nothing at all while
+the scenario is still being played, so the presence of the field is the whole signal.
+
+Four short values rather than a sentence, for the same reason as everywhere else on this page:
+one run carried 117 pre-written sentences of advice and none of them was acted on, while the
+short numeric and enum fields beside them were read. It decides nothing and recommends
+nothing: what to do about a verdict — stop, or keep playing an ended scenario — is not the
+bridge's call.
 
 ### The bill for thinking was the half that went unreported
 
-The paragraph above claims mispacing "reads as one in the transcript". Measured, it did not.
+This is the measurement that overturned the second position above. It is kept in full, because
+it is the evidence for the hold and because the field it produced is still shipped.
+
+The second position claimed mispacing "reads as one in the transcript". Measured, it did not.
 
 Over year one of a scenario that was lost on the clock: seven `wait` calls spent 62 of the
 year's 248 days — 25% — and the other 186 days, 75%, elapsed while the model was thinking. At
@@ -834,6 +897,23 @@ a long wait. The clock was handed over on purpose and spending it badly is a leg
 lose; a model that noticed the deadline seventeen times does not need reminding of it. What it
 did not have was the bill.
 
+**What the hold did to this field.** The bill it was built to report is now zero by
+construction. With the game held between calls, `gameDaysSinceLastCall` reads 0 on a turn that
+only thought, and above 0 only when a tool that acts let the clock run while it worked — the
+frame or two `runActionWithClock` opens around an action, which is the one bit of scenario time
+a run spends without asking for it. So the field measures leakage rather than latency.
+
+It is kept, and not because it is free. A figure that is 0 almost every turn is a figure a
+reader learns to skip, which was the argument for one decimal place in the first place. But 0
+is now the *claim*: it says the turn cost the park nothing, which is the invariant the whole
+clock gate exists to keep, and a non-zero reading is the bridge admitting it let time slip.
+Deleting the field would leave that invariant unmeasured from the model's side and asserted
+only by this document. The tests hold the same line from the other side: `test/clockGate.test.ts`
+proves the hold, and this field is what proves it in a real run.
+
+The first call of a session still carries no figure, for the same reason: there is no previous
+result, and 0 would be a measurement of nothing.
+
 ### The same missing sense, one field along: how old is this?
 
 `park_status` reports the last dozen park messages the game raised, newest last, and said nothing
@@ -863,3 +943,85 @@ got right, in the run above, as soon as it had the means to make it.
 `wait` already does the "new since" version of this, with `newMessages`, and can, because it
 holds a before and an after. One `park_status` call has no memory of the previous read. That is
 precisely why a stamp on the message is the shape that fits and a delta is not.
+
+## Screens the model was never shown
+
+Each of these is a window the game puts in front of a player and the bridge was not carrying.
+They are grouped because they share one shape: nothing here is a new decision, a ranking or a
+hint. It is perception that had been missing, which is the half of this page's rule that gets
+less attention than the half about judgment.
+
+### The Finances window, not one number
+
+`monthlyProfit` gave net profit for the last four months and nothing under it. A park bleeding
+wages and a park bleeding ride running costs read as the same number there, and they want
+different things done about them — which is the decision, and it was unmakeable.
+
+`monthlyExpenditure` breaks those same four months into the game's own fourteen expenditure
+streams under the game's own names: `wages`, `ride_runningcosts`, `park_ride_tickets`,
+`shop_sales`, `land_purchase` and the rest, signed the way the game signs them, takings
+positive and costs negative, index 0 being this month. The fourteen add up to `monthlyProfit`
+month by month, which is the whole of what the total was saying.
+
+These are the lines of the game's own Finances window, in the game's own vocabulary. Nothing
+is grouped into "staff" or "rides", nothing is ranked by size, and no stream is called a
+problem. Choosing a name of our own would have been a claim about which costs belong together.
+
+### Weather is not decoration
+
+Rain changes what guests do in OpenRCT2: they shelter, buy umbrellas, stop boarding unsheltered
+rides and go home. All of that arrived as takings and a guest count moving for a reason no field
+named, which is indistinguishable from a pricing mistake.
+
+`weather` carries what the toolbar carries: `climate`, the pattern the scenario runs on;
+`current`, what the sky is doing now, with the game's own temperature; and `next`, the game's
+own forecast. The forecast is the game's, not ours — a bridge that predicted weather would be
+making a call the game already makes and the player can already see.
+
+### The third rating
+
+`excitement` and `intensity` were reported and `nausea` was not, though the game works out all
+three and shows them together in the ride window. It is the rating that empties a park through
+a different door: a nauseating ride leaves guests looking for a bin or a toilet, and the mess
+after that is a handyman's work. Reporting two thirds of a triple the game displays as a triple
+is a filter nobody chose.
+
+All three are null until the ride has been rated, which is a different thing from a ride the
+game has measured and scored low, and the description says so where it says the rest.
+
+### How old is a complaint
+
+`guest_feedback` counted thought slots by kind and said nothing about age, so a complaint the
+park answered weeks ago sat in the same count as one from this morning. `freshness` is the
+game's own field on those same slots, counted per value: each key is a number the game held and
+each value is how many slots carried it, so they add up to `count`.
+
+OpenRCT2 documents that field as one thing only — the larger the number, the less fresh the
+thought — so that is all this claims. Nothing is dropped, discounted, reordered or called
+stale; a thought stays in its count until the game itself lets go of it. A bridge that decided
+which complaints were current would be deciding which ones to act on.
+
+### Water is not ground
+
+`fits` counted a tile as failing for being unowned, sloped, at the wrong height or built on, and
+water fell through: a lake read as ground a ride could stand on. A player sees a lake. `fits`
+now requires the tile to be dry, `blockers` names water as the cause, and the same condition
+holds for both tiles of a door position. There is no tool here that fills water in, the same way
+there is none that levels a slope, so this is a reading and not a step.
+
+### A door that takes another ride's queue
+
+A tile already carrying another ride's queue used to be described as no door position at all.
+The game takes it: an entrance there re-chains the existing queue to the new ride and leaves the
+old one with a door and no line, so guests stop boarding it.
+
+Refusing the placement would have been the bridge overruling a move the game allows — park
+layout, and a trade a player might want. So it is listed like any other option, with
+`queueServesRide` and `queueServesRideName` saying whose line it is, `cost` saying what it
+costs, and `build_flat_ride` reporting every ride that actually lost one as
+`ridesLeftWithoutQueue`. `build_path` reports the same thing when a queue is laid onto a queue.
+Whether one ride's line is worth spending on another is the model's.
+
+The prompt asserted the opposite of this for several commits, which is the failure mode
+"Corollary: tools must not lie" is about, one document further out: a claim about the game that
+the game does not make is worse than a gap, because a gap sends the model to look.

@@ -23,15 +23,15 @@ All of it. Miss one and the ride is finished, paid for, and earning nothing.
 
 `hasQueue` is not on that list: a queue bound to the ride's `entranceDoor` is throughput
 rather than admission. With no queue the one guest at the door is the whole line and anyone
-arriving while they are there is turned away — one run measured 3 customers against 16.
+arriving while they are there is turned away.
 
 What guests make of a ride that meets all of it is counted nowhere but `guest_feedback`:
 whether they cannot find it, refuse the price, are hungry, or want to go home.
 
 A stall has none of that — no entrance, exit or queue. It sells over the counter from
 the ONE tile it faces, fixed by the `rotation` you built it at and reported as
-`counter`; run an ordinary path onto that tile, not a queue. Its other three sides are
-wall and sell nothing.
+`counter`. Guests are served from ordinary path on that tile, and guests standing in a
+queue buy nothing. Its other three sides are wall and sell nothing.
 
 ## Building a ride
 
@@ -47,22 +47,28 @@ How the ride's own tiles fall around that origin is the game's doing and is not 
 a 4x4 runs 0..3 from its origin, a 1x4 runs −2..+1, and only a 3x3 is centred on it. The
 origin therefore sits inside the ride's ground without being its centre or a corner of it,
 and that ground is the `footprint` rectangle `describe_placement` reports. A ride stands
-only where every tile of that rectangle is the park's, level, all at one height, and
+only where every tile of that rectangle is the park's, dry, level, all at one height, and
 carrying nothing but scenery — which `clear_scenery` takes down and nothing else will.
+Water is not ground: a tile of it fails `fits` the way unowned or sloped ground does, and
+no tool here fills it in.
 
 An entrance or an exit goes on a tile touching the footprint, and its door opens onto the
 tile one further out, which is where that ride's queue goes. So a door position needs two
-tiles: one owned, level, at the ride's height and carrying nothing but scenery, and the one
-behind it owned and carrying nothing but scenery, a footpath, or a queue belonging to no
-ride. A tile carrying another ride's queue is not a door position at all, because an
-entrance there takes that ride's queue away. A ride needs two of these, one for the
+tiles: one owned, dry, level, at the ride's height and carrying nothing but scenery, and the
+one behind it owned, dry, and carrying nothing but scenery, a footpath, or a queue. A tile
+carrying another ride's queue is a door position the game takes: the entrance re-chains that
+queue to the new ride and leaves the old one with a door and no line, which
+`describe_placement` names as that option's `queueServesRide` and `build_flat_ride` reports
+afterwards as `ridesLeftWithoutQueue`. A ride needs two of these, one for the
 entrance and one for the exit; a stall needs none.
 
 1. `describe_placement` with a `rideObject` index from `list_ride_objects` and the `x`, `y`
    and `rotation` you are asking about. It answers for that one placement: `footprint` and
    `fits` for the ground, `blockers` for any tile of it that will not take the ride,
-   `ground` saying the whole of that in a sentence, and `access`, which is every door
-   position the placement has with what each one costs.
+   `ground` saying the whole of that in a sentence, and `access`, the door positions the
+   game would take for that placement with what each one costs — `accessTotal` is how many
+   positions the footprint has at all, and `accessRuledOut` and `note` say what took the
+   rest out.
 2. If scenery is in the way — `sceneryToClear` above 0, or an access option saying
    `needsClearing` — `clear_scenery` with that placement's `footprint` `fromX`, `fromY`,
    `toX` and `toY` copied across unchanged. Those four ARE the ride's ground. The
@@ -87,10 +93,10 @@ entrance and one for the exit; a stall needs none.
 Building again builds and pays for a second ride. `reachable` is false until step 4 and
 does not mean the build failed.
 
-## Copy values across; never work them out
+## Where every coordinate comes from
 
 A placement's origin and rotation are yours and nothing reports them. Every other
-coordinate you send should be one a tool just reported:
+coordinate these tools take is one another tool has already reported:
 
 - `index` from `list_ride_objects` → `rideObject`
 - a placement's `footprint` `fromX`/`fromY`/`toX`/`toY` → `clear_scenery`'s four of the same name
@@ -100,9 +106,8 @@ coordinate you send should be one a tool just reported:
 - a `build_path` result's `tiles` → `remove_path`'s `tiles`, which lifts exactly that run
 - a tile covered by a run in `paths.runs` → the tile a new run joins the network at
 
-Without a value, call the tool that reports it. A coordinate you derived, adjusted or
-remembered is the commonest way a run is wasted — and a tile carrying a path is still
-not a reachable one unless a run in `paths.runs` covers it.
+No tool fills in a coordinate it was not given, and a tile carrying a path is still not a
+reachable one unless a run in `paths.runs` covers it.
 
 ## Every list you are shown is a window
 
@@ -110,13 +115,16 @@ not a reachable one unless a run in `paths.runs` covers it.
   `complete` false says the park holds more blocks than the call reported.
 - `view_map` reads the window you asked for and no more of the park; `clipped` says the
   map's edge cut it down, and its `rows` then end with a line saying what was read instead.
-- `describe_placement` is the exception among the readers: its `access` is every door
-  position that placement has, not a window on them.
+- `describe_placement`'s `access` is a filter rather than a window, and it counts what it
+  filtered: `accessTotal` is how many door positions the footprint has, `accessRuledOut`
+  what took the rest out by cause and count, and `note` the same in a sentence.
 - `paths.runs` is the other one: every reachable tile is on exactly one run, and their
   `tiles` add up to `reachableTiles`. A run's `cutsIfBlocked` is the only part that can
   be missing, and `severingComputed` false says so rather than reporting nothing severs.
-- `guest_feedback` counts `sampled` of `guests`. `messages` is `park_status`'s field, and
-  is the last dozen the game raised.
+- `guest_feedback` counts `guestsRead` of `guests`, taken off the front of the game's own
+  guest list rather than at random, and `sample` raises how many it reads. `messages` is
+  `park_status`'s field, and is the last dozen the game raised, each carrying the whole game
+  days since it arrived.
 
 ## Traps
 
@@ -147,29 +155,33 @@ not a reachable one unless a run in `paths.runs` covers it.
   `inspectionInterval` is an index from 0 to 6, not minutes. An argument outside its
   range is refused by name before it reaches the game.
 - `evaluate` runs on the game's own thread: an unbounded loop freezes the game with no
-  error and ends the run. `Object.keys` is empty on game objects — use `keys(value)`.
+  error and ends the run. `Object.keys` is empty on game objects, and the plugin API's own
+  `keys(value)` is what reads them.
 
 ## Each turn
 
-Time runs while you think, so what you read is a snapshot, not a freeze-frame. How fast it
-runs is `set_game_speed`, whose `speed` is a setting and not a multiplier, and while it is
-`paused` no scenario time passes at all. `park_status` carries both, as `speed` and
-`paused`, so a stopped clock is something the park reports rather than something nothing
-mentions. Nothing asks you anything again unless you call a tool, so a turn that ends by
-letting the park run and checking back later ends the run there instead; `wait` is the call
-that lets the clock run for a few real seconds and reports what moved while it did.
+The game is held still between your calls. No scenario time passes while you think, and
+`wait` is the only call that spends any: it takes a number of GAME days, 0.1 to 12, and
+reports what moved while the clock ran. How fast the clock runs is `set_game_speed`, whose
+`speed` is a setting and not a multiplier; it sets the REAL seconds a game day costs inside
+`wait`, and so how far one `wait` call reaches, and nothing about how much of the scenario a
+run spends. Its `paused` is a pause of your own, and a different thing from the hold: while
+it is `paused` no scenario time passes at all, the game refuses every change to the map, and
+`wait` is refused until you unpause. `park_status` carries both, as `speed` and `paused`.
+Nothing asks you anything again unless you call a tool, so a turn that ends by letting the
+park run and checking back later ends the run there instead.
 
-The record of earlier turns does not survive either. When the context fills it is replaced
-by a written summary, and the summaries are additive: each carries the last one's facts
-forward and has no way to say that one of them has stopped being true. A ride demolished and
-rebuilt elsewhere still reads at its first coordinates there, and a step written down as in
-progress stays in progress after it is finished. Nothing in a summary was read from the park.
-A tool result is not summarised at all but dropped whole, so a `view_map` reading taken five
-times over a run is gone from the turn after it, with nothing in its place. The tools re-read
-the park on every call and a recollection of one does not, so a tile named with no reading of
-it in context is recalled rather than seen — one run recalled a path tile as empty ground and a
-ride's track three tiles from where it stood, and every route it weighed after that was
-blocked by an obstacle that was not there.
+A result carrying `scenarioEnded` is the game saying the scenario is over: `status` is
+`completed` or `failed`, with the in-game day it decided. Nothing carries that field while
+the scenario is still being played.
+
+The record of earlier turns does not survive. When the context fills it is replaced by a
+written summary, and the summaries are additive: each carries the last one's facts forward
+and has no way to say that one of them has stopped being true. Nothing in a summary was read
+from the park. A tool result is not summarised at all but dropped whole, so a reading taken
+earlier in a run is gone from the turn after the summary, with nothing in its place. The
+tools re-read the park on every call and a recollection of one does not, so a tile named with
+no reading of it in context is recalled rather than seen.
 
 `park_status` also carries the scenario objective and how far along it is, and `messages`,
 the game naming problems in its own words. `guest_feedback` reports what guests think, once
@@ -187,9 +199,8 @@ Every tool re-reads the world after acting and reports what it found, so its res
 park as it stands afterwards.
 
 A tool answers from the world as it reads it, so the same arguments against an unchanged
-world give the same answer. A refusal that names cash is the one the clock changes by
-itself: `clear_scenery` reports `notEnoughCash`, and `buy_land` is refused a whole rectangle
-for want of it, while money comes in on its own as the game runs. Where two results
-disagree, `park_status` is the one that read the park last.
-
-Say what you are doing and why in a sentence or two, then do it.
+world give the same answer, and between two of your calls the world is unchanged unless one
+of them changed it. A refusal that names cash is the one a later clock can lift:
+`clear_scenery` reports `notEnoughCash`, and `buy_land` is refused a whole rectangle for
+want of it, while takings arrive only while the clock is running, which is inside `wait`.
+Where two results disagree, the later of them read the park last.
