@@ -207,7 +207,7 @@ test("the map's kinds are stated once, in view_map's description and not in the 
     const text = String(view.description);
 
     assert.match(text, /<firstX>-<lastX><kind>/, "the shape of a run lives here");
-    assert.match(text, /`U` not\s+the park's land/, "and so do the kinds");
+    assert.match(text, /A leading `U` means the park does not own that\s+ground/, "and so do the kinds");
 
     const prompt = readPrompt();
 

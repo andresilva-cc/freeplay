@@ -394,15 +394,12 @@ test("a door with nowhere to queue is refused, not built into an unusable ride",
             stale: true
         },
         {
-            name: "another ride's queue",
+            name: "under water",
             arrange: function (game: FakeGame) {
-                // A queue bound to ride 6: a door here would re-chain it and strand that ride.
-                // The entrance goes on second, because placing one is what chains the queue.
-                game.addPath(11, 10, true);
-                game.addRideEntrance(11, 11, 6, 1);
+                Object.assign(game.tile(11, 10).elements[0], { waterHeight: 112 });
             },
-            expect: /is already the queue for ride 6/,
-            stale: true
+            expect: /is under water, so no queue could ever reach this door/,
+            stale: false
         }
     ];
 
@@ -1746,6 +1743,133 @@ test("a ride behind research is built, not refused", function () {
             ["ridecreate", "trackplace", "entrance/exit", "access", "price", "open"],
             "every step runs, and no step of its own is added for research");
         assert.equal(game.rides.length, 1, "and the ride is in the park");
+    } finally {
+        restore();
+    }
+});
+
+
+// ---------------------------------------------------------------------------
+// A door on another ride's queue. The game allows it and re-chains the queue to the new
+// ride; this used to refuse it outright, which took a park-design trade-off with a real cost
+// and a real benefit out of the player's hands - and describe_placement hid the same tiles,
+// so the move existed nowhere the model could see it, let alone take it.
+// ---------------------------------------------------------------------------
+
+/** A park whose gate and trunk are at x=4, leaving the middle of the map clear for two rides. */
+function twoRidePark(): FakeGame {
+    const game = new FakeGame(32, 32);
+    game.rideObjects = [{ index: 0, name: "Merry-Go-Round", rideType: [33] }];
+    game.addParkEntrance(4, 2);
+
+    for (let y = 3; y <= 20; y++) {
+        game.addPath(4, y);
+    }
+
+    return game;
+}
+
+function buildIn(request: Record<string, unknown>): BuildOutcome {
+    let outcome: BuildOutcome | null = null;
+
+    buildFlatRide({
+        rideObject: 0, price: 10, open: true, rotation: 0,
+        colour1: 0, colour2: 0, entranceObject: 0, inspectionInterval: 2,
+        ...request
+    } as never, function (result) { outcome = result; });
+
+    assert.ok(outcome, "buildFlatRide never finished");
+    return outcome as unknown as BuildOutcome;
+}
+
+/** The ride a queue tile is chained to, read straight off the fake's own element. */
+function queueRideAt(game: FakeGame, x: number, y: number): number | null | undefined {
+    return game.tile(x, y).elements.filter(function (element) {
+        return element.type === "footpath" && element.isQueue;
+    })[0]?.ride;
+}
+
+test("a door on another ride's queue is built, and the build says which ride lost it", function () {
+    const game = twoRidePark();
+    // The queue goes down first and the entrance second, because placing an entrance is what
+    // chains a queue to a ride - the fake models FootpathChainRideQueue, and a queue nothing
+    // has walked out to is bound to nobody.
+    game.addPath(11, 10, true);
+
+    const restore = game.install();
+
+    try {
+        const first = buildIn({ x: 14, y: 10, entrance: { x: 12, y: 10 }, exit: { x: 16, y: 10 } });
+
+        assert.equal(first.rideId, 0);
+        assert.equal(queueRideAt(game, 11, 10), 0,
+            "the fake has to have actually chained the queue to ride 0, or this test proves nothing");
+        assert.deepEqual(first.ridesLeftWithoutQueue, [],
+            "a build that takes nothing reports nothing taken");
+
+        // Ride 1's entrance opens onto the same tile, 11,10.
+        const second = buildIn({ x: 11, y: 13, entrance: { x: 11, y: 11 }, exit: { x: 13, y: 13 } });
+
+        assert.equal(second.ok, true, "the game allows this door, so the build must not refuse it");
+        assert.equal(second.rideId, 1);
+        assert.equal(second.doorsAttached, true, "and both doors went up");
+        assert.equal(queueRideAt(game, 11, 10), 1,
+            "the game re-chained the queue to the new ride, which is the thing being reported");
+
+        assert.deepEqual(second.ridesLeftWithoutQueue,
+            [{ id: 0, name: "Ride 0", entranceDoor: { x: 11, y: 10 } }],
+            "named, with the door its queue would have to go back on");
+
+        const detail = step(second, "access");
+
+        assert.match(detail, /Ride 0 .*had a queue bound to it before this build and has none now/,
+            "the consequence is in the step the model reads: " + detail);
+        assert.match(detail, /its entrance door is at 11,10/, "with the tile a new queue would go on");
+        assert.match(detail, /guests cannot board it/, "and what having no queue does to that ride");
+        assert.doesNotMatch(detail, /should|instead|avoid|better|consider/i,
+            "facts about what happened, never advice about what to do next");
+    } finally {
+        restore();
+    }
+});
+
+test("the refusal that took this move away is gone", function () {
+    // The exact sentence, pinned absent: a falsehood this specific comes back from a stale
+    // branch or a half-remembered paragraph, and its return would silently re-close the
+    // decision. The build above is what proves the move works; this is what proves the
+    // veto is not merely worded differently.
+    const game = twoRidePark();
+    game.addPath(11, 10, true);
+
+    const restore = game.install();
+
+    try {
+        buildIn({ x: 14, y: 10, entrance: { x: 12, y: 10 }, exit: { x: 16, y: 10 } });
+
+        const second = buildIn({ x: 11, y: 13, entrance: { x: 11, y: 11 }, exit: { x: 13, y: 13 } });
+        const text = JSON.stringify(second.steps);
+
+        assert.doesNotMatch(text, /is already the queue for ride/,
+            "the refusal itself");
+        assert.doesNotMatch(text, /would re-chain that queue to this ride and leave ride/,
+            "and the sentence that justified it, which described a consequence and then acted on it");
+        assert.equal(second.steps.filter(function (s) { return s.step === "site"; }).length, 0,
+            "no site step at all: nothing about this placement was refused");
+    } finally {
+        restore();
+    }
+});
+
+test("a door tile under water is refused, because no queue can be laid on a lake", function () {
+    const { game, restore } = park();
+    Object.assign(game.tile(12, 10).elements[0], { waterHeight: 112 });
+
+    try {
+        const detail = step(build({}), "site");
+
+        assert.match(detail, /entranceX\/entranceY 12,10 is under water, and a door needs dry land/,
+            "got: " + detail);
+        assert.equal(game.rides.length, 0, "and nothing was created for a door that cannot stand");
     } finally {
         restore();
     }

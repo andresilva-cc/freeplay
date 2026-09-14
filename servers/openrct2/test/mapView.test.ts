@@ -178,7 +178,18 @@ const PLANTED: Record<string, string> = {
     "16,18": "~",
     "18,18": "!",
     "20,18": "?",
-    "22,18": "U",
+    "22,18": "UE",
+    // A tag is built up: `U` for ground the park does not own, then what that ground is,
+    // then `S` when scenery stands on it. All five of these used to render as the single
+    // letter `U`, which is the blindness this park is here to keep fixed - a lake, a
+    // hillside and a clearing beyond the fence are three different things to buy.
+    "6,18": "US",
+    "8,18": "U^",
+    "6,20": "U^S",
+    "32,18": "U~",
+    // And the same second attribute inside the park: a tree on a slope is still a tree,
+    // and a footpath can be laid on a slope once it is cleared.
+    "22,20": "^S",
     "12,22": "P", "13,22": "P", "14,22": "P", "15,22": "P", "16,22": "P",
     "17,22": "P", "18,22": "P", "19,22": "P", "20,22": "P"
 };
@@ -216,6 +227,14 @@ function plantedPark(game: FakeGame): void {
     game.tile(20, 18).elements = [];
     game.own(22, 18, false);
 
+    game.addScenery(6, 18);
+    game.tile(8, 18).elements[0].slope = 4;
+    game.tile(6, 20).elements[0].slope = 4;
+    game.addScenery(6, 20);
+    addWater(game, 32, 18);
+    game.tile(22, 20).elements[0].slope = 4;
+    game.addScenery(22, 20);
+
     for (let x = 12; x <= 20; x++) {
         game.addPath(x, 22);
     }
@@ -232,7 +251,7 @@ function expectedOf(fromX: number, fromY: number, toX: number, toY: number): Rec
 
             expected[key] = Object.prototype.hasOwnProperty.call(PLANTED, key)
                 ? PLANTED[key]
-                : (inside ? "E" : "U");
+                : (inside ? "E" : "UE");
         }
     }
 
@@ -290,7 +309,7 @@ test("a coordinate past 99 is written out, not widened, truncated or split", fun
         const view = drawn(renderMapView({ left: 96, top: 95, right: 115, bottom: 110 }));
 
         assert.equal(kindAt(view, 104, 101), "S");
-        assert.equal(kindAt(view, 100, 101), "U");
+        assert.equal(kindAt(view, 100, 101), "UE");
         assert.equal(kindAt(view, 99, 101), "E", "the columns either side of the hundreds roll are still themselves");
         assert.equal(kindAt(view, 101, 101), "E");
         assert.ok(view.rows[0].indexOf("y95: 96-") === 0,
@@ -380,40 +399,65 @@ test("no kind is a prefix of a coordinate, so a run cannot be read two ways", fu
 });
 
 // ---------------------------------------------------------------------------
-// Precedence. One kind a tile means collapsing, and the tool description states the order,
-// so the renderer has to follow exactly that order.
+// A tag is whose land, then what the ground is, then what stands on it. It used to be one
+// kind off a precedence list, and the list was hiding facts rather than deduplicating them.
 // ---------------------------------------------------------------------------
 
-test("ground that can never be built on outranks scenery standing on it", function () {
+test("sloped ground carries the scenery standing on it instead of hiding it", function () {
+    // `^` alone used to be the answer here, on the grounds that clearing a tree off a slope
+    // would not make the tile buildable. That is a judgement about ONE of the calls the
+    // model has: build_path lays a footpath up a slope perfectly well, and the tree is in
+    // the way of it. A human sees the tree.
     withGame(function (game) {
         game.tile(10, 10).elements[0].slope = 4;
         game.addScenery(10, 10);
         game.addScenery(11, 10);
         game.own(12, 10, false);
         game.addScenery(12, 10);
+        game.tile(13, 10).elements[0].slope = 4;
     }, function () {
         const view = drawn(renderMapView({ left: 8, top: 8, right: 14, bottom: 14 }));
 
-        assert.equal(kindAt(view, 10, 10), "^",
-            "clearing a tree off sloped ground does not make it buildable, so the slope is the fact");
-        assert.equal(kindAt(view, 11, 10), "S", "on flat park land the tree is the fact: clearing it works");
-        assert.equal(kindAt(view, 12, 10), "U");
+        assert.equal(kindAt(view, 10, 10), "^S", "a tree on a slope is a slope AND a tree");
+        assert.equal(kindAt(view, 11, 10), "S", "on flat park land the tree is the whole of it");
+        assert.equal(kindAt(view, 12, 10), "US", "and beyond the fence it is still a tree");
+        assert.equal(kindAt(view, 13, 10), "^", "bare sloped ground carries no S to carry");
     });
 });
 
-test("water outranks ownership and ownership outranks slope", function () {
+test("ground the park does not own still says what it is", function () {
+    // Every one of these was the single letter `U`. `buy_land` exists, expanding the park is
+    // one of the few strategic moves the scenario offers, and choosing where to expand needs
+    // the same facts about that ground as choosing where to build needs about this side of
+    // the fence. A lake, a hillside and a clearing are three different purchases.
     withGame(function (game) {
         addWater(game, 10, 10);
         game.own(10, 10, false);
         game.own(11, 10, false);
         game.tile(11, 10).elements[0].slope = 4;
         game.tile(12, 10).elements[0].slope = 4;
+        game.own(13, 10, false);
+        game.own(14, 10, false);
+        game.addScenery(14, 10);
+        addWater(game, 15, 10);
     }, function () {
-        const view = drawn(renderMapView({ left: 8, top: 8, right: 14, bottom: 14 }));
+        const view = drawn(renderMapView({ left: 8, top: 8, right: 16, bottom: 14 }));
 
-        assert.equal(kindAt(view, 10, 10), "~", "unowned water is still water");
-        assert.equal(kindAt(view, 11, 10), "U", "unowned sloped land reads as not the park's");
-        assert.equal(kindAt(view, 12, 10), "^");
+        assert.equal(kindAt(view, 10, 10), "U~", "a lake the park does not own is a lake");
+        assert.equal(kindAt(view, 11, 10), "U^", "a hillside beyond the fence is a hillside");
+        assert.equal(kindAt(view, 12, 10), "^", "and the park's own slope keeps its own tag");
+        assert.equal(kindAt(view, 13, 10), "UE", "flat, empty and not the park's is the commonest of them");
+        assert.equal(kindAt(view, 14, 10), "US", "scenery beyond the fence is scenery");
+        assert.equal(kindAt(view, 15, 10), "~", "the park's own water has no prefix");
+
+        const kinds: Record<string, boolean> = {};
+
+        for (let x = 10; x <= 15; x++) {
+            kinds[String(kindAt(view, x, 10))] = true;
+        }
+
+        assert.equal(Object.keys(kinds).length, 6,
+            "six tiles that a player tells apart at a glance must be six tags, not two");
     });
 });
 
@@ -622,7 +666,8 @@ test("the tool description names every kind the renderer can produce", function 
 
         const kinds = Object.keys(seen).sort();
 
-        assert.deepEqual(kinds, ["!", "?", "E", "G", "N", "P", "Q", "S", "U", "UP", "UQ", "X", "^", "r", "~"],
+        assert.deepEqual(kinds,
+            ["!", "?", "E", "G", "N", "P", "Q", "S", "UE", "UP", "UQ", "US", "U^", "U^S", "U~", "X", "^", "^S", "r", "~"],
             "the planted park is supposed to hold one of everything; if it does not, this test"
             + " is only checking the kinds it happens to reach");
 
@@ -1089,7 +1134,7 @@ test("a footpath on land the park does not own is a different kind from one on i
 
         // The whole corridor in one line, which is the geometry the model got wrong by two
         // columns off the grid and which no counting can get wrong here.
-        assert.equal(view.rows[2], "y11: 4-11UP 12-18P 19-20E 21-21U",
+        assert.equal(view.rows[2], "y11: 4-11UP 12-18P 19-20E 21-21UE",
             "the boundary between the corridor and the park's own walk falls between 11 and 12,"
             + " and the park's east boundary between 20 and 21");
         assert.equal(kindAt(view, 8, 11), "UP", "the entrance corridor is paving the park does not own");
@@ -1100,7 +1145,9 @@ test("a footpath on land the park does not own is a different kind from one on i
         // The configuration that lied: unowned paving with the park's own empty ground
         // beside it. Both facts have to survive into the reading.
         assert.equal(kindAt(view, 12, 10), "E", "the park's ground, flat and empty, beside the corridor's end");
-        assert.equal(kindAt(view, 8, 10), "U", "and the ground beside the corridor itself is not the park's");
+        assert.equal(kindAt(view, 8, 10), "UE",
+            "and the ground beside the corridor itself is not the park's - flat and empty, which is what"
+            + " `buy_land` would be buying");
         assert.equal(kindAt(view, 19, 11), "E", "past the trunk the park's ground is empty again");
     });
 });

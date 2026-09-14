@@ -66,9 +66,16 @@ path does not.
 
 Note what none of them do: none rank options by "best", none choose where a ride goes,
 none decide a price, and none pave a tile the model did not name. `describe_placement`
-answers about a tile the model named and looks at no other; its `access` list is every door
-position that placement has, in the order the tiles ring the footprint, so there is nothing
-in it that was ordered or left out.
+answers about a tile the model named and looks at no other; its `access` list is in the
+order the tiles ring the footprint and in no other, so nothing in it was ordered.
+
+Things *are* left out of it — a door position on a slope, or off the park's land, is not a
+door position the game would take — and the fix for that is disclosure, not a claim that
+there is no filter. `accessTotal` is how many positions the footprint has, `accessRuledOut`
+is what took the rest out by cause and count, and `note` says the same in a sentence. This
+paragraph used to assert there was "nothing in it that was ordered or left out" while up to
+fifteen of a 4x4's sixteen positions could vanish uncounted, which is worse than the filter:
+a reader who checks the claim is misled by the check.
 
 `build_flat_ride` reports whether guests can actually reach the finished ride. It does
 not fix it. Telling the model its ride is unreachable is information; silently laying

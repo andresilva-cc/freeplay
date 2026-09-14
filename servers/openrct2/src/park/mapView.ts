@@ -41,19 +41,31 @@
  * chaining check above needs every run's last x written down, not inferred.
  *
  * A KIND IS A SHORT TAG, NOT A CHARACTER, AND THERE IS NO LEGEND. One character per tile was
- * a budget, and runs spend it per run instead of per tile, so the tag is affordable. `U` is
- * the park not owning the ground, and `UP`/`UQ` are paving on ground it does not own, so the
- * fact that cost a run 2,400 pounds - buying land toward an entrance corridor that was never
- * the park's to reach - is the first letter of the tag rather than a hyphen that reads as
- * absence. The legend field is gone: it was a second copy of what the tool description says,
- * it was read 0 times, and the description is in context on every turn anyway.
+ * a budget, and runs spend it per run instead of per tile, so the tag is affordable. That is
+ * what pays for `U` as a PREFIX rather than a kind: `UP` is paving the park does not own -
+ * the fact that cost a run 2,400 pounds, buying land toward an entrance corridor that was
+ * never the park's to reach - and `UE`, `U^`, `U~` are the ground beyond the fence, empty,
+ * sloped or under water. The legend field is gone: it was a second copy of what the tool
+ * description says, it was read 0 times, and the description is in context on every turn.
  *
  * RIDE TRACK NAMES ITS RIDE. `r3` is ride 3, the id `park_status` reports. The old grid spent
  * a lowercase letter per ride and a `rides` table to map letters back, which put the ride's
  * identity one lookup away from the picture, and gave up entirely past 26 rides.
  *
- * ONE TILE, ONE KIND. A tile is the first kind on the precedence list that applies to it, so
- * a tree on sloped ground reads as sloped: clearing it would not make that tile buildable.
+ * A TAG IS WHOSE LAND, THEN WHAT THE GROUND IS, THEN WHAT STANDS ON IT. It used to be one
+ * kind per tile off a precedence list, and the list was doing more than deduplicating: `^`
+ * swallowed the trees on a hillside and `U` swallowed everything at once - whether the ground
+ * the model is meant to buy is a clearing, a cliff or a lake. The stated reason was that
+ * clearing a tree on a slope would not make the tile buildable, which is a buildability
+ * judgement about one action out of the several the model has, made on its behalf, and it is
+ * the judgement the search tools in this bridge were deleted for making. A human sees all of
+ * it in one glance.
+ *
+ * What is still collapsed, and deliberately: paving hides the slope underneath it. `P` and
+ * `Q` say nothing about whether the ground falls away, because a footpath already stands
+ * there and no call this bridge offers does anything different on a sloped one - while `^S`
+ * and `U~` each change what `clear_scenery` or `buy_land` would be buying. It is a cost with
+ * nothing bought, which is the test, not "it is not worth the tokens".
  *
  * The ground is read through `readMapGrid`, the same pass `describe_placement` searches, so a
  * tile this map calls buildable is a tile that tool would consider. A second reader here with
@@ -88,19 +100,28 @@ const ON_PARK_GATE = "G";
 const ON_RIDE_ENTRANCE = "N";
 const ON_RIDE_EXIT = "X";
 const ON_QUEUE = "Q";
-/** A queue on ground the park does not own: there, walked, and not the park's to touch. */
-const ON_QUEUE_UNOWNED = "UQ";
 const ON_PATH = "P";
-/** A footpath on ground the park does not own - a scenario's entrance corridor, typically. */
-const ON_PATH_UNOWNED = "UP";
 /** Something is standing here that this renderer has no name for. */
 const ON_UNNAMED = "!";
 const GROUND_UNREADABLE = "?";
 const GROUND_WATER = "~";
-const GROUND_UNOWNED = "U";
 const GROUND_SLOPED = "^";
 const GROUND_SCENERY = "S";
 const GROUND_CLEAR = "E";
+/**
+ * Not the park's land, written in front of whatever the ground is: `UP` a footpath on it,
+ * `UE` flat and empty, `U^` sloped, `U~` water.
+ *
+ * It used to be the whole tag - `U` and nothing else - so a third of a typical window said
+ * only "not yours" about ground the model is expected to buy. `buy_land` exists, expanding
+ * the park is one of the few strategic moves in the scenario, and choosing where to expand
+ * needs the same facts about that ground as choosing where to build needs about this side of
+ * the fence. A human sees a lake, a hillside and a clearing beyond the boundary at a glance.
+ * Collapsing all three into one letter was a buildability judgement - "you cannot build
+ * there, so the details do not matter" - made on the model's behalf, and it is the same
+ * judgement `describe_placement` was stripped of.
+ */
+const NOT_OWNED = "U";
 
 /** What `clear_scenery` will take down, which is what `S` promises. Same set as map.ts. */
 const SCENERY_TYPES: Record<string, boolean> = {
@@ -246,13 +267,14 @@ function readTile(grid: MapGrid, x: number, y: number): string {
     // still changes what can be done here. A path the park does not own is walked by guests
     // and is not the park's to queue, to pave up to, or in most scenarios to buy.
     const owned = !!cell && cell.owned;
+    const whose = owned ? "" : NOT_OWNED;
 
     if (queue) {
-        return owned ? ON_QUEUE : ON_QUEUE_UNOWNED;
+        return whose + ON_QUEUE;
     }
 
     if (path) {
-        return owned ? ON_PATH : ON_PATH_UNOWNED;
+        return whose + ON_PATH;
     }
 
     if (unnamed) {
@@ -264,18 +286,17 @@ function readTile(grid: MapGrid, x: number, y: number): string {
     }
 
     if (water) {
-        return GROUND_WATER;
+        return whose + GROUND_WATER;
     }
 
-    if (!cell.owned) {
-        return GROUND_UNOWNED;
-    }
-
+    // Sloped carries its scenery rather than swallowing it. `^` alone said "not buildable"
+    // and stopped, which made every tree on a hillside invisible - and a path IS buildable
+    // on a slope, so the tree there is in the way of something the model can actually do.
     if (!cell.flat) {
-        return GROUND_SLOPED;
+        return whose + GROUND_SLOPED + (scenery ? GROUND_SCENERY : "");
     }
 
-    return scenery ? GROUND_SCENERY : GROUND_CLEAR;
+    return whose + (scenery ? GROUND_SCENERY : GROUND_CLEAR);
 }
 
 /**

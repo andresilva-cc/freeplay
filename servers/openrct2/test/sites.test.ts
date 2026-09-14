@@ -401,9 +401,9 @@ test("the side an access tile is named by is the side it is on", function () {
  */
 test("every door position is listed, and the list is not sorted by anything", function () {
     // Origin 5,12 puts the path column at x=10 off the ride's +x side, so the ring - which
-    // starts on -x - reaches the far doors first and the distance-0 doors eleventh. In a
-    // park where the ring happened to agree with distance this assertion would pass under
-    // a sort as well, and prove nothing.
+    // starts on the -y face and turns clockwise - reaches the far doors first and the
+    // distance-0 doors fifth to eighth. In a park where the ring happened to agree with
+    // distance this assertion would pass under a sort as well, and prove nothing.
     const { restore } = openPark(25);
 
     try {
@@ -411,11 +411,20 @@ test("every door position is listed, and the list is not sorted by anything", fu
         const options = access(result);
 
         assert.equal(options.length, 16, "a 4x4 in open ground has sixteen door positions, and all sixteen are listed");
+        assert.equal(result.accessTotal, 16, "and the count of positions agrees with the list when nothing was cut");
+        assert.deepEqual(result.accessRuledOut, [], "nothing was cut, so nothing is claimed to have been");
 
         const distances = options.map(function (option) { return option.pathDistance; });
 
-        assert.deepEqual(distances, [7, 5, 7, 7, 7, 5, 4, 4, 3, 3, 0, 2, 0, 0, 0, 2],
+        assert.deepEqual(distances, [5, 4, 3, 2, 0, 0, 0, 0, 2, 3, 4, 5, 7, 7, 7, 7],
             "the ring order, which is a shape rather than a ranking");
+
+        // A real walk, not four sweeps off each footprint tile in turn: the sides come in
+        // blocks because adjacent entries are adjacent on the ground. The order this
+        // replaced put the +x face first every time, and the model takes entry #1.
+        assert.deepEqual(options.map(function (option) { return option.side; }),
+            ["-y", "-y", "-y", "-y", "+x", "+x", "+x", "+x", "+y", "+y", "+y", "+y", "-x", "-x", "-x", "-x"],
+            "the ring goes round the footprint once, one face at a time");
 
         const sorted = distances.slice().sort(function (left, right) { return left - right; });
         assert.notDeepEqual(distances, sorted,
@@ -782,10 +791,11 @@ test("a door on bare ground beside the trunk cuts nothing, whatever the trunk ca
         });
 
         assert.deepEqual(doors, [
-            { at: "11,9", cuts: 0 },
+            { at: "11,11", cuts: 0 },
             { at: "11,10", cuts: 0 },
-            { at: "11,11", cuts: 0 }
-        ], "each of these is one tile from a trunk tile whose own severance is 2, 1 and 0");
+            { at: "11,9", cuts: 0 }
+        ], "each of these is one tile from a trunk tile whose own severance is 0, 1 and 2"
+            + " - the ring reaches the -x face last and walks it from +y to -y");
 
         // The control: the trunk really does have something to lose, which is what makes the
         // three zeros above the rule and not an empty park.
@@ -1220,7 +1230,15 @@ test("a door with a queue bound to no ride is offered, because placing the entra
     }
 });
 
-test("a door with a queue belonging to another ride is not offered", function () {
+/**
+ * A door on another ride's queue is a price, not a bar.
+ *
+ * The game places the door and re-chains the queue to the new ride, leaving the old one
+ * without. Whether that is worth doing is a park-design trade-off with a real cost and a real
+ * benefit - and this tool used to answer it by hiding the tile, while build_flat_ride refused
+ * the same move, so the option existed nowhere the model could see or take it.
+ */
+test("a door with a queue belonging to another ride is offered, with what it costs", function () {
     // Bound the way the game binds it: a ride entrance, and the chain walked back from it.
     // Setting the field by hand would pass whatever the fake happened to store.
     const game = oneSitePark();
@@ -1236,11 +1254,31 @@ test("a door with a queue belonging to another ride is not offered", function ()
         const result = describePlacement(0, 13, 10, 0);
         const doors = doorKeys(result);
 
-        assert.equal(result.fits, true, "the placement is still there; only the one door is gone");
-        assert.equal(doors.indexOf("10,10"), -1,
-            "building there would re-chain ride 6's queue and leave it with none: " + doors.join(" "));
-        assert.ok(doors.indexOf("10,9") >= 0, "the plain path tiles either side of it are untouched");
-        assert.ok(doors.indexOf("10,11") >= 0);
+        assert.equal(result.fits, true);
+        assert.ok(doors.indexOf("10,10") >= 0,
+            "the game allows this door, so the option has to be in the list: " + doors.join(" "));
+
+        const taken = optionForDoor(result, 10, 10);
+
+        assert.equal(taken?.door?.queueServesRide, 6, "and it names the ride whose queue it would take");
+        assert.equal(taken?.door?.hasUnboundQueue, false,
+            "a queue with an owner is not the unbound queue a demolished ride leaves behind");
+        assert.match(String(taken?.cost), /queue bound to ride 6/, "the cost names the ride");
+        assert.match(String(taken?.cost), /left with no queue at its own entrance/,
+            "and says what happens to it, which is the whole of the price");
+        assert.doesNotMatch(String(taken?.cost), /avoid|instead|do not|better|should/i,
+            "a price, never a recommendation");
+
+        // The other doors are unchanged and say nothing about a queue that is not theirs.
+        assert.equal(optionForDoor(result, 10, 9)?.door?.queueServesRide, undefined);
+        assert.equal(optionForDoor(result, 10, 11)?.door?.queueServesRide, undefined);
+
+        // The owned strip is three tiles tall, so the six positions above and below the 3x3
+        // are off the park's land. They are counted, which is the point: a list of six out of
+        // twelve used to read as a footprint with six door positions.
+        assert.equal(result.accessTotal, 12, "a 3x3 has twelve positions round it whatever the ground is");
+        assert.deepEqual(result.accessRuledOut, [{ reason: "are not land the park owns", tiles: 6 }],
+            "and the six that are missing are accounted for, by cause and count");
     } finally {
         restore();
     }
@@ -1831,14 +1869,32 @@ test("the description says a distance is to paving guests can reach", function (
         "what to do about a stranded door is the model's call, not the description's");
 });
 
-test("the description says the access list is whole and unordered, and that a ride needs two", function () {
+/**
+ * The list is unordered AND filtered, and the description has to say both.
+ *
+ * What stood here asserted the opposite - that `accessTotal` must not appear, on the grounds
+ * that the old windowed search was gone. The search was gone; the filter was not. A 4x4 has
+ * sixteen door positions and up to fifteen could be dropped for slope, height, ownership or a
+ * blocked apron with nothing in the result counting them, while this same description called
+ * the list "not trimmed". The unordered half is the true half and it is kept; the whole half
+ * was false and is now a disclosure instead of a claim.
+ */
+test("the description says the access list is unordered, that it is filtered, and that a ride needs two", function () {
     const text = description();
 
-    assert.match(text, /The list is in the order the tiles ring the footprint and is ordered by nothing else: it is not sorted, not trimmed, and not marked/,
-        "both halves: nothing is left out, and nothing is ranked");
+    assert.match(text, /The list is in the order the tiles ring the footprint and is ordered by nothing else: it is not sorted and not marked/,
+        "the half that is true: nothing is ranked");
+    assert.match(text, /IT IS FILTERED, AND IT SAYS SO/,
+        "and the half that was a falsehood, said where the list is described");
+    assert.match(text, /`accessTotal` is how many door positions the footprint has at all/,
+        "the count of what there was");
+    assert.match(text, /`accessRuledOut` is why the rest are missing, by cause and count/,
+        "and the account of what went");
     assert.match(text, /A ride needs TWO, one for the entrance and one for the exit/,
         "the mechanic the model cannot read anywhere else");
-    assert.doesNotMatch(text, /accessTotal|at most \d+ options|window/,
+    assert.doesNotMatch(text, /not trimmed/,
+        "the old claim, which was false every time a door position failed a condition");
+    assert.doesNotMatch(text, /at most \d+ options|window/,
         "there is no window any more, so a description that mentions one describes a different tool");
 });
 
@@ -1900,4 +1956,203 @@ test("a placement reports whether the ride is behind research, and is described 
     } finally {
         restore();
     }
+});
+
+
+// ---------------------------------------------------------------------------
+// Water. A lake bed is owned, level, at a height and carrying nothing, so every field the
+// footprint check read said "build here" - and `trackplace` then refused it, one paid-for
+// `ridecreate` and one `ridedemolish` later. `park_status`'s ground census and `view_map`
+// were both reading `waterHeight` off the same surface element in the same turn.
+// ---------------------------------------------------------------------------
+
+/** Water the way the game stores it: a height above the surface, on the surface element. */
+function floodTile(game: FakeGame, x: number, y: number): void {
+    Object.assign(game.tile(x, y).elements[0], { waterHeight: 112 });
+}
+
+test("a footprint tile under water is a blocker, and the placement does not fit", function () {
+    const { game, restore } = gameWith(33, function (game) {
+        game.addParkEntrance(10, 0);
+
+        for (let y = 1; y <= 20; y++) {
+            game.addPath(10, y);
+        }
+
+        floodTile(game, 13, 10);
+    });
+
+    try {
+        // Read off the fake, not asserted about the implementation: this tile passes every
+        // other condition the footprint check applies. If it did not, a pass here would
+        // prove nothing about water.
+        const surface = game.tile(13, 10).elements[0];
+
+        assert.equal(surface.hasOwnership, true, "the park owns the lake bed");
+        assert.equal(surface.slope, 0, "it is level");
+        assert.equal(game.tile(13, 10).elements.length, 1, "and nothing whatever is standing on it");
+
+        const result = describePlacement(0, 13, 10, 0);
+
+        assert.equal(result.ok, true);
+        assert.equal(result.fits, false, "a ride does not stand on a lake, and this said it did");
+        assert.match(String(blockerAt(result, 13, 10)), /is under water, and a ride needs dry land/);
+        assert.match(String(result.ground), /1 are under water/,
+            "and the sentence counts it: " + String(result.ground));
+        assert.doesNotMatch(String(result.ground), /are the park's, dry, level/,
+            "the all-clear sentence must not be the one a flooded footprint gets");
+    } finally {
+        restore();
+    }
+});
+
+test("a door position on water, and a door opening onto water, are ruled out and counted", function () {
+    // A building needs dry ground and a queue cannot be laid on a lake, so both halves of a
+    // door position fail on water - and both are counted rather than dropped in silence.
+    const { restore } = gameWith(33, function (game) {
+        game.addParkEntrance(10, 0);
+
+        for (let y = 1; y <= 20; y++) {
+            game.addPath(10, y);
+        }
+
+        // The whole -y face of a 3x3 at 13,10 is the building tiles 12..14 at y 8.
+        floodTile(game, 12, 8);
+        floodTile(game, 13, 8);
+        floodTile(game, 14, 8);
+        // And the apron behind one +x position: the building tile 15,10 is dry, the tile its
+        // door would open onto is not.
+        floodTile(game, 16, 10);
+    });
+
+    try {
+        const result = describePlacement(0, 13, 10, 0);
+        const tiles = access(result).map(function (option) {
+            return String(option.x) + "," + String(option.y);
+        });
+
+        assert.equal(result.accessTotal, 12, "a 3x3 has twelve positions whatever is on them");
+        assert.equal(tiles.indexOf("12,8"), -1, "a building cannot stand in a lake");
+        assert.equal(tiles.indexOf("15,10"), -1, "and a queue cannot be laid in one either");
+        assert.deepEqual(result.accessRuledOut, [
+            { reason: "are under water", tiles: 3 },
+            { reason: "open onto water, so no queue could reach them", tiles: 1 }
+        ], "four gone, both causes named and counted");
+        assert.equal(access(result).length, 8, "and the eight that are left are listed");
+        assert.match(String(result.note), /Of the 12 door positions this footprint has, 8 are listed and 4 are not/,
+            "the same disclosure in the sentence: " + String(result.note));
+    } finally {
+        restore();
+    }
+});
+
+test("the disclosure counts every cause that took a door position out", function () {
+    // The defect in one fixture: a 4x4 has sixteen positions, most of them fail something,
+    // and what came back was a short list with nothing saying it was short.
+    const game = new FakeGame(24, 24);
+    game.rideObjects = [{ index: 0, name: "Dodgems", rideType: [25] }];
+    game.addParkEntrance(10, 0);
+
+    for (let y = 1; y <= 20; y++) {
+        game.addPath(10, y);
+    }
+
+    // Footprint 12..15 x 12..15 from origin 12,12; the ring is x 11..16, y 11..16.
+    for (let x = 11; x <= 16; x++) {
+        game.own(x, 11, false);                             // the whole -y face: unowned
+        game.tile(x, 16).elements[0].slope = 4;             // the whole +y face: sloped
+    }
+
+    for (let y = 12; y <= 15; y++) {
+        game.tile(16, y).elements[0].baseZ = 128;           // the +x face: a step up
+    }
+
+    const restore = game.install();
+
+    try {
+        const result = describePlacement(0, 12, 12, 0);
+
+        assert.equal(result.accessTotal, 16, "sixteen positions round a 4x4");
+        assert.equal(access(result).length, 4, "and only the -x face survives");
+        assert.deepEqual(result.accessRuledOut, [
+            { reason: "are not land the park owns", tiles: 4 },
+            { reason: "stand at a different height from the ride", tiles: 4 },
+            { reason: "are on a slope, and a door needs level ground", tiles: 4 }
+        ], "three causes, four tiles each, in the order the ring met them");
+
+        const said = String(result.note);
+
+        assert.match(said, /Of the 16 door positions this footprint has, 4 are listed and 12 are not/);
+        assert.match(said, /4 are not land the park owns/);
+        assert.match(said, /4 stand at a different height from the ride/);
+        assert.match(said, /4 are on a slope/);
+        assert.doesNotMatch(said, /buy_land|level the ground|try |instead|should/i,
+            "which constraint to relax is the caller's, and naming one picks it");
+    } finally {
+        restore();
+    }
+});
+
+test("nothing is claimed about filtering when nothing was filtered", function () {
+    const { restore } = openPark(33);
+
+    try {
+        const result = describePlacement(0, 14, 10, 0);
+
+        assert.equal(result.accessTotal, 12);
+        assert.equal(access(result).length, 12, "every position is usable here");
+        assert.deepEqual(result.accessRuledOut, []);
+        assert.equal(result.note, undefined,
+            "a note about a filter that did not run is noise, and `accessTotal` is in the result either way");
+    } finally {
+        restore();
+    }
+});
+
+test("a stall whose serving tile is unusable is told what is on it, not just that there is none", function () {
+    // One candidate tile and no door, so there is no count to give - the disclosure at this
+    // size is naming what the tile is. The old sentence listed four possible causes and left
+    // the caller to work out which one this park had.
+    const probes = [
+        {
+            name: "water",
+            arrange: function (game: FakeGame) { floodTile(game, 14, 10); },
+            expect: /The tile it faces is under water/
+        },
+        {
+            name: "unowned",
+            arrange: function (game: FakeGame) { game.own(14, 10, false); },
+            expect: /The tile it faces is not land the park owns/
+        },
+        {
+            name: "a queue",
+            arrange: function (game: FakeGame) { game.addPath(14, 10, true); },
+            expect: /The tile it faces carries a queue, and guests standing in a queue buy nothing/
+        }
+    ];
+
+    probes.forEach(function (probe) {
+        // Ride type 28 is a 1x1 stall; rotation 2 faces +x, so 13,10 is served from 14,10.
+        const { game, restore } = gameWith(28, function (game) {
+            game.addParkEntrance(10, 0);
+
+            for (let y = 1; y <= 20; y++) {
+                game.addPath(10, y);
+            }
+        });
+
+        probe.arrange(game);
+
+        try {
+            const result = describePlacement(0, 13, 10, 2);
+
+            assert.equal(access(result).length, 0, probe.name + ": the tile is not usable");
+            assert.equal(result.accessTotal, 1, probe.name + ": a stall has one candidate whatever is on it");
+            assert.equal(result.accessRuledOut?.length, 1, probe.name + ": and it is accounted for");
+            assert.match(String(result.note), probe.expect, probe.name + ": got " + String(result.note));
+            assert.match(String(result.note), /so this placement has none/, probe.name);
+        } finally {
+            restore();
+        }
+    });
 });

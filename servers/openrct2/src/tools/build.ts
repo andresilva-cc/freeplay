@@ -36,6 +36,7 @@ function refuseArguments(detail: string): DeferredMcpResult {
         status: null,
         open: false,
         reachable: false,
+        ridesLeftWithoutQueue: [],
         steps: [{ step: "arguments", ok: false, detail: detail }]
     };
 
@@ -71,6 +72,10 @@ export class BuildTools {
             "`ok: true` with any of those false is a ride you already own, and",
             "calling this again builds and pays for a second one.",
             "`reachable` is false straight after building until the queue and the exit path are laid.",
+            "`ridesLeftWithoutQueue` names any ride that had a queue bound to it before this call and has",
+            "none after, read off the map afterwards. A door placed on a tile already carrying another",
+            "ride's queue is allowed and re-chains that queue to this ride; the build does not refuse it,",
+            "and this is what it cost. Empty is the normal answer.",
             "The only build that leaves nothing behind is `ok: false`; anything else means a ride is standing, and",
             "`operate_ride` with `demolish` is how it goes away.",
             "A paused game refuses the track and door actions, so this builds nothing and refuses while the clock",

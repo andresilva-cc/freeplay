@@ -153,16 +153,45 @@ export function computeFootprintOffsets(shape: FlatRideShape, rotation: number):
     return offsets;
 }
 
-/** Tiles orthogonally touching the footprint: every place an entrance or exit can go. */
+/**
+ * Tiles orthogonally touching the footprint: every place an entrance or exit can go, walked
+ * round the footprint rather than emitted in whatever order the footprint's own tiles came in.
+ *
+ * It used to step {+x, -x, +y, -y} off each footprint tile in turn, and everything that reads
+ * this called the result "the order the tiles ring the footprint" - which it was not. The
+ * practical effect was that the first option was the +x face of the ride every single time,
+ * and the first option is the one the model takes: 12 of 12 measured builds. A stated order
+ * that is not the order is worse than either, because it is what a reader checks against.
+ *
+ * So it is a real walk now: clockwise round the box one tile outside the footprint, starting
+ * at its -y side, then +x, then +y, then -x. Adjacent entries are adjacent on the ground,
+ * which is what makes the `side` of two options readable side by side.
+ *
+ * This still picks a default - any fixed order does, and the first entry is now always on the
+ * -y face instead of always on the +x face. Nothing here can fix that; what it can do is not
+ * claim the order means anything. The count is in `accessTotal`, the faces are in `side`, and
+ * nothing is sorted.
+ *
+ * The trailing sweep is for a footprint that is not a filled rectangle: nothing in the table
+ * is one today, and a perimeter tile in a notch would otherwise be dropped rather than
+ * reported last. A position left out of this list is a door position nothing ever offers.
+ */
 export function perimeterOffsets(offsets: Offset[]): Offset[] {
     const inside: Record<string, boolean> = {};
+    let minDx = offsets[0].dx;
+    let minDy = offsets[0].dy;
+    let maxDx = offsets[0].dx;
+    let maxDy = offsets[0].dy;
 
     for (let i = 0; i < offsets.length; i++) {
         inside[String(offsets[i].dx) + "," + String(offsets[i].dy)] = true;
+        minDx = Math.min(minDx, offsets[i].dx);
+        minDy = Math.min(minDy, offsets[i].dy);
+        maxDx = Math.max(maxDx, offsets[i].dx);
+        maxDy = Math.max(maxDy, offsets[i].dy);
     }
 
-    const seen: Record<string, boolean> = {};
-    const perimeter: Offset[] = [];
+    const touching: Record<string, boolean> = {};
     const steps = [{ dx: 1, dy: 0 }, { dx: -1, dy: 0 }, { dx: 0, dy: 1 }, { dx: 0, dy: -1 }];
 
     for (let i = 0; i < offsets.length; i++) {
@@ -171,12 +200,49 @@ export function perimeterOffsets(offsets: Offset[]): Offset[] {
             const dy = offsets[i].dy + steps[s].dy;
             const key = String(dx) + "," + String(dy);
 
-            if (inside[key] || seen[key]) {
-                continue;
+            if (!inside[key]) {
+                touching[key] = true;
             }
+        }
+    }
 
-            seen[key] = true;
-            perimeter.push({ dx: dx, dy: dy });
+    const perimeter: Offset[] = [];
+    const taken: Record<string, boolean> = {};
+    const take = function (dx: number, dy: number): void {
+        const key = String(dx) + "," + String(dy);
+
+        if (!touching[key] || taken[key]) {
+            return;
+        }
+
+        taken[key] = true;
+        perimeter.push({ dx: dx || 0, dy: dy || 0 });
+    };
+
+    const ringMinX = minDx - 1;
+    const ringMaxX = maxDx + 1;
+    const ringMinY = minDy - 1;
+    const ringMaxY = maxDy + 1;
+
+    for (let dx = ringMinX; dx <= ringMaxX; dx++) {
+        take(dx, ringMinY);
+    }
+
+    for (let dy = ringMinY + 1; dy <= ringMaxY; dy++) {
+        take(ringMaxX, dy);
+    }
+
+    for (let dx = ringMaxX - 1; dx >= ringMinX; dx--) {
+        take(dx, ringMaxY);
+    }
+
+    for (let dy = ringMaxY - 1; dy > ringMinY; dy--) {
+        take(ringMinX, dy);
+    }
+
+    for (let i = 0; i < offsets.length; i++) {
+        for (let s = 0; s < steps.length; s++) {
+            take(offsets[i].dx + steps[s].dx, offsets[i].dy + steps[s].dy);
         }
     }
 

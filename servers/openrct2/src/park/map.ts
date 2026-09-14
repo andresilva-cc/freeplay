@@ -13,6 +13,14 @@ export interface SurfaceCell {
     baseZ: number;
     path: boolean;
     queue: boolean;
+    /**
+     * The surface carries water above it. A lake bed is owned, level, at a height and empty,
+     * so every other field here reads exactly like open ground and a placement on it came
+     * back buildable until `trackplace` refused it, one `ridecreate` and one `ridedemolish`
+     * later. `readGroundCensus` and `view_map` were already reading `waterHeight` off the
+     * same surface element, so the park could call one tile water and buildable in one turn.
+     */
+    water: boolean;
 }
 
 /** Scenery a player can simply remove, as opposed to rides, paths and park structures. */
@@ -74,7 +82,8 @@ export function readMapGrid(): MapGrid {
                 clearable: clear || onlyRemovable,
                 baseZ: surface !== null ? surface.baseZ : -1,
                 path: path,
-                queue: queue
+                queue: queue,
+                water: surface !== null && typeof surface.waterHeight === "number" && surface.waterHeight > 0
             });
         }
     }

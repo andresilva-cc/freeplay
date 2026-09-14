@@ -4,7 +4,9 @@ import {
 } from "./paths.js";
 import { flatRideShape, footprintOffsets, shopServingTile } from "./flatRides.js";
 import { neighboursOf, tileName, tileState } from "./neighbours.js";
+import { ridesServedByQueue, ridesThatLostTheirQueue } from "./pathremove.js";
 import type { MapGrid } from "./map.js";
+import type { RideWithoutQueue } from "./pathremove.js";
 
 /** Game actions apply on a later tick, so every step waits before verifying. */
 const STEP_DELAY_MS = 150;
@@ -176,6 +178,13 @@ export interface BuildOutcome {
     open: boolean;
     /** Whether guests can actually walk from the existing paths to this ride. */
     reachable: boolean;
+    /**
+     * Rides that had a queue bound to them before this build and have none now, read off the
+     * map afterwards. A door placed on a tile already carrying another ride's queue re-chains
+     * that queue to the new ride; the game allows it, the build no longer refuses it, and
+     * this is what it cost. Empty whenever no door was placed or nothing was taken.
+     */
+    ridesLeftWithoutQueue: RideWithoutQueue[];
     steps: BuildStep[];
 }
 
@@ -248,6 +257,18 @@ interface AccessAttempt {
     rideDoor?: boolean;
 }
 
+/**
+ * Whether a door can stand on this tile, and if not, the one condition it fails.
+ *
+ * Only conditions the GAME refuses are in here. It also used to refuse a door whose tile
+ * opened onto a queue belonging to another ride: the game allows that, re-chains the queue to
+ * the new ride and leaves the old one without one. Whether a park wants to spend one ride's
+ * queue on another is a trade-off with a real cost and a real benefit, and refusing it took
+ * the trade off the table - in this file and in describe_placement's reader, which hid those
+ * tiles as well, so the move never appeared anywhere. The build goes ahead now and the
+ * `access` step names every ride that lost its queue, read off the map afterwards rather than
+ * predicted from the tile.
+ */
 function accessAt(
     grid: MapGrid,
     cx: number,
@@ -280,6 +301,12 @@ function accessAt(
 
     if (!cell.owned) {
         return { reason: "is not land the park owns" };
+    }
+
+    // Before slope, the way describe_placement and the ground census both sort it: a lake bed
+    // is level and at a height, and saying so is not what stops the building going up.
+    if (cell.water) {
+        return { reason: "is under water, and a door needs dry land" };
     }
 
     if (!cell.flat) {
@@ -323,6 +350,10 @@ function accessAt(
         return { reason: opensOnto + "is not land the park owns, so no queue could ever reach this door" };
     }
 
+    if (doorCell.water && !doorCell.path) {
+        return { reason: opensOnto + "is under water, so no queue could ever reach this door" };
+    }
+
     if (!doorCell.clearable && !doorCell.path) {
         const blockers = immovableElementsOn(door.x, door.y);
 
@@ -334,39 +365,7 @@ function accessAt(
         };
     }
 
-    const servingRide = queueServingOther(door.x, door.y);
-
-    if (servingRide !== null) {
-        return {
-            reason: opensOnto + "is already the queue for ride " + String(servingRide)
-                + ". Putting a door on it would re-chain that queue to this ride and leave ride "
-                + String(servingRide) + " with none",
-            stale: true
-        };
-    }
-
     return { access: { x: tile.x, y: tile.y, direction: facing } };
-}
-
-/** The ride a queue on this tile already serves, or null. An unbound queue chains freely. */
-function queueServingOther(x: number, y: number): number | null {
-    const tile = map.getTile(x, y);
-
-    for (let i = 0; i < tile.numElements; i++) {
-        const element = tile.getElement(i);
-
-        if (element.type !== "footpath") {
-            continue;
-        }
-
-        const path = element as FootpathElement;
-
-        if (path.isQueue && typeof path.ride === "number") {
-            return path.ride;
-        }
-    }
-
-    return null;
 }
 
 /** "entranceX/entranceY 12,10" - the argument names, so the model edits the right one. */
@@ -453,8 +452,32 @@ function readingOf(
         + (beside === "" ? "" : " The tiles beside it were read: " + beside);
 }
 
+/**
+ * What a door on another ride's queue cost, named ride by ride.
+ *
+ * The facts and no advice: which ride, where its own entrance door is, and what having no
+ * queue there does to it. Whether to lay it a new queue, take this ride back out, or leave it
+ * is the player's, and nothing here picks one - the same shape remove_path uses for the same
+ * damage, in the same words, because one thing described two ways reads as two things.
+ */
+function queueTakenSentence(lost: RideWithoutQueue[]): string {
+    let text = "";
+
+    for (let i = 0; i < lost.length; i++) {
+        text += " Ride " + String(lost[i].id) + " " + lost[i].name + " had a queue bound to it before"
+            + " this build and has none now: its entrance door is at " + String(lost[i].entranceDoor.x)
+            + "," + String(lost[i].entranceDoor.y) + ", and until a queue tile sits there guests cannot"
+            + " board it.";
+    }
+
+    return text;
+}
+
 export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: BuildOutcome) => void): void {
     const steps: BuildStep[] = [];
+    // Filled once the doors are up and the map has been read back. Empty until then, and
+    // empty in every outcome that never placed a door, which is the true answer for those.
+    let lostQueue: RideWithoutQueue[] = [];
     const finish = function (state: FinishState): void {
         done({
             ok: state.ok,
@@ -465,6 +488,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
             // Derived from the status the game gave back, so the two can never disagree.
             open: state.status === "open",
             reachable: state.reachable,
+            ridesLeftWithoutQueue: lostQueue,
             steps: steps
         });
     };
@@ -769,6 +793,11 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
 
             let entranceResult: GameActionResult | undefined;
             let exitResult: GameActionResult | undefined;
+            // Read before the doors go up, so what follows is a comparison rather than a
+            // prediction. A door on another ride's queue is allowed and re-chains that queue
+            // to this ride; nothing in the API reports it, and the same two reads are how
+            // remove_path and build_path measure the same damage.
+            const servedBefore = ridesServedByQueue();
 
             if (access) {
                 context.executeAction("rideentranceexitplace", {
@@ -783,6 +812,12 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
             }
 
             context.setTimeout(function () {
+                // Measured here rather than further down, because the door-failure branch
+                // below finishes without reaching it: a door that went up and took a queue
+                // beside a door that did not is exactly the build that must not report a
+                // clean sheet it never looked at.
+                lostQueue = ridesThatLostTheirQueue(servedBefore, ridesServedByQueue());
+
                 if (access) {
                     const station = map.getRide(created).stations[0];
                     const entranceOn = !!(station && station.entrance);
@@ -838,6 +873,8 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                                         + " actions a paused game refuses, so neither of those two ways out goes"
                                         + " through until the clock is running. " + UNPAUSE_CALL
                                     : "")
+                                // A door that did go up can still have taken a queue with it.
+                                + queueTakenSentence(lostQueue)
                         });
 
                         return finish({
@@ -921,6 +958,7 @@ export function buildFlatRide(request: BuildFlatRideRequest, done: (outcome: Bui
                                     ? ""
                                     : readingOf(groundNow(), nowWalkable, exitDoor,
                                         "the tile the exit door opens onto"))
+                                + queueTakenSentence(lostQueue)
                         });
                     } else {
                         // One tile, not four: the game serves a stall from the neighbour on

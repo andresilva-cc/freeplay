@@ -406,3 +406,59 @@ test("a shop's footprint is the one tile it stands on, every way round", functio
         restore();
     }
 });
+
+
+/**
+ * The perimeter is walked round the footprint, which is what every reader of it already said
+ * it was.
+ *
+ * It used to step {+x, -x, +y, -y} off each footprint tile in turn, so the order was the
+ * footprint's order and not a ring at all - while `describe_placement`, its tool description
+ * and docs/tool-design.md all called it "the order the tiles ring the footprint". The
+ * practical effect was that option #1 was the ride's +x face every single time, and #1 is the
+ * one the model takes: 12 measured builds out of 12.
+ *
+ * A stated order that is not the order is worse than either, because it is what a reader
+ * checks against. Any fixed order still picks a default - the first entry is on the -y face
+ * now instead of the +x face - and nothing in a total order can avoid that; what it can avoid
+ * is claiming the order means something.
+ */
+test("the perimeter is walked round the footprint, one face at a time", function () {
+    const square = perimeterOffsets(computeFootprintOffsets(
+        { width: 3, depth: 3, trackType: 0, isShop: false, name: "c" }, 0
+    ));
+
+    assert.deepEqual(square.map(function (o) { return String(o.dx) + "," + String(o.dy); }), [
+        "-1,-2", "0,-2", "1,-2",
+        "2,-1", "2,0", "2,1",
+        "1,2", "0,2", "-1,2",
+        "-2,1", "-2,0", "-2,-1"
+    ], "clockwise from the -y face: every entry is orthogonally adjacent to the one before it");
+
+    // The property that matters and that the old order did not have: consecutive entries are
+    // neighbours on the ground, so two options listed together are two doors side by side.
+    for (let i = 1; i < square.length; i++) {
+        const step = Math.abs(square[i].dx - square[i - 1].dx) + Math.abs(square[i].dy - square[i - 1].dy);
+
+        assert.ok(step <= 2, "entry " + String(i) + " jumps " + String(step)
+            + " tiles from the one before it, so this is not a walk");
+    }
+});
+
+test("the ring holds for a footprint that is not square and for one tile", function () {
+    const single = perimeterOffsets([{ dx: 0, dy: 0 }]);
+
+    assert.deepEqual(single.map(function (o) { return String(o.dx) + "," + String(o.dy); }),
+        ["0,-1", "1,0", "0,1", "-1,0"], "a 1x1 rings in four steps, starting on -y");
+
+    // At rotation 0 the computed 1x4 lies along x, running -2..+1, so its ring is two long
+    // faces of four and a single tile off each end.
+    const strip = perimeterOffsets(computeFootprintOffsets(
+        { width: 1, depth: 4, trackType: 0, isShop: false, name: "s" }, 0
+    ));
+
+    assert.deepEqual(strip.map(function (o) { return String(o.dx) + "," + String(o.dy); }),
+        ["-2,-1", "-1,-1", "0,-1", "1,-1", "2,0", "1,1", "0,1", "-1,1", "-2,1", "-3,0"],
+        "along the -y face, one tile off the +x end, back along the +y face, one off the -x end");
+    assert.equal(strip.length, 10, "two faces of four and one tile at each end");
+});
