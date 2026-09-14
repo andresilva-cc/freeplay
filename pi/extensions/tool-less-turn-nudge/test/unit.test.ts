@@ -16,6 +16,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import factory from "../index.ts";
+import { NUDGE_CHANNEL, STOPPED_TURN_CHANNEL } from "../../run-end/channels.ts";
+import { BRIDGE_TOOLS } from "../../run-end/signals.ts";
 
 const NUDGE_NARRATED =
 	"You described what you would do but called no tool, so nothing happened. Make that tool call now.";
@@ -29,6 +31,14 @@ interface Harness {
 	fire(event: string, payload: any): Promise<void>;
 	logLines(): any[];
 	pendingOverride: boolean | undefined;
+	/** Channels the extension emitted on, so the run-end handoff can be asserted. */
+	emitted: Array<{ channel: string; data: any }>;
+	/**
+	 * Stands in for the run-end extension. undefined means run-end is not loaded, which is the
+	 * case the pre-run-end tests below run under.
+	 */
+	verdict: "ended" | "undecided" | undefined;
+	scenarioStatus: string;
 }
 
 let sessionCounter = 0;
@@ -44,6 +54,9 @@ function makeHarness(agentDir: string): Harness {
 		notifications: [],
 		status: {},
 		pendingOverride: undefined,
+		emitted: [],
+		verdict: undefined,
+		scenarioStatus: "inProgress",
 		logLines() {
 			try {
 				return readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
@@ -84,6 +97,19 @@ function makeHarness(agentDir: string): Harness {
 		sendUserMessage: (text: string) => h.sent.push(text),
 		appendEntry: (customType: string, data: any) => h.entries.push({ customType, data }),
 		registerCommand: () => {},
+		getActiveTools: () => [...BRIDGE_TOOLS],
+		events: {
+			// pi's EventBus dispatches synchronously, which is what lets run-end assign
+			// `decision` before emit() returns. The stand-in must do the same or the test
+			// would pass for a reason the real bus does not supply.
+			emit: (channel: string, data: any) => {
+				h.emitted.push({ channel, data });
+				if (channel !== STOPPED_TURN_CHANNEL || h.verdict === undefined) return;
+				data.statusAtRequest = h.scenarioStatus;
+				data.decision = Promise.resolve(h.verdict);
+			},
+			on: () => () => {},
+		},
 	};
 
 	process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -108,18 +134,29 @@ function assistant(opts: { text?: string; toolCall?: boolean; stopReason?: strin
 // Nudge logs land under AGENT_DIR/logs/nudges; keep them out of the repo.
 const AGENT_DIR = mkdtempSync(join(tmpdir(), "nudge-unit-"));
 
+/** Default: run-end is loaded and says the scenario is still running. */
 async function start(): Promise<Harness> {
 	const h = makeHarness(AGENT_DIR);
+	h.verdict = "undecided";
 	await h.fire("session_start", { reason: "startup" });
 	await h.fire("turn_start", { turnIndex: 0, timestamp: Date.now() });
 	return h;
 }
 
-test("fires on the measured failure: prose, no tool call", async () => {
+/** A recorded gemma turn that names the tool it then never calls. */
+const NARRATED_WITH_SIGNAL = "I'll check `park_status` to see if any guests have arrived yet.";
+
+/** A recorded gemma turn that names nothing: mid-plan, but with no sign of a tool call. */
+const NARRATED_NO_SIGNAL = "I'll list the available ride objects to see what our options are.";
+
+/** The recorded Qwen post-mortem the nudge used to tell to keep playing. */
+const POST_MORTEM =
+	'I failed the "Forest Frontiers" scenario. Key mistakes that led to failure: ' +
+	"insufficient staff management, over-reliance on a single ride. Thank you for playing!";
+
+test("fires on the failure it was built for: prose, no tool call", async () => {
 	const h = await start();
-	const msg = assistant({
-		text: "I will now unpause the game and begin exploring the layout by viewing the map around the park gate.",
-	});
+	const msg = assistant({ text: NARRATED_WITH_SIGNAL });
 	await h.fire("turn_end", { turnIndex: 0, message: msg, toolResults: [] });
 	await h.fire("agent_end", { messages: [msg] });
 
@@ -128,6 +165,78 @@ test("fires on the measured failure: prose, no tool call", async () => {
 	assert.equal(h.entries[0].data.event, "nudge");
 	assert.equal(h.entries[0].data.reason, "narrated");
 	assert.equal(h.entries[0].data.total, 1);
+});
+
+test("a turn that shows the model reaching for a tool is nudged without asking run-end", async () => {
+	const h = await start();
+	// run-end would say the run is over. It must never be asked: this turn is a delivery
+	// failure, not a model that stopped.
+	h.verdict = "ended";
+	h.scenarioStatus = "failed";
+	await h.fire("agent_end", { messages: [assistant({ text: NARRATED_WITH_SIGNAL })] });
+
+	assert.deepEqual(h.sent, [NUDGE_NARRATED]);
+	assert.equal(
+		h.emitted.filter((e) => e.channel === STOPPED_TURN_CHANNEL).length,
+		0,
+		"a signalled turn must not cost a bridge call",
+	);
+});
+
+test("unparsed tool-call markup counts as reaching for a tool", async () => {
+	const h = await start();
+	h.verdict = "ended";
+	const msg = assistant({
+		text: "Let me check what objects are loaded.\n</parameter>\n</function>\n</tool_call>",
+	});
+	await h.fire("agent_end", { messages: [msg] });
+
+	assert.deepEqual(h.sent, [NUDGE_NARRATED]);
+	assert.equal(h.emitted.filter((e) => e.channel === STOPPED_TURN_CHANNEL).length, 0);
+});
+
+test("a stopped turn with the scenario already decided is left alone", async () => {
+	const h = await start();
+	h.verdict = "ended";
+	h.scenarioStatus = "failed";
+	await h.fire("agent_end", { messages: [assistant({ text: POST_MORTEM })] });
+
+	assert.deepEqual(h.sent, [], "a model that finished must not be told to keep playing");
+	const declined = h.logLines().filter((l) => l.event === "declined");
+	assert.equal(declined.length, 1, "the decision must be in the run record");
+	assert.equal(declined[0].scenarioStatus, "failed");
+	assert.equal(h.entries[0].data.event, "declined");
+	assert.match(h.status["tool-less-nudge"] ?? "", /stopped correctly/);
+});
+
+test("a stopped turn with the scenario still running is nudged anyway", async () => {
+	const h = await start();
+	h.verdict = "undecided";
+	await h.fire("agent_end", { messages: [assistant({ text: NARRATED_NO_SIGNAL })] });
+
+	// Three of the four recorded no-signal turns read like this one and were plainly mid-plan.
+	// Ending a run on them would call a narration failure a decision.
+	assert.deepEqual(h.sent, [NUDGE_NARRATED]);
+	assert.equal(h.emitted.filter((e) => e.channel === STOPPED_TURN_CHANNEL).length, 1);
+});
+
+test("with run-end absent the nudge falls back to its old behaviour", async () => {
+	const h = makeHarness(AGENT_DIR);
+	h.verdict = undefined; // nothing subscribes, so no decision comes back
+	await h.fire("session_start", { reason: "startup" });
+	await h.fire("turn_start", { turnIndex: 0, timestamp: Date.now() });
+	await h.fire("agent_end", { messages: [assistant({ text: POST_MORTEM })] });
+
+	assert.deepEqual(h.sent, [NUDGE_NARRATED]);
+});
+
+test("nudge counts are reported to run-end", async () => {
+	const h = await start();
+	await h.fire("agent_end", { messages: [assistant({ text: NARRATED_WITH_SIGNAL })] });
+
+	const reported = h.emitted.filter((e) => e.channel === NUDGE_CHANNEL);
+	assert.equal(reported.length, 1, "the run-end record has to be able to carry the nudge count");
+	assert.deepEqual(reported[0].data, { event: "nudge", reason: "narrated", total: 1, consecutive: 1 });
 });
 
 test("does not fire when the turn called a tool", async () => {
