@@ -1,4 +1,5 @@
 import { mcpTool, mcpToolController } from "./decorators.js";
+import { recordPlayerPause } from "../clockGate.js";
 import type { DeferredMcpResult } from "./types.js";
 
 /** Long enough for a queued game action to have been applied on a later tick. */
@@ -95,9 +96,13 @@ function describe(request: GameSpeedRequest, state: SpeedReview): GameSpeedOutco
         paused: state.paused,
         detail: notes.length === 0
             ? (state.paused
-                ? "The game is paused, so no scenario time passes until it is unpaused."
-                    + " Its speed setting is " + describeSpeed(state.speed) + " for when it runs again."
-                : "The game is running at speed " + describeSpeed(state.speed) + ".")
+                ? "The game is paused, so no scenario time passes until it is unpaused, and it"
+                    + " refuses the map changes listed on `paused`. Its speed setting is "
+                    + describeSpeed(state.speed) + ", which is what a game day costs in real"
+                    + " seconds inside a wait."
+                : "The game is running at speed " + describeSpeed(state.speed) + ". The bridge"
+                    + " holds it still again the moment this call answers; what unpausing changed is"
+                    + " that map changes and wait are no longer refused.")
             : notes.join("; ") + "."
     };
 }
@@ -149,6 +154,13 @@ export function setGameSpeed(request: GameSpeedRequest, done: (outcome: GameSpee
         }, function () { /* verified by re-read */ });
     }
 
+    if (wantsPause) {
+        // Told before the action goes out, because the action goes through the clock gate and
+        // the gate has to know whose pause this is: a pause the model asked for stays in force
+        // across the calls that follow, and the game refuses through it as it always did.
+        recordPlayerPause(request.paused === true);
+    }
+
     // `pausetoggle` flips the flag, so firing it when the game is already in the state
     // that was asked for would put it into the other one.
     if (wantsPause && currentlyPaused() !== request.paused) {
@@ -181,9 +193,10 @@ export class GameSpeedTools {
         name: "Set the game speed",
         description: [
             "Set how fast the simulation runs, and pause or unpause it. Pass either or both in one call.",
-            "The scenario clock keeps running between your calls, so the time you spend deciding is charged",
-            "to the scenario: months and years pass while you think, and the objective's deadline is in",
-            "scenario time."
+            "The scenario clock does not run between your calls: the bridge holds the game still until",
+            "`wait` is called, so deciding costs the scenario nothing and `speed` changes no outcome.",
+            "What `speed` changes is how much REAL time a `wait` takes, and so how many game days one",
+            "`wait` call can reach inside its twenty real seconds: about 1.5 at speed 1 and 12 at speed 4."
         ].join(" "),
         inputSchema: {
             type: "object",
@@ -195,12 +208,18 @@ export class GameSpeedTools {
                     maximum: MAX_SPEED,
                     description: "The game's speed setting: " + SPEED_HELP
                         + ". These are settings, not multipliers, so eight times normal is 4 and there is no 8."
+                        + " It sets the real seconds a game day costs inside `wait` - about 13 at speed 1 and"
+                        + " 1.7 at speed 4 - and nothing else: the game days a run spends are whatever `wait`"
+                        + " is asked for, at any speed."
                         + " `speed` in the result is the setting in effect afterwards, not the one you asked for."
                         + " Omit to leave the speed as it is."
                 },
                 paused: {
                     type: "boolean",
-                    description: "true to pause the simulation, false to let it run. While paused no scenario"
+                    description: "true to pause the simulation, false to let it run. The bridge already holds"
+                        + " the game still between calls, so this buys no thinking time; what it changes is that"
+                        + " the game refuses map changes through a pause you asked for, and `wait` refuses too"
+                        + " until you unpause. While paused no scenario"
                         + " time passes at all, and the game refuses every action that changes the map, with"
                         + " \"Construction not possible while game is paused!\". build_path, remove_path,"
                         + " buy_land, clear_scenery and operate_ride demolish each fire such an action and"

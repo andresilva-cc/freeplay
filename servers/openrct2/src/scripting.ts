@@ -3,6 +3,8 @@
  * back into something JSON-serialisable and small enough to put in a prompt.
  */
 
+import { runActionWithClock } from "./clockGate.js";
+
 /**
  * Limits for `evaluate`, where the model can ask for the whole world by accident.
  */
@@ -619,12 +621,20 @@ export function installActionGuards(): void {
             refuseCheatAction("executeAction", name);
             recordExecutedAction(name);
 
+            const guarded = guardScriptCallback(callback);
+
+            // Every action the bridge fires passes through here, which is the one place that
+            // can let the clock run across it. The pause between tool calls is the bridge's
+            // bookkeeping and OpenRCT2 refuses most actions through one, so the two have to
+            // meet somewhere; a pause the model asked for is left in force and the refusal
+            // comes back as it always did.
+            //
             // Deliberately not returning the result the way queryAction does: an accepted
             // action has not happened yet, and a result that looks like success is exactly
             // what this project verifies by re-reading the world instead. Which is also why
             // the callback is wrapped: the game calls it on the tick it applies the action,
             // and that is a tick the script would otherwise be running on unguarded.
-            return original.call(this, name, args, guardScriptCallback(callback));
+            return runActionWithClock(name, () => original.call(this, name, args, guarded));
         };
     }));
 

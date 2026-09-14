@@ -77,7 +77,7 @@ what each one does is in its own description, which is what the model reads.
 | `hire_staff` | Hire and place staff |
 | `buy_land` | Buy the land rights to a rectangle of tiles, and report what the scenario would not sell |
 | `set_game_speed` | Set the speed setting, and pause or unpause |
-| `wait` | Let the game run without touching the park, then report what moved: the dates either side, the game days between them, and the change in guests, cash, rating and messages |
+| `wait` | Advance the scenario clock by a number of game days without touching the park, then report what moved: the dates either side, the days and ticks between them, and the change in guests, cash, rating and messages |
 | `evaluate` | Arbitrary JavaScript against the plugin API |
 
 `open_park` is the smallest, and it is there for a reason worth stating: opening the park
@@ -309,11 +309,52 @@ API's own setters — the route every run took by hand — before reporting what
 read says.
 
 `wait` is the tenth and is deferred for the other reason the mechanism exists: it fires no
-game action at all, it spends real time. The cap is 20 seconds, set where it is so the
-longest wait still answers inside the same 30-second watchdog, and it refuses outright on a
-paused game rather than spending that budget on a stopped clock. Its result is denominated
-in game time — the dates either side, the days between them, and what moved in guests, cash
-and rating — because real seconds are only the half that had to be capped.
+game action at all, it spends game time. It takes a number of game days, runs the clock
+until that much has passed and reports what moved. Twenty real seconds is the cap on a
+single call, so the longest wait still answers inside the same 30-second watchdog; a
+request the current speed cannot reach in twenty seconds comes back with `complete: false`
+and the days it did get rather than as a tool that broke.
+
+## The clock is held still between calls
+
+The game used to run while the model thought, and it was most of the scenario. Measured
+over one year: seven `wait` calls spent 62 of 248 days and the other 186 elapsed between
+calls, on inference latency. At speed 4 the game advances 0.60 days a real second, so an
+82-second turn costs 49 game days that nothing chose to spend — and a host with twice the
+tokens per second halves that bill. For a benchmark that is fatal twice over: two machines
+are two different games, and the model is charged for thinking rather than for thinking
+wrongly.
+
+So `src/clockGate.ts` holds the game paused between tool calls and `wait` is the only call
+that spends scenario time. What makes that delicate is that OpenRCT2 refuses most game
+actions through a pause, so the naive version has every build, path, clear and hire come
+back refused. Read off the game's own loop rather than assumed:
+
+- `gameStateTick` sets `numUpdates = 0` while paused and never calls
+  `gameStateUpdateLogic`, so the date, `currentTicks` and the `interval.tick` hook stop.
+- `ScriptEngine::Tick` is called from `Context::Tick`, outside the pause check, and its
+  intervals are measured against `Platform::GetTicks` — so `context.setTimeout` and the
+  bridge's own socket keep running through a pause. A deferred tool is not stranded by a
+  paused game.
+- The paused branch still calls `GameActions::ProcessQueue`, which runs each queued action
+  through `CheckActionInPausedMode`: anything without `Flags::AllowWhilePaused` becomes
+  "Construction not possible while game is paused!". So a paused tool is refused, promptly,
+  rather than left on the watchdog.
+
+The gate therefore lets the clock run from the first action a tool fires until one game
+tick after that tool has answered. That window is per tool CALL and not per action: closing
+it per action needs a timer scheduled from inside `context.executeAction`, which lands in
+the middle of the calling tool's own loop — `src/park/clear.ts` walks a tile's elements and
+fires a removal per element — and every tool here is written against "actions apply on a
+later tick". What the window costs is the tool's own `context.setTimeout` steps: a
+`build_path` is 9 game ticks at speed 1, 0.017 of a game day. A tool that only reads opens
+no window and costs nothing.
+
+A pause the model asked for with `set_game_speed` is left alone — no window is opened
+through it — so the refusals the actor tools describe are still reachable and still true.
+And `set_game_speed`'s `speed` is now a bill in real time rather than a lever on the
+outcome: it sets what a game day costs inside a `wait`, about 13 real seconds at speed 1
+and 1.7 at speed 4, and so how far one call can reach.
 
 ## Adding a tool
 

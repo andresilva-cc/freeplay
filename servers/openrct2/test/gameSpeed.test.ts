@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { FakeGame } from "./fakeGame.ts";
+import { resetClockGate } from "../src/clockGate.ts";
 import { operateRide } from "../src/park/operate.ts";
 import { buildPath, DEFAULT_PATH_OBJECT } from "../src/park/pathbuild.ts";
 import type { BuildPathOutcome } from "../src/park/pathbuild.ts";
@@ -18,9 +19,14 @@ function withGame(build: (game: FakeGame) => void, run: (game: FakeGame) => void
     build(game);
     const restore = game.install();
 
+    // The gate remembers whether the model asked for a pause, and that outlives a test in
+    // the same file. A pause left set would make the next test's fixture mean something else.
+    resetClockGate();
+
     try {
         run(game);
     } finally {
+        resetClockGate();
         restore();
     }
 }
@@ -387,4 +393,30 @@ test("a paused build_path and a paused remove_path both come back with the game'
         assert.match(removed.detail, /Construction not possible while game is paused!/,
             "and remove_path has to report it too");
     });
+});
+
+test("the speed is described as a bill in real time, not as a lever on the scenario", function () {
+    // It used to be both, and that was the defect: the clock ran between calls, so the speed
+    // setting decided how much of the scenario a turn cost and a faster machine played a
+    // different game. The game is held still between calls now, so speed buys nothing and
+    // costs nothing - except how long a `wait` takes and therefore how far one can reach.
+    const text = description();
+
+    assert.match(text, /does not run between your calls/,
+        "the fact that changes how the model plays, stated where it decides whether to call this");
+    assert.match(text, /about 1\.5 at speed 1 and 12 at speed 4/,
+        "and what the setting is actually worth: the game days one wait can cover");
+    assert.doesNotMatch(text, /months and years pass while you think/,
+        "the claim this change made false cannot survive anywhere in the text");
+    assert.match(argumentDescription("speed"), /real seconds a game day costs inside `wait`/,
+        "the exchange rate belongs on the argument, which is the last thing read before a call");
+});
+
+test("pausing is described as what it now changes, which is the refusals and not the clock", function () {
+    const text = pausedArgumentDescription();
+
+    assert.match(text, /bridge already holds/,
+        "a model told pausing buys thinking time would pause for a reason that no longer exists");
+    assert.match(text, /`wait` refuses too until you unpause/,
+        "and the consequence it has to weigh: its only way to spend time stops working");
 });

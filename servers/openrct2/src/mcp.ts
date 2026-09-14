@@ -3,6 +3,7 @@ import { HttpResponse } from "./http/response.js";
 import { isAllowedOrigin } from "./http/origin.js";
 import { BUILD_ID } from "./buildInfo.js";
 import { gameDaysBetween, readGameDayPosition } from "./gameClock.js";
+import { holdClockBetweenCalls } from "./clockGate.js";
 import { sanitizeToolResult } from "./scripting.js";
 import { getMcpTools, invokeMcpTool, isDeferredMcpResult } from "./tools/index.js";
 import type { DeferredMcpResult, McpToolDefinition, McpToolSchema } from "./tools/index.js";
@@ -17,10 +18,14 @@ const DEFERRED_TIMEOUT_MS = 30000;
  * Game time between the previous tool result and this call arriving, carried on every
  * result that has a previous one to measure from.
  *
- * The game runs while the model thinks, so scenario time is spent between calls as well as
- * inside `wait`, and only the waiting half was ever reported. Measured over one scenario
- * year: seven `wait` calls took 62 of 248 days, and the other 186 elapsed between calls,
- * where nothing said so. A player watching the screen gets this for free.
+ * The game used to run while the model thought, so scenario time was spent between calls as
+ * well as inside `wait`, and only the waiting half was ever reported. Measured over one
+ * scenario year: seven `wait` calls took 62 of 248 days, and the other 186 elapsed between
+ * calls, where nothing said so.
+ *
+ * The clock is now held still between calls - src/clockGate.ts - so this reads near zero,
+ * and a figure that is not near zero is the measurement that says the hold slipped: a tool
+ * left a clock window open, or something outside the bridge started the game.
  *
  * It is measured from the previous RESULT rather than the previous call, so it and a
  * `wait`'s own `gameDays` tile the timeline instead of overlapping: the wait reports the
@@ -392,11 +397,16 @@ function gameDaysSinceLastCall(session: McpSession): number | undefined {
 /**
  * Stamp the clock where this result leaves it, so the next call measures from here.
  *
+ * The clock is held still first, so the stamp is taken on a stopped clock and the interval
+ * the next call measures is the held one rather than one that was still moving as it was
+ * read.
+ *
  * Called for every tool result and nowhere else. A call answered without one - arguments the
  * schema refused, a deferred failure, the watchdog - leaves the stamp where it was, so that
  * turn's time comes back in the next figure instead of being dropped.
  */
 function markToolResult(session: McpSession): void {
+    holdClockBetweenCalls();
     session.lastResultAt = readGameDayPosition();
 }
 
@@ -641,6 +651,11 @@ export class McpServer {
             });
         }
 
+        // The first turn is a full inference latency with nobody watching, and it used to be
+        // spent at whatever the scenario had left the game running at. Holding here costs the
+        // harness nothing and is the earliest moment the bridge knows a run has started.
+        holdClockBetweenCalls();
+
         const sessionId = this.createSessionId();
 
         this.sessions[sessionId] = {
@@ -670,13 +685,14 @@ export class McpServer {
                 "`clear_scenery`, `build_flat_ride`, `build_path`, `remove_path`, `buy_land`, `operate_ride`,",
                 "`open_park`, `hire_staff` and `set_game_speed` act,",
                 "and answer once the work has landed a few ticks later.",
-                "`wait` lets the clock run for a few seconds without touching the park,",
-                "and reports what moved while it ran.",
+                "`wait` is the only thing that spends scenario time: the game is held still between",
+                "your calls, and `wait` advances it by a stated number of GAME days and reports what moved.",
                 "`evaluate` runs plugin-API JavaScript and is the escape hatch for what no typed tool covers,",
                 "such as tracked rides.",
                 "Every tool result carries `gameDaysSinceLastCall`: the game days that elapsed between the",
-                "previous result and this call arriving. The clock runs while you decide, so that is what the",
-                "turn itself cost. The first call of a session has no previous result and carries no figure."
+                "previous result and this call arriving. The game is held still between calls, so it",
+                "reads 0 unless a tool that acts let the clock run while it worked.",
+                "The first call of a session has no previous result and carries no figure."
             ].join(" ")
         });
     }
@@ -688,6 +704,13 @@ export class McpServer {
         requestContext?: RequestContext
     ): HttpResponse {
         const params = message.params;
+
+        // Before the arguments are even looked at. The hold is the invariant this layer keeps
+        // - the game advances only when `wait` asks it to - and a call that is about to be
+        // refused for its arguments is still a turn that must not cost the park anything.
+        // What lets a tool still act through the hold is the clock gate inside the action
+        // guard `createApplication` installs before the listener exists, not anything here.
+        holdClockBetweenCalls();
 
         if (!isRecord(params) || !isString(params.name)) {
             return this.setJsonRpcError(response, message.id, {

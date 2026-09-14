@@ -205,13 +205,13 @@ test("a wait's own game time is not billed again as thinking time", function () 
         session.game.advanceTicks(TICKS_PER_MONTH / 2);
 
         const before = session.game.date.ticksElapsed;
-        const result = structured(callTool(session, "wait", { seconds: 2 }));
+        const result = structured(callTool(session, "wait", { days: 1 }));
 
         assert.ok(session.game.date.ticksElapsed > before,
             "the wait has to have run the clock, or this proves nothing");
         assert.equal(result.gameDaysSinceLastCall, 15.5,
-            "only the time between the calls; the wait's own seconds are its `gameDays`");
-        assert.ok((result.gameDays as number) > 0,
+            "only the time between the calls; the wait's own game days are its `days`");
+        assert.ok((result.days as number) > 0,
             "and the wait still reports what it spent, which is the other half of the clock");
     });
 });

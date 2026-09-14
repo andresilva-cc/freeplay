@@ -1,3 +1,4 @@
+import { ACTIONS_ALLOWED_WHILE_PAUSED } from "../src/clockGate.ts";
 import { flatRideShape } from "../src/park/flatRides.ts";
 
 /**
@@ -134,18 +135,13 @@ const STAFF_TYPE_NAMES: Record<number, string> = {
  * footpathplace, footpathremove, landbuyrights, trackplace, rideentranceexitplace,
  * ridedemolish, and the scenery, wall and banner removals - does not, so a paused game
  * answers it with "Construction not possible while game is paused!" and changes nothing.
+ *
+ * The plugin needs the same list - src/clockGate.ts decides from it which actions need the
+ * clock let run around them - so the fake reads the plugin's copy rather than keeping a
+ * second one. A fake with its own list is a fake that can agree with itself while the game
+ * disagrees with both.
  */
-export const ALLOWED_WHILE_PAUSED: Record<string, boolean> = {
-    gamesetspeed: true,
-    pausetoggle: true,
-    ridecreate: true,
-    ridesetstatus: true,
-    ridesetprice: true,
-    ridesetsetting: true,
-    parksetparameter: true,
-    parksetentrancefee: true,
-    staffhire: true
-};
+export const ALLOWED_WHILE_PAUSED = ACTIONS_ALLOWED_WHILE_PAUSED;
 
 /** Money the way the game prints it in an error: tenths of a unit, so 150 is £15.00. */
 function formatMoney(tenths: number): string {
@@ -703,8 +699,26 @@ export class FakeGame {
      *
      * How much of the simulation that buys is the speed setting: the loop runs
      * `1 << (speed - 1)` updates per frame, so a second of real time at speed 4 advances
-     * the game eight times as far as it does at speed 1. A paused game advances not at
-     * all, which is the whole reason waiting through a pause is a wasted call.
+     * the game eight times as far as it does at speed 1.
+     *
+     * A paused game advances not at all. Checked against OpenRCT2 rather than against what
+     * this bridge believed, because the whole clock gate rests on it: `gameStateTick`
+     * (GameState.cpp) sets `numUpdates = 0` while paused and never calls
+     * `gameStateUpdateLogic`, so `DateUpdate`, `currentTicks++` and the `interval.tick` hook
+     * all stop. Three more from the same read, which is why this fake keeps firing timers
+     * and applying the queue through a pause rather than freezing everything:
+     *
+     * - `ScriptEngine::Tick` is called from `Context::Tick`, outside the pause check, and
+     *   `UpdateIntervals` measures against `Platform::GetTicks` - so `context.setTimeout`
+     *   keeps firing on real time while the game is paused.
+     * - The paused branch of `gameStateTick` still calls `GameActions::ProcessQueue`, so a
+     *   queued action is still dequeued while paused.
+     * - And still refused there: `ProcessQueue` runs it through `Execute` and
+     *   `QueryInternal`, whose `CheckActionInPausedMode` turns anything without
+     *   `Flags::AllowWhilePaused` into "Construction not possible while game is paused!".
+     *
+     * So a paused deferred tool is refused rather than stranded, and a tool that waits for a
+     * tick through a pause waits for one that never comes.
      */
     public advanceRealMilliseconds(milliseconds: number): void {
         if (this.gameValues.paused || milliseconds <= 0) {

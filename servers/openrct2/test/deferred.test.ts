@@ -546,7 +546,7 @@ test("a wait answers on the socket inside the watchdog rather than timing out", 
         const headers = openSession(app);
         const socket = new FakeSocket();
 
-        const call = callTool(app, headers, socket, 2, "wait", { seconds: 3 });
+        const call = callTool(app, headers, socket, 2, "wait", { days: 0.2 });
 
         assert.equal(call.hijacked, true, "a wait spans ticks, so it takes the connection over");
         assert.equal(socket.written, "", "and writes nothing until the game has actually run");
@@ -556,12 +556,16 @@ test("a wait answers on the socket inside the watchdog rather than timing out", 
 
         const structured = soleToolResult(socket, 2).structuredContent as {
             ok: boolean;
-            seconds: number;
+            days: number;
+            ticks: number;
         };
 
         assert.equal(structured.ok, true, "the answer is a result, not the watchdog's error");
-        assert.equal(structured.seconds, 3);
-        assert.equal(game.date.ticksElapsed, 120, "three real seconds of simulation at speed 1");
+        assert.equal(structured.days, 0.2);
+        // 0.2 of March's 31 days is 0.2 * 65536 / 31 = 422.8 of monthProgress, and
+        // monthProgress climbs 4 a tick, so 106 ticks is the first that reaches it.
+        assert.equal(structured.ticks, 106);
+        assert.equal(game.date.ticksElapsed, 106, "and the game's own clock agrees");
         assert.equal(clock.watchdogs, 0, "the watchdog was cancelled by the answer, not left to fire");
         assert.equal(clock.timerIsTheGames, true, "and the game's timer was handed back");
         assert.deepEqual(clock.tickErrors, []);
