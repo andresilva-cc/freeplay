@@ -8,6 +8,13 @@
  * play. Every figure quoted in that file now comes out of this script, so the next person can
  * re-run it instead of believing it.
  *
+ * It is the single source for the tool-less rate in BOTH files that quote one -
+ * tool-less-turn-nudge/index.ts and reasoning-placeholder/index.ts. They disagreed once:
+ * 8/58 and 15/535 in one, 7/58 and 2/535 in the other, which read as 13.8%/2.8% against
+ * 12.1%/0.4% for the same phenomenon. They were two different populations, and only one of
+ * them is about the model. See TWO POPULATIONS below; both are printed, with the headline
+ * figure being the one both files now quote.
+ *
  *   node pi/extensions/run-end/census.mjs [sessions-dir]
  *   node pi/extensions/run-end/census.mjs --json
  *
@@ -27,6 +34,17 @@
  *   signal           the turn shows it was reaching for a tool: unparsed tool-call markup, or
  *                    a tool named in the text or the thinking. Same detector the extension
  *                    uses at runtime — signals.ts, imported here rather than copied.
+ *
+ * TWO POPULATIONS, and which one a file may quote.
+ *
+ *   "real" — tool-less AND stopReason "stop". This is the headline, and the only population
+ *   any comment in this repository is allowed to call a rate for the model: it is the model
+ *   deciding to say something instead of acting. Both files quote it.
+ *
+ *   "every tool-less turn" — the same turns plus aborts, failed requests and token-cap
+ *   runaways. It is printed per model because it is worth seeing, but it is NOT a property of
+ *   the model: an abort is a human pressing Ctrl+C and an error is the server. Quoting it for
+ *   one model beside the other model's "real" figure is what made the two files disagree.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -116,7 +134,16 @@ function classify(sessions) {
 
 	const bucket = (model) => {
 		if (!perModel.has(model)) {
-			perModel.set(model, { model, sessions: new Set(), turns: 0, toolLess: 0, real: 0, signalled: 0, silent: 0 });
+			perModel.set(model, {
+				model,
+				sessions: new Set(),
+				turns: 0,
+				toolLess: 0,
+				real: 0,
+				signalled: 0,
+				silent: 0,
+				byStopReason: {},
+			});
 		}
 		return perModel.get(model);
 	};
@@ -134,6 +161,7 @@ function classify(sessions) {
 
 			entry.toolLess += 1;
 			const stopReason = message.stopReason ?? "unknown";
+			entry.byStopReason[stopReason] = (entry.byStopReason[stopReason] ?? 0) + 1;
 			const text = visibleText(content);
 			const thinking = thinkingText(content);
 			const signal = stopReason === "stop" ? detectToolCallSignal(text, thinking, BRIDGE_TOOLS) : { kind: "n/a", evidence: "" };
@@ -212,11 +240,20 @@ function main() {
 	console.log(`  reaching for a tool (signal):  ${census.realWithSignal}`);
 	console.log(`  no sign of a tool call:        ${census.realWithoutSignal}`);
 	console.log("");
-	console.log("per model (tool-less turns with stopReason \"stop\" / assistant turns):");
+	console.log("per model. THE HEADLINE is the first line: tool-less turns with stopReason \"stop\",");
+	console.log("which is the model choosing to say something instead of acting. Quote that one.");
 	for (const m of census.perModel) {
 		console.log(
 			`  ${m.model}: ${m.real}/${m.turns} (${percent(m.real, m.turns)}) over ${m.sessions} sessions` +
 				`; signal ${m.signalled}, none ${m.silent}`,
+		);
+		const reasons = Object.entries(m.byStopReason)
+			.sort()
+			.map(([reason, count]) => `${reason} ${count}`)
+			.join(", ");
+		console.log(
+			`    not a rate for the model — every tool-less turn whatever stopped it: ` +
+				`${m.toolLess}/${m.turns} (${percent(m.toolLess, m.turns)}) = ${reasons}`,
 		);
 	}
 	console.log("");

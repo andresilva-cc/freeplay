@@ -44,6 +44,12 @@
  *                                        with empty thinking
  *       That last column is the gate: the extension's condition is never met by Qwen.
  *
+ *       The "with no tool call" column counts every tool-less turn whatever stopped it, and
+ *       is NOT the tool-less rate any comment in this repository quotes. Ten of Qwen's 15 are
+ *       Ctrl+C aborts. `node pi/extensions/run-end/census.mjs` splits the same turns by
+ *       stopReason; its "stop" line — 7 of 58 for Gemma, 2 of 535 for Qwen — is the one that
+ *       is about the model, and it is what index.ts and tool-less-turn-nudge/index.ts quote.
+ *
  * Needs OMLX_API_KEY in the environment for --passthrough and --replay (scripts/run.sh
  * exports it from .env; `set -a; . ./.env; set +a` does the same by hand). The endpoint comes
  * from pi/models.json, which is the single source for it. Sessions are gitignored, so --replay
@@ -262,7 +268,11 @@ function census(dir) {
 		console.log(`${id}`);
 		console.log(`  assistant turns ................... ${s.turns}`);
 		console.log(`  leaked the \`thought\` header ....... ${s.leaked}`);
-		console.log(`  ended with no tool call ........... ${s.toolLess}`);
+		// Every tool-less turn, whatever stopped it — aborts and failed requests included.
+		// NOT the rate quoted in any comment: run-end/census.mjs splits it by stopReason and
+		// its "stop" line is the one that is about the model. Quoting this one beside that
+		// one is what made two committed files disagree about the same phenomenon.
+		console.log(`  ended with no tool call ........... ${s.toolLess}   <- all stop reasons; see run-end/census.mjs`);
 		console.log(`  tool-calling turns, empty thinking  ${s.callingEmptyThinking} of ${s.calling}   <- what the extension would act on`);
 		console.log();
 	}

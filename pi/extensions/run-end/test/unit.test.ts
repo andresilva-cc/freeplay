@@ -26,6 +26,13 @@ import factory from "../index.ts";
 import { NUDGE_CHANNEL, STOPPED_TURN_CHANNEL, type StoppedTurnRequest } from "../channels.ts";
 import { detectToolCallSignal } from "../signals.ts";
 import { DAYS_IN_YEAR, dayNumber, readGameTimeFromValue } from "../gameTime.ts";
+import { appendEntry, openRunEndLog } from "../record.ts";
+import {
+	announceIntervention,
+	answerInterventionCensus,
+	KNOWN_INTERVENTIONS,
+	type InterventionReport,
+} from "../interventions.ts";
 
 const AGENT_DIR = mkdtempSync(join(tmpdir(), "run-end-unit-"));
 process.env.PI_CODING_AGENT_DIR = AGENT_DIR;
@@ -164,6 +171,12 @@ interface Harness {
 	sessionId: string;
 	fire(event: string, payload?: any): Promise<void>;
 	emit(channel: string, data: unknown): void;
+	/**
+	 * The same EventBus stand-in the extension was handed, so a test can subscribe to it the
+	 * way another extension does — synchronously, through the real helpers in interventions.ts
+	 * rather than through a copy of them.
+	 */
+	bus: { emit(channel: string, data: unknown): void; on(channel: string, handler: (data: unknown) => void): void };
 	logLines(): any[];
 	record(): any | undefined;
 }
@@ -197,6 +210,15 @@ function makeHarness(): Harness {
 		},
 		emit(channel, data) {
 			for (const fn of busHandlers.get(channel) ?? []) fn(data);
+		},
+		bus: {
+			emit: (channel, data) => {
+				for (const fn of busHandlers.get(channel) ?? []) fn(data);
+			},
+			on: (channel, fn) => {
+				if (!busHandlers.has(channel)) busHandlers.set(channel, []);
+				busHandlers.get(channel)!.push(fn);
+			},
 		},
 		async fire(event, payload = {}) {
 			for (const fn of handlers.get(event) ?? []) {
@@ -723,6 +745,176 @@ test("the nudge count reaches the run-end record", async () => {
 	const record = h.record();
 	assert.ok(record);
 	assert.deepEqual(record.nudges, { total: 2, narrated: 1, empty: 1, declined: 1, capHits: 1, runaways: 1 });
+});
+
+/** An intervention's answer to the census, in the shape its own extension pushes. */
+function reportOf(id: string, armed: boolean, fired = 0): InterventionReport {
+	return {
+		id,
+		armed,
+		how: armed ? "switched on for this run" : "off by default",
+		fired,
+		detail: armed ? "changed what the model saw" : "changed nothing",
+	};
+}
+
+test("an armed intervention is named in the run-end record", async () => {
+	// THE DEFECT. reasoning-placeholder reads an env var, and by its own arithmetic it can only
+	// fire on Gemma. Before this field a run with that variable set produced a record
+	// indistinguishable from a run without it.
+	const h = await start({ status: "inProgress", calls: [] });
+	answerInterventionCensus(h.bus, () => reportOf("reasoning-placeholder", true, 7));
+	await h.fire("session_shutdown", { reason: "quit" });
+
+	const record = h.record();
+	assert.ok(record);
+	assert.equal(record.interventions.disclosed, true);
+	assert.deepEqual(record.interventions.armed, ["reasoning-placeholder"]);
+	const entry = record.interventions.all.find((i: any) => i.id === "reasoning-placeholder");
+	assert.ok(entry, "an armed intervention has to be in the full list as well as the armed list");
+	assert.equal(entry.armed, true);
+	assert.equal(entry.fired, 7, "how often it fired is part of the disclosure");
+});
+
+test("a disarmed intervention is recorded as absent, not left out", async () => {
+	// "not in the list" and "not armed" have to be different states, or a reader cannot tell a
+	// clean run from a record that was written by an older harness.
+	const h = await start({ status: "inProgress", calls: [] });
+	answerInterventionCensus(h.bus, () => reportOf("reasoning-placeholder", false));
+	answerInterventionCensus(h.bus, () => reportOf("tool-less-turn-nudge", true, 2));
+	await h.fire("session_shutdown", { reason: "quit" });
+
+	const record = h.record();
+	assert.ok(record);
+	assert.deepEqual(record.interventions.armed, ["tool-less-turn-nudge"]);
+	const off = record.interventions.all.find((i: any) => i.id === "reasoning-placeholder");
+	assert.ok(off, "the one that was switched off must still be in the record");
+	assert.equal(off.armed, false);
+	assert.equal(off.fired, 0);
+});
+
+test("an intervention that answers nothing is still listed, so an empty armed list is a claim", async () => {
+	const h = await start({ status: "inProgress", calls: [] });
+	await h.fire("session_shutdown", { reason: "quit" });
+
+	const record = h.record();
+	assert.ok(record);
+	assert.deepEqual(record.interventions.armed, []);
+	assert.deepEqual(
+		record.interventions.all.map((i: any) => i.id).sort(),
+		[...KNOWN_INTERVENTIONS].sort(),
+		"every registered intervention is in the record whether or not it was loaded",
+	);
+	for (const entry of record.interventions.all) {
+		assert.equal(entry.armed, false);
+		assert.equal(entry.how, "not loaded", "and it says which of the two silences this was");
+	}
+});
+
+test("an intervention nobody registered discloses itself on the strength of its answer", async () => {
+	// The rule is about the next intervention as much as these two: answering the census is
+	// enough to be in the record, so a new extension cannot be undisclosed by being new.
+	const h = await start({ status: "inProgress", calls: [] });
+	answerInterventionCensus(h.bus, () => reportOf("some-later-intervention", true, 1));
+	await h.fire("session_shutdown", { reason: "quit" });
+
+	const record = h.record();
+	assert.ok(record);
+	assert.ok(record.interventions.armed.includes("some-later-intervention"));
+	assert.equal(record.interventions.all.length, KNOWN_INTERVENTIONS.length + 1);
+});
+
+test("an announcement at session_start survives a census answer that never comes", async () => {
+	// EventEmitter.emit stops dispatching at the first subscriber that throws, so the census
+	// alone could be silenced by an unrelated extension. The announcement is the other half.
+	const h = await start({ status: "inProgress", calls: [] });
+	announceIntervention(h.bus, reportOf("reasoning-placeholder", true, 3));
+	await h.fire("session_shutdown", { reason: "quit" });
+
+	const record = h.record();
+	assert.ok(record);
+	assert.deepEqual(record.interventions.armed, ["reasoning-placeholder"]);
+	assert.equal(record.interventions.all.find((i: any) => i.id === "reasoning-placeholder").fired, 3);
+
+	const announcement = h.logLines().find((l) => l.event === "intervention_armed");
+	assert.ok(announcement, "the announcement is logged when it lands, so a run with no record still says it");
+	assert.equal(announcement.id, "reasoning-placeholder");
+	assert.equal(announcement.armed, true);
+});
+
+test("every way a run can end writes the interventions field", async () => {
+	// The field is only worth anything if it cannot be skipped, and there are five end
+	// conditions reaching two different record-writing paths.
+	process.env.FREEPLAY_RUN_BUDGET_DAYS = "5";
+	const records: any[] = [];
+	try {
+		const decided = await start({ status: "inProgress", calls: [] });
+		answerInterventionCensus(decided.bus, () => reportOf("tool-less-turn-nudge", true, 1));
+		await decided.fire("tool_result", parkStatusResult("completed"));
+		await decided.fire("turn_end", turnEnd());
+		await settle();
+		records.push(decided.record());
+
+		const playedOut = await start({ status: "inProgress", calls: [] });
+		answerInterventionCensus(playedOut.bus, () => reportOf("tool-less-turn-nudge", true, 1));
+		await playedOut.fire("tool_result", waitResult({ year: 1, month: 0, day: 1 }, 5, { year: 1, month: 0, day: 6 }));
+		await settle();
+		records.push(playedOut.record());
+
+		process.env.FREEPLAY_RUN_BUDGET_MINUTES = "0.0002"; // 12ms, for this one run only
+		const abandoned = await start({ status: "inProgress", calls: [] });
+		answerInterventionCensus(abandoned.bus, () => reportOf("tool-less-turn-nudge", true, 1));
+		await sleep(40);
+		await abandoned.fire("turn_end", turnEnd());
+		await settle();
+		records.push(abandoned.record());
+		delete process.env.FREEPLAY_RUN_BUDGET_MINUTES;
+
+		const stopped = await start({ status: "inProgress", calls: [] });
+		answerInterventionCensus(stopped.bus, () => reportOf("tool-less-turn-nudge", true, 1));
+		await stopped.fire("agent_settled", {});
+		records.push(stopped.record());
+
+		const interrupted = await start({ status: "inProgress", calls: [] });
+		answerInterventionCensus(interrupted.bus, () => reportOf("tool-less-turn-nudge", true, 1));
+		await interrupted.fire("session_shutdown", { reason: "quit" });
+		records.push(interrupted.record());
+	} finally {
+		delete process.env.FREEPLAY_RUN_BUDGET_DAYS;
+		delete process.env.FREEPLAY_RUN_BUDGET_MINUTES;
+	}
+
+	assert.deepEqual(
+		records.map((r) => r?.condition),
+		["scenario_decided", "game_days_exhausted", "wall_clock_exhausted", "model_stopped", "interrupted"],
+		"all five end conditions, so none of them is the one that forgets",
+	);
+	for (const record of records) {
+		assert.equal(record.interventions.disclosed, true);
+		assert.deepEqual(record.interventions.armed, ["tool-less-turn-nudge"]);
+		assert.equal(record.interventions.all.length, KNOWN_INTERVENTIONS.length);
+	}
+});
+
+test("a run_end record written without a census is marked undisclosed, not clean", () => {
+	// The guard in record.ts. A record with the field missing reads as a clean run to anyone
+	// who does not already know the field exists, which is the failure this whole thing is
+	// about — so appendEntry fills it in and says the harness did not disclose.
+	const logFile = openRunEndLog("interventions-guard");
+	assert.ok(logFile);
+	appendEntry(logFile, { event: "run_end", condition: "interrupted", detail: "written by older code" } as any);
+
+	const written = JSON.parse(readFileSync(logFile, "utf8").trim().split("\n").pop()!);
+	assert.equal(written.event, "run_end");
+	assert.equal(written.interventions.disclosed, false, "an empty armed list here must not be read as a clean run");
+	assert.deepEqual(written.interventions.armed, []);
+	assert.deepEqual(written.interventions.all.map((i: any) => i.id).sort(), [...KNOWN_INTERVENTIONS].sort());
+	for (const entry of written.interventions.all) assert.equal(entry.how, "unreported");
+
+	// Every other entry type passes through untouched: the guard is about run_end alone.
+	appendEntry(logFile, { event: "poll_failed", error: "x", consecutiveFailures: 1, elapsedMs: 0, timestamp: "t" });
+	const poll = JSON.parse(readFileSync(logFile, "utf8").trim().split("\n").pop()!);
+	assert.equal(poll.interventions, undefined);
 });
 
 test("a run ends exactly once", async () => {

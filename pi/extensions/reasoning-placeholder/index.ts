@@ -19,10 +19,24 @@
  * channel, so the header and the whole chain of reasoning land in `content`; pi records the
  * thinking block as "\n"; pi-ai's `nonEmptyThinkingBlocks` filter (openai-completions.js near
  * line 980) drops a whitespace-only block, so no reasoning goes back out; and the next prompt
- * again shows no thought channel. Measured over the recorded sessions by probe.mjs: 14 of 58
- * Gemma assistant turns carry the leaked `thought` header and 8 of 58 end with no tool call at
- * all, against 15 of 535 for Qwen — and a turn whose reasoning is prose in the answer channel
+ * again shows no thought channel. And a turn whose reasoning is prose in the answer channel
  * sometimes just finishes the prose and stops, which ends the run.
+ *
+ * HOW OFTEN, and from which committed script. `node pi/extensions/reasoning-placeholder/probe.mjs
+ * --census` counts the leak itself: 14 of Gemma's 58 assistant turns carry the leaked `thought`
+ * header, against 0 of Qwen's 535. What it costs is counted by
+ * `node pi/extensions/run-end/census.mjs`, which is the single source for the tool-less rate
+ * quoted anywhere in this repository — tool-less-turn-nudge/index.ts quotes the same two figures
+ * from the same script:
+ *
+ *   7 of Gemma's 58 assistant turns (12.1%) end with no tool call and stopReason "stop" — the
+ *   model choosing to say something instead of acting — against 2 of Qwen's 535 (0.4%).
+ *
+ * This file used to quote 8 of 58 against 15 of 535 (13.8% against 2.8%), which is every
+ * tool-less turn whatever stopped it. That is not a rate for the model and the two were not the
+ * same population: of Qwen's 15, ten are Ctrl+C aborts, one a failed request and two token-cap
+ * runaways, leaving the 2 above. census.mjs prints both lines per model, with the headline
+ * marked, so a reader can see which is which.
  *
  * WHAT THIS DOES. On the outgoing request, an assistant message that has tool_calls and no
  * non-empty reasoning field gets `reasoning_content` set to a short placeholder, which is
@@ -86,6 +100,14 @@
  * FREEPLAY_REASONING_PLACEHOLDER=1, and only after `probe.mjs --passthrough` shows a prompt
  * that grows — otherwise a run would carry an intervention that a published result would have
  * to disclose and that did nothing to earn the disclosure.
+ *
+ * THE DISCLOSURE IS NO LONGER SOMEBODY'S TO REMEMBER. This extension answers the run-end
+ * intervention census, so a run with the flag or the variable set writes
+ * `reasoning-placeholder` into the run_end record's `interventions.armed`, and a run without it
+ * writes the same id with `armed: false`. That matters here more than anywhere else, because
+ * this extension's own gate is a per-model intervention in everything but name: all 520 of
+ * Qwen's tool-calling turns already carry non-empty thinking and 44 of Gemma's 50 do not, so
+ * turning it on changes Gemma's runs and leaves Qwen's untouched. See ../run-end/interventions.ts.
  * ================================================================================
  */
 
@@ -93,6 +115,11 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	announceIntervention,
+	answerInterventionCensus,
+	type InterventionReport,
+} from "../run-end/interventions.ts";
 import { PLACEHOLDER_CHANNEL, type PlaceholderTelemetry } from "./channels.ts";
 
 /**
@@ -128,6 +155,9 @@ const STATUS_KEY = "reasoning-placeholder";
 const ENTRY_TYPE = "reasoning-placeholder";
 const FLAG_ENABLE = "reasoning-placeholder";
 const ENV_ENABLE = "FREEPLAY_REASONING_PLACEHOLDER";
+
+/** The directory this extension lives in, which is how the run-end record names it. */
+const INTERVENTION_ID = "reasoning-placeholder";
 
 interface WireMessage {
 	role?: unknown;
@@ -227,6 +257,26 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
+	/**
+	 * What this extension tells the run-end record it did.
+	 *
+	 * This is the whole answer to the env var being a trap. Setting FREEPLAY_REASONING_PLACEHOLDER
+	 * now puts `reasoning-placeholder` in the record's `interventions.armed` for that run, and
+	 * leaving it unset puts the same id in `interventions.all` with armed false — so a run that
+	 * carried the intervention cannot produce a record that looks like a run that did not.
+	 */
+	const describeIntervention = (): InterventionReport => ({
+		id: INTERVENTION_ID,
+		armed: enabled,
+		how: `--${FLAG_ENABLE} or ${ENV_ENABLE}=1; off by default`,
+		fired: substitutions,
+		detail: enabled
+			? `switched ON: ${substitutions} outgoing assistant message(s) across ${requests} request(s) were given a placeholder reasoning_content. The oMLX build in front of these models drops the field, so this may have changed nothing the model saw — re-run probe.mjs --passthrough before citing the run either way.`
+			: "off, which is the default: no outgoing message was changed.",
+	});
+
+	answerInterventionCensus(pi.events, describeIntervention);
+
 	/** Counts for whatever is listening. Never allowed to break a request. */
 	const report = (event: PlaceholderTelemetry["event"], model: string | null) => {
 		try {
@@ -266,6 +316,7 @@ export default function (pi: ExtensionAPI) {
 			sessionId: ctx.sessionManager.getSessionId(),
 			timestamp: new Date().toISOString(),
 		});
+		announceIntervention(pi.events, describeIntervention());
 		ctx.ui.setStatus(STATUS_KEY, enabled ? "reasoning placeholder on" : undefined);
 	});
 

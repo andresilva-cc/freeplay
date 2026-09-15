@@ -32,6 +32,7 @@ import { join } from "node:path";
 import type { DateReading } from "./gameTime.ts";
 import type { BridgeSnapshot } from "./snapshot.ts";
 import type { GameDay, ScenarioReading } from "./scenario.ts";
+import { isInterventions, undisclosedInterventions, type Interventions } from "./interventions.ts";
 
 /** Why the run stopped. */
 export type EndCondition =
@@ -122,6 +123,12 @@ export interface RunEndRecord {
 	turns: number;
 	toolCalls: number;
 	nudges: NudgeTotals;
+	/**
+	 * Every harness intervention that was armed for this run, and every one that was not.
+	 * Required, never optional: a benchmark number off a run that carried an intervention is
+	 * citable only if the run's own artifact named it. See interventions.ts.
+	 */
+	interventions: Interventions;
 	model: string | null;
 	modelParams: ModelParams | null;
 	/** Where the park stood when the run began. Null when the run never got a snapshot at all. */
@@ -178,12 +185,27 @@ export interface PollFailedEntry {
 	timestamp: string;
 }
 
+/**
+ * One intervention announcing itself, written when the announcement lands rather than at the
+ * end, so a run that never gets as far as a record still says what was armed in it.
+ */
+export interface InterventionEntry {
+	event: "intervention_armed";
+	id: string;
+	armed: boolean;
+	how: string;
+	detail: string;
+	elapsedMs: number;
+	timestamp: string;
+}
+
 export type RunEndLogEntry =
 	| RunEndRecord
 	| RunStartEntry
 	| RunStartStateEntry
 	| ScenarioEntry
-	| PollFailedEntry;
+	| PollFailedEntry
+	| InterventionEntry;
 
 export function agentDir(): string {
 	const fromEnv = process.env.PI_CODING_AGENT_DIR;
@@ -201,10 +223,25 @@ export function openRunEndLog(sessionId: string): string | undefined {
 	}
 }
 
+/**
+ * The disclosure guard, and the reason `interventions` cannot be left off a record.
+ *
+ * A run_end line with no `interventions` reads as a clean run to anyone who does not already
+ * know the field is supposed to be there, which is the exact failure this field exists to
+ * stop. So it is neither dropped nor silently allowed: the field is filled in with every known
+ * intervention marked "unreported" and `disclosed: false`, and the artifact then says the
+ * harness failed to disclose rather than saying nothing. Every other entry type passes through.
+ */
+function discloseInterventions(entry: RunEndLogEntry): RunEndLogEntry {
+	if (entry.event !== "run_end") return entry;
+	if (isInterventions((entry as RunEndRecord).interventions)) return entry;
+	return { ...(entry as RunEndRecord), interventions: undisclosedInterventions() };
+}
+
 export function appendEntry(logFile: string | undefined, entry: RunEndLogEntry): void {
 	if (!logFile) return;
 	try {
-		appendFileSync(logFile, `${JSON.stringify(entry)}\n`, "utf8");
+		appendFileSync(logFile, `${JSON.stringify(discloseInterventions(entry))}\n`, "utf8");
 	} catch {
 		// A run must not die because its own log is unwritable.
 	}

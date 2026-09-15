@@ -17,6 +17,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import factory from "../index.ts";
 import { NUDGE_CHANNEL, STOPPED_TURN_CHANNEL } from "../../run-end/channels.ts";
+import {
+	INTERVENTION_CENSUS_CHANNEL,
+	INTERVENTION_CHANNEL,
+	type InterventionCensus,
+	type InterventionReport,
+} from "../../run-end/interventions.ts";
 import { BRIDGE_TOOLS } from "../../run-end/signals.ts";
 
 const NUDGE_NARRATED =
@@ -39,6 +45,8 @@ interface Harness {
 	 */
 	verdict: "ended" | "undecided" | undefined;
 	scenarioStatus: string;
+	/** Stands in for run-end asking every intervention what it did. Returns what answered. */
+	census(): InterventionReport[];
 }
 
 let sessionCounter = 0;
@@ -48,7 +56,13 @@ function makeHarness(agentDir: string): Harness {
 	const logPath = join(agentDir, "logs", "nudges", `${sessionId}.jsonl`);
 	rmSync(logPath, { force: true });
 	const handlers = new Map<string, Array<(e: any, c: any) => any>>();
+	const busHandlers = new Map<string, Array<(data: unknown) => void>>();
 	const h: Harness = {
+		census() {
+			const request: InterventionCensus = { reports: [] };
+			for (const fn of busHandlers.get(INTERVENTION_CENSUS_CHANNEL) ?? []) fn(request);
+			return request.reports;
+		},
 		sent: [],
 		entries: [],
 		notifications: [],
@@ -108,7 +122,11 @@ function makeHarness(agentDir: string): Harness {
 				data.statusAtRequest = h.scenarioStatus;
 				data.decision = Promise.resolve(h.verdict);
 			},
-			on: () => () => {},
+			on: (channel: string, fn: (data: unknown) => void) => {
+				if (!busHandlers.has(channel)) busHandlers.set(channel, []);
+				busHandlers.get(channel)!.push(fn);
+				return () => {};
+			},
 		},
 	};
 
@@ -337,4 +355,31 @@ test("a nudge that never reaches the queue is reported, not swallowed", async ()
 		h.logLines().some((l) => l.event === "not_queued"),
 		"a lost nudge must land in the run record",
 	);
+});
+
+test("the nudge discloses itself to run-end as always armed, with the count it sent", async () => {
+	// This extension puts a user message into the conversation that no human typed, and it has
+	// no flag: being loaded is being armed. A run-end record that did not name it would be
+	// describing a conversation the model never had.
+	const h = await start();
+
+	const announced = h.emitted.filter((e) => e.channel === INTERVENTION_CHANNEL);
+	assert.equal(announced.length, 1, "it must announce itself at session_start, before it fires");
+	assert.equal(announced[0].data.id, "tool-less-turn-nudge");
+	assert.equal(announced[0].data.armed, true);
+	assert.equal(announced[0].data.fired, 0);
+
+	const before = h.census();
+	assert.equal(before.length, 1, "and answer the census whether or not it has fired");
+	assert.equal(before[0].armed, true, "there is no flag: loaded is armed");
+	assert.equal(before[0].fired, 0);
+	assert.match(before[0].detail, /did not fire/);
+
+	await h.fire("agent_end", { messages: [assistant({ text: NARRATED_WITH_SIGNAL })] });
+	await h.fire("agent_end", { messages: [assistant({ text: "", output: 0 })] });
+	assert.equal(h.sent.length, 2);
+
+	const after = h.census();
+	assert.equal(after[0].fired, 2, "the census is read at the end of the run and carries live counts");
+	assert.match(after[0].detail, /1 after prose, 1 after an empty response/);
 });

@@ -9,8 +9,15 @@
  * this file so it can be re-run instead of believed. Across 19 sessions and 593 assistant
  * turns there are 23 tool-less turns: 11 are Ctrl+C aborts, 1 is a failed request, 2 are
  * token-cap runaways, leaving 9 where the model really did stop with something to say.
- * gemma-4-26B-A4B-it-qat-5bit accounts for 7 of those in 58 assistant turns over 4 sessions
+ *
+ * That 9 — tool-less AND stopReason "stop", the model choosing to say something instead of
+ * acting — is the only population quoted as a rate for a model anywhere in this repository:
+ * gemma-4-26B-A4B-it-qat-5bit accounts for 7 of it in 58 assistant turns over 4 sessions
  * (12.1%); Qwen3.6-35B-A3B-4bit for 2 in 535 turns over 15 sessions (0.4%).
+ * reasoning-placeholder/index.ts quotes the same two figures from the same script. Counting
+ * every tool-less turn whatever stopped it instead gives 8/58 and 15/535, which census.mjs
+ * also prints and which neither file quotes: ten of Qwen's fifteen are a human pressing
+ * Ctrl+C, so that population measures the operator rather than the model.
  *
  * (The numbers that used to stand here — 42%, 25/60, 30/30, and "Qwen never did across ten
  * runs" — are gone. None was reproducible from this repository: 25/60 was 60 resamples of one
@@ -45,6 +52,10 @@
  * `agent_end` and `turn_end` are typed `ExtensionHandler<E>` with no result type, unlike
  * `message_end` (`MessageEndEventResult`), so a stray return value cannot replace anything.
  * Every handler below still returns undefined on purpose.
+ *
+ * THIS IS A HARNESS INTERVENTION: it puts a user message into the conversation that no human
+ * typed. It is always armed — there is no flag — so every run-end record names it, with the
+ * count it sent. See ../run-end/interventions.ts.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -53,6 +64,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { NUDGE_CHANNEL, STOPPED_TURN_CHANNEL } from "../run-end/channels.ts";
 import type { NudgeTelemetry, StoppedTurnRequest, StopVerdict } from "../run-end/channels.ts";
+import { announceIntervention, answerInterventionCensus, type InterventionReport } from "../run-end/interventions.ts";
 import { BRIDGE_TOOLS, detectToolCallSignal, hasToolCall, thinkingText, visibleText } from "../run-end/signals.ts";
 
 /**
@@ -85,6 +97,9 @@ const NUDGE_EMPTY = "Your last response was empty, so nothing happened. Make the
 
 const STATUS_KEY = "tool-less-nudge";
 const ENTRY_TYPE = "tool-less-nudge";
+
+/** The directory this extension lives in, which is how the run-end record names it. */
+const INTERVENTION_ID = "tool-less-turn-nudge";
 
 /**
  * How long to wait for run-end's verdict on a stopped turn before nudging anyway.
@@ -141,6 +156,25 @@ export default function (pi: ExtensionAPI) {
 			return BRIDGE_TOOLS;
 		}
 	};
+
+	/**
+	 * What this extension tells the run-end record it did. It has no flag and no env var: being
+	 * loaded is being armed, so `armed` is unconditionally true and the count is what separates
+	 * a run it touched from one it merely watched.
+	 */
+	const describeIntervention = (): InterventionReport => ({
+		id: INTERVENTION_ID,
+		armed: true,
+		how: "always on when the extension is loaded; it has no flag and no env var",
+		fired: total,
+		detail:
+			total === 0
+				? "loaded and able to insert a user message on a tool-less turn; it did not fire in this run"
+				: `inserted ${total} user message(s) telling the model to make a tool call` +
+					` (${byReason.narrated} after prose, ${byReason.empty} after an empty response)`,
+	});
+
+	answerInterventionCensus(pi.events, describeIntervention);
 
 	/** Counts for the run-end record. Never allowed to break a run. */
 	const report = (telemetry: NudgeTelemetry) => {
@@ -223,6 +257,7 @@ export default function (pi: ExtensionAPI) {
 		} catch {
 			logFile = undefined;
 		}
+		announceIntervention(pi.events, describeIntervention());
 		refreshStatus(ctx);
 	});
 

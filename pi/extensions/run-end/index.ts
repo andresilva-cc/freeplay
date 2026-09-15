@@ -53,6 +53,12 @@
  * comparable on something. A snapshot that fails degrades to missing fields and a note; it
  * never loses the record and never invents a number.
  *
+ * WHAT THE HARNESS DID TO THE MODEL. The record also carries `interventions`: every extension
+ * that changes what the model sees, armed or not, with one entry each. It is collected by
+ * asking, inside the function that writes the record, so no path can write a record without
+ * disclosing — and a disarmed intervention is present and false rather than missing, because
+ * "not in the list" and "not armed" have to be different states. See interventions.ts.
+ *
  * RELATIONSHIP TO tool-less-turn-nudge. The nudge asks this extension, over pi's shared
  * EventBus, whether a stopped turn means the run is over; see channels.ts for the contract.
  * If this extension is not loaded the nudge falls back to its own judgement. If the NUDGE is
@@ -72,6 +78,15 @@ import {
 	type NudgeTotals,
 	type RunEndRecord,
 } from "./record.ts";
+import {
+	collectInterventions,
+	INTERVENTION_CENSUS_CHANNEL,
+	INTERVENTION_CHANNEL,
+	type InterventionCensus,
+	type InterventionId,
+	type InterventionReport,
+	type Interventions,
+} from "./interventions.ts";
 import {
 	createScenarioPoller,
 	isDecided,
@@ -236,6 +251,17 @@ export default function (pi: ExtensionAPI) {
 
 	let startState: BridgeSnapshot | undefined;
 	let lastState: BridgeSnapshot | undefined;
+
+	/**
+	 * Interventions that announced themselves at their own `session_start`.
+	 *
+	 * Deliberately NOT cleared in `session_start` below. Extension handlers for one event run in
+	 * load order, and an intervention that announces before run-end resets would have its
+	 * announcement thrown away — a run could then be armed and say nothing. Every intervention
+	 * announces once per session and overwrites its own entry, so nothing here goes stale, and
+	 * the census at record time overrides all of it anyway.
+	 */
+	const announced = new Map<InterventionId, InterventionReport>();
 
 	pi.registerFlag(FLAG_GAME_DAYS, {
 		type: "string",
@@ -478,6 +504,9 @@ export default function (pi: ExtensionAPI) {
 			turns,
 			toolCalls,
 			nudges: { ...nudges },
+			// Taken here rather than passed in, so that there is no path through this function
+			// that writes a record without asking what the harness did to the model.
+			interventions: takeInterventionCensus(),
 			model: ctx.model?.id ?? null,
 			modelParams: readModelParams(ctx),
 			startState: startState ?? null,
@@ -501,9 +530,13 @@ export default function (pi: ExtensionAPI) {
 
 		try {
 			const spent = days.spent === null ? "unmeasured" : `${days.spent} game days`;
+			const armed =
+				record.interventions.armed.length > 0
+					? ` Harness interventions armed: ${record.interventions.armed.join(", ")}.`
+					: "";
 			announce(
 				ctx,
-				`run ended: ${detail} (${spent}, ${record.elapsedMinutes} min, ${turns} turns). Record: ${logFile ?? "unavailable"}`,
+				`run ended: ${detail} (${spent}, ${record.elapsedMinutes} min, ${turns} turns).${armed} Record: ${logFile ?? "unavailable"}`,
 				"warning",
 			);
 			ctx.ui.setStatus(STATUS_KEY, `run ended — ${condition}`);
@@ -559,6 +592,25 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	const describeScenario = () => scenario?.status ?? "unknown";
+
+	/**
+	 * Ask every intervention what it did, and fold in the announcements for any that did not
+	 * answer. Census answers go first because `collectInterventions` keeps the first entry per
+	 * id and the census carries the live counts; see interventions.ts.
+	 *
+	 * Never throws. A census that cannot be taken still returns a complete list, because the
+	 * registry supplies an entry for every known intervention that said nothing.
+	 */
+	const takeInterventionCensus = (): Interventions => {
+		const census: InterventionCensus = { reports: [] };
+		try {
+			pi.events.emit(INTERVENTION_CENSUS_CHANNEL, census);
+		} catch {
+			// A subscriber threw. Whatever was pushed before it is still in the array, and the
+			// announcements below cover the rest.
+		}
+		return collectInterventions([...census.reports, ...announced.values()]);
+	};
 
 	/**
 	 * The budget. Checked before the net, so a run that has played out its game days is never
@@ -776,6 +828,31 @@ export default function (pi: ExtensionAPI) {
 		);
 	});
 
+	/**
+	 * An intervention announcing itself at its own session_start. Kept as the fallback for the
+	 * census, and written to the log the moment it lands so that a run which never reaches a
+	 * record still says what was armed in it.
+	 *
+	 * The log line is best-effort and the map is not: an announcement that arrives before this
+	 * extension's own session_start has opened `logFile` writes nothing, but is still counted
+	 * in the record, which is the half that a published result depends on.
+	 */
+	pi.events.on(INTERVENTION_CHANNEL, (data) => {
+		if (!data || typeof data !== "object") return;
+		const report = data as InterventionReport;
+		if (typeof report.id !== "string" || report.id.length === 0) return;
+		announced.set(report.id, report);
+		appendEntry(logFile, {
+			event: "intervention_armed",
+			id: report.id,
+			armed: report.armed === true,
+			how: typeof report.how === "string" ? report.how : "unstated",
+			detail: typeof report.detail === "string" ? report.detail : "",
+			elapsedMs: elapsed(),
+			timestamp: new Date().toISOString(),
+		});
+	});
+
 	pi.events.on(NUDGE_CHANNEL, (data) => {
 		const telemetry = data as NudgeTelemetry | undefined;
 		if (!telemetry) return;
@@ -831,12 +908,15 @@ export default function (pi: ExtensionAPI) {
 			await refreshGameDay(true);
 			const days = account();
 			const year = roundDays(gameDayBudget / DAYS_IN_YEAR);
+			const interventions = takeInterventionCensus();
 			const lines = [
 				`game days: ${days.spent ?? "unmeasured"} of ${gameDayBudget} (${year} scenario years), via ${days.source}`,
 				`wait: ${days.inWait} days over ${days.waitCalls} calls`,
 				`wall-clock net: ${Math.round((elapsed() / 60_000) * 10) / 10} min of ${Math.round(wallClockMs / 60_000)} min`,
 				`turns: ${turns}, tool calls: ${toolCalls}`,
 				`scenario: ${describeScenario()}${scenario ? ` (via ${scenario.source})` : ""}`,
+				`harness interventions armed: ${interventions.armed.length > 0 ? interventions.armed.join(", ") : "none"}` +
+					` (of ${interventions.all.map((i) => i.id).join(", ")})`,
 				`bridge: ${bridgeUrl}${pollFailures > 0 ? ` — ${pollFailures} poll failures in a row` : ""}`,
 				`record: ${logFile ?? "unavailable"}`,
 			];

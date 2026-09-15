@@ -27,6 +27,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import factory, { isEnabled, substituteReasoning } from "../index.ts";
+import {
+	INTERVENTION_CENSUS_CHANNEL,
+	INTERVENTION_CHANNEL,
+	type InterventionCensus,
+	type InterventionReport,
+} from "../../run-end/interventions.ts";
 import { PLACEHOLDER_CHANNEL } from "../channels.ts";
 
 /** The exact string probe.mjs was run with. A reword is untested. */
@@ -43,6 +49,8 @@ interface Harness {
 	sessionId: string;
 	fire(event: string, payload?: any): Promise<any>;
 	logLines(): any[];
+	/** Stands in for run-end asking every intervention what it did. Returns what answered. */
+	census(): InterventionReport[];
 }
 
 let sessionCounter = 0;
@@ -53,7 +61,13 @@ function makeHarness(modelId: string, on: boolean): Harness {
 	rmSync(logPath, { force: true });
 
 	const handlers = new Map<string, Array<(e: any, c: any) => any>>();
+	const busHandlers = new Map<string, Array<(data: unknown) => void>>();
 	const h: Harness = {
+		census() {
+			const request: InterventionCensus = { reports: [] };
+			for (const fn of busHandlers.get(INTERVENTION_CENSUS_CHANNEL) ?? []) fn(request);
+			return request.reports;
+		},
 		entries: [],
 		emitted: [],
 		status: {},
@@ -100,7 +114,11 @@ function makeHarness(modelId: string, on: boolean): Harness {
 		getFlag: (name: string) => h.flags[name],
 		events: {
 			emit: (channel: string, data: unknown) => h.emitted.push({ channel, data }),
-			on: () => () => {},
+			on: (channel: string, fn: (data: unknown) => void) => {
+				if (!busHandlers.has(channel)) busHandlers.set(channel, []);
+				busHandlers.get(channel)!.push(fn);
+				return () => {};
+			},
 		},
 	};
 
@@ -277,7 +295,11 @@ test("a non-Gemma model is untouched, and so is anything that is not an OpenAI r
 
 	assert.equal(result, undefined, "the run that is not broken must be byte-identical to one without this extension");
 	assert.equal(h.status["reasoning-placeholder"], "reasoning placeholder on", "switched on but never triggered");
-	assert.deepEqual(h.emitted, [], "and it must not report a substitution it did not make");
+	assert.deepEqual(
+		h.emitted.filter((e) => e.channel === PLACEHOLDER_CHANNEL),
+		[],
+		"and it must not report a substitution it did not make",
+	);
 	assert.equal(h.logLines().filter((l) => l.event === "substituted").length, 0);
 
 	// Payloads this extension has no business in are handed straight back.
@@ -337,4 +359,37 @@ test("a session that starts again counts from zero", async () => {
 
 	const substituted = h.logLines().filter((l) => l.event === "substituted");
 	assert.deepEqual(substituted.map((l) => l.substitutions), [2, 2]);
+});
+
+test("a run with the placeholder switched on cannot hide it, and one without it says so too", async () => {
+	// THE TRAP THIS CLOSES. The env var is a no-op for Qwen and an intervention for Gemma —
+	// 44 of Gemma's 50 tool-calling turns carry no thinking against 0 of Qwen's 520 — so a run
+	// that had it set has to be distinguishable from one that did not, in the artifact and not
+	// just in somebody's memory.
+	const on = await start();
+	const announced = on.emitted.filter((e) => e.channel === INTERVENTION_CHANNEL);
+	assert.equal(announced.length, 1, "it announces itself at session_start, before it can fire");
+	assert.equal(announced[0].data.id, "reasoning-placeholder");
+	assert.equal(announced[0].data.armed, true);
+
+	await on.fire("before_provider_request", { payload: gemmaPayload() });
+	const armed = on.census();
+	assert.equal(armed.length, 1);
+	assert.equal(armed[0].id, "reasoning-placeholder");
+	assert.equal(armed[0].armed, true);
+	assert.equal(armed[0].fired, 2, "two assistant messages in that payload qualified");
+	assert.match(armed[0].how, /FREEPLAY_REASONING_PLACEHOLDER/);
+
+	// Off is the default, and it reports as present-and-false rather than saying nothing.
+	const off = await start("gemma-4-26B-A4B-it-qat-5bit", false);
+	const disarmed = off.census();
+	assert.equal(disarmed.length, 1, "a disarmed intervention still answers");
+	assert.equal(disarmed[0].armed, false);
+	assert.equal(disarmed[0].fired, 0);
+	assert.match(disarmed[0].detail, /off, which is the default/);
+	assert.equal(
+		off.emitted.filter((e) => e.channel === INTERVENTION_CHANNEL)[0].data.armed,
+		false,
+		"and it announces being off, so the record never has to guess",
+	);
 });
