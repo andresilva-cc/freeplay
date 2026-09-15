@@ -12,7 +12,15 @@ pi/SYSTEM.md
 pi/sessions/
 sessions/
 pi/packages/
-pi/logs/
+
+# Logs are local noise, with one exception: the end-of-run record is the artifact a
+# published result cites, and a number nobody else can check is not a result. Those
+# files are one JSON line per run and a few kB. Transcripts (pi/sessions/) stay out —
+# they are megabytes and are a corpus decision, not a record.
+pi/logs/*
+!pi/logs/run-end/
+pi/logs/run-end/*
+!pi/logs/run-end/*.jsonl
 pi/auth.json
 pi/trust.json
 pi/models-store.json
