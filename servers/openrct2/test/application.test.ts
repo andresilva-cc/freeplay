@@ -288,7 +288,8 @@ test("createApplication provides the automatic /v1 index and date controller res
                 methods: ["GET"]
             }
         ]);
-        assert.deepEqual(Object.keys(index.stateGuards as object).sort(), ["frozen", "ok", "open", "unfrozen"]);
+        assert.deepEqual(Object.keys(index.stateGuards as object).sort(),
+            ["frozen", "ok", "open", "unexamined", "unfrozen"]);
         // No `scenario` global in this fixture at all, which is the reading a harness gets
         // between scenarios: named as unknown rather than guessed at as still running.
         assert.deepEqual(index.scenario, { name: null, objective: null, status: null, endedOn: null });

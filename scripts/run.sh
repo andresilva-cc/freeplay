@@ -94,7 +94,9 @@ import json, sys
 
 
 def names(value):
-    return ",".join(str(name) for name in value) if isinstance(value, list) else ""
+    # ", " and not ",": `unexamined` arrives already capped and closed with an "and N more"
+    # entry, and jammed against a comma that reads as one more member name.
+    return ", ".join(str(name) for name in value) if isinstance(value, list) else ""
 
 
 try:
@@ -104,35 +106,43 @@ except ValueError:
 
 guards = info.get("stateGuards") if isinstance(info, dict) else None
 
-# Three states, because two could not tell the truth. `unfrozen` has only ever meant "the
-# slot refused"; it never meant "nobody looked", so a whole surface nobody had listed - the
-# guest prototype, the tile elements - left both lists empty and this printed "ok". `open`
-# is the third: what the plugin knows it is leaving writable and says so by name.
+# Four states, because two could not tell the truth and three still could not say "nobody
+# looked". `unfrozen` has only ever meant "the slot refused"; so a whole surface nobody had
+# listed - the guest prototype, the tile elements - left both lists empty and this printed
+# "ok". `open` is what the plugin knows it is leaving writable and says so by name.
+# `unexamined` is the members of a declared namespace that are in none of the three: not
+# shut, not refused, not a decision. The plugin caps that list and closes it with "and N
+# more", so what arrives here is already short enough to print.
 if not isinstance(guards, dict):
-    print("absent|||")
+    print("absent||||")
 else:
     frozen = guards.get("frozen") or 0
     refused = names(guards.get("unfrozen"))
     declared = names(guards.get("open"))
+    unexamined = names(guards.get("unexamined"))
 
     if not frozen:
         status = "none"
     elif refused:
         status = "refused"
+    elif unexamined:
+        status = "unexamined"
     elif declared:
         status = "declared"
     else:
         status = "ok"
 
-    print("|".join([status, str(frozen), refused, declared]))
-') || GUARDS="absent|||"
+    print("|".join([status, str(frozen), refused, declared, unexamined]))
+') || GUARDS="absent||||"
 
 GUARD_STATUS="${GUARDS%%|*}"
 GUARD_REST="${GUARDS#*|}"
 GUARD_FROZEN="${GUARD_REST%%|*}"
 GUARD_REST="${GUARD_REST#*|}"
 GUARD_REFUSED="${GUARD_REST%%|*}"
-GUARD_DECLARED="${GUARD_REST#*|}"
+GUARD_REST="${GUARD_REST#*|}"
+GUARD_DECLARED="${GUARD_REST%%|*}"
+GUARD_UNEXAMINED="${GUARD_REST#*|}"
 
 case "$GUARD_STATUS" in
   ok)
@@ -142,7 +152,7 @@ case "$GUARD_STATUS" in
     GUARD_LINE="${GUARD_FROZEN} frozen, open on purpose: ${GUARD_DECLARED}"
     echo "note: the running plugin leaves these levers writable on purpose: ${GUARD_DECLARED}" >&2
     echo "      they are free settings the game's own windows offer and freezing them would" >&2
-    echo "      stop the model playing; nothing else is open that anybody has looked at." >&2
+    echo "      stop the model playing; every other member it declares has a verdict on it." >&2
     ;;
   refused)
     GUARD_LINE="${GUARD_FROZEN} frozen, could not freeze: ${GUARD_REFUSED}"
@@ -153,6 +163,28 @@ case "$GUARD_STATUS" in
     if [ -n "$GUARD_DECLARED" ]; then
       GUARD_LINE="${GUARD_LINE}, open on purpose: ${GUARD_DECLARED}"
       echo "         these are writable on purpose as well: ${GUARD_DECLARED}" >&2
+    fi
+
+    if [ -n "$GUARD_UNEXAMINED" ]; then
+      GUARD_LINE="${GUARD_LINE}, nobody looked at: ${GUARD_UNEXAMINED}"
+      echo "         and nobody has looked at these at all: ${GUARD_UNEXAMINED}" >&2
+    fi
+    ;;
+  unexamined)
+    # Neither of the two above. "Could not freeze" is a build that tried and lost; "open on
+    # purpose" is a decision somebody wrote down. This is the absence of both: the plugin
+    # swept a namespace it declares and found members no table in it names either way. It
+    # may be harmless and it may be the calendar again - what is known is that nobody has
+    # said which, so it is reported flatly and the run goes ahead.
+    GUARD_LINE="${GUARD_FROZEN} frozen, nobody looked at: ${GUARD_UNEXAMINED}"
+    echo "unchecked: nobody has a verdict on these members of the plugin API: ${GUARD_UNEXAMINED}" >&2
+    echo "           they are neither guarded nor knowingly left open, which is a weaker" >&2
+    echo "           claim than either - not that they are a hole, only that nothing in" >&2
+    echo "           src/scripting.ts has decided. Give them one, or say they are reads." >&2
+
+    if [ -n "$GUARD_DECLARED" ]; then
+      GUARD_LINE="${GUARD_LINE}, open on purpose: ${GUARD_DECLARED}"
+      echo "           these are writable on purpose, which is a decision: ${GUARD_DECLARED}" >&2
     fi
     ;;
   none)

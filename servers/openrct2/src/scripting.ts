@@ -1403,8 +1403,31 @@ interface NamespaceSweep {
 let namespaceSweeps: NamespaceSweep[] = [];
 let unexaminedLevers: string[] = [];
 
-/** Longest list of unexamined members one log line will name. */
-const MAX_LOGGED_UNEXAMINED = 20;
+/**
+ * Longest list of unexamined members either the startup log line or the served summary
+ * will name. One namespace nobody transcribed can be dozens of members wide and `/v1` is
+ * polled, so the list is capped - and the remainder is counted rather than dropped,
+ * because a silent truncation is the same failure as a silent omission.
+ */
+const MAX_NAMED_UNEXAMINED = 20;
+
+/**
+ * The unexamined members, capped, with the remainder named as a count.
+ *
+ * One list for both readers: what the console says at startup and what `/v1` serves are
+ * the same names in the same order, so a banner and a log cannot disagree.
+ */
+function namedUnexamined(): string[] {
+    if (unexaminedLevers.length <= MAX_NAMED_UNEXAMINED) {
+        return unexaminedLevers.slice(0);
+    }
+
+    const named = unexaminedLevers.slice(0, MAX_NAMED_UNEXAMINED);
+
+    named.push("and " + String(unexaminedLevers.length - MAX_NAMED_UNEXAMINED) + " more");
+
+    return named;
+}
 
 /** The namespace itself, read through whatever guard is sitting on the slot. */
 function readNamespace(name: string): unknown {
@@ -1550,19 +1573,30 @@ export function stateGuardReport(): {
  * deliberately unfrozen - because each of them means a write is available that the count
  * on its own would read as covered.
  *
- * And false for a fourth now: a member of a declared namespace that nobody has a verdict
- * on. `stateGuardReport().unexamined` is where those are named; this endpoint is polled and
- * keeps the four fields it has, so the honest thing it can do is refuse to say ok. The
- * fifth field belongs here too and is not here yet only because the shape of this object is
- * asserted in a test file another change is holding.
+ * And false for a fourth: a member of a declared namespace that nobody has a verdict on.
+ * `unexamined` names those here, which is the whole reason it is a field rather than a
+ * fifth way for `ok` to go false without saying why - a summary that reads
+ * `{"ok":false,"frozen":198,"unfrozen":[],"open":[]}` sends a reader back to the three
+ * lists that are empty precisely because the thing that failed is in none of them.
+ *
+ * The one cap: `unexamined` can be a whole namespace wide, and this endpoint is polled, so
+ * it names at most MAX_NAMED_UNEXAMINED and closes with "and N more". `unfrozen` and `open`
+ * are not capped because both are lists somebody wrote by hand.
  */
-export function stateGuardSummary(): { ok: boolean; frozen: number; unfrozen: string[]; open: string[] } {
+export function stateGuardSummary(): {
+    ok: boolean;
+    frozen: number;
+    unfrozen: string[];
+    open: string[];
+    unexamined: string[];
+} {
     return {
         ok: frozenLevers.length > 0 && unfrozenLevers.length === 0 && openLevers.length === 0
             && unexaminedLevers.length === 0,
         frozen: frozenLevers.length,
         unfrozen: unfrozenLevers.slice(0),
-        open: openLevers.slice(0)
+        open: openLevers.slice(0),
+        unexamined: namedUnexamined()
     };
 }
 
@@ -1591,11 +1625,7 @@ function reportUnguarded(): void {
     if (unexaminedLevers.length > 0) {
         unguardedReported = true;
         console.log("freeplay: nobody has a verdict on these members of the plugin API, so they are"
-            + " neither guarded nor knowingly left open: "
-            + unexaminedLevers.slice(0, MAX_LOGGED_UNEXAMINED).join(", ")
-            + (unexaminedLevers.length > MAX_LOGGED_UNEXAMINED
-                ? " and " + String(unexaminedLevers.length - MAX_LOGGED_UNEXAMINED) + " more"
-                : ""));
+            + " neither guarded nor knowingly left open: " + namedUnexamined().join(", "));
     }
 }
 

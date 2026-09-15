@@ -421,6 +421,22 @@ interface WorldOptions {
      * rather than the instance because the guard seals the instance against new members.
      */
     unlistedMember?: boolean;
+    /**
+     * That many further unnamed setters on `GameDate`, standing in for a whole namespace
+     * nobody transcribed rather than one member. The served summary caps its list, and a
+     * cap that dropped the rest silently would be the same defect it was added to close.
+     */
+    unlistedMembers?: number;
+}
+
+/** One more setter on `GameDate` that no table in src/scripting.ts names. */
+function defineSpare(prototype: object, index: number, store: number[]): void {
+    Object.defineProperty(prototype, "spare" + String(index), {
+        get: function () { return store[index]; },
+        set: function (value: number) { store[index] = value; },
+        configurable: true,
+        enumerable: false
+    });
 }
 
 function defineFigures(prototype: object, keys: string[], store: Record<string, unknown>, stubborn: string[]): void {
@@ -669,6 +685,12 @@ function installWorld(options?: WorldOptions): World {
             configurable: true,
             enumerable: false
         });
+    }
+
+    const spares: number[] = [];
+
+    for (let s = 0; s < ((options && options.unlistedMembers) || 0); s++) {
+        defineSpare(datePrototype, s, spares);
     }
 
     const objectsLoaded: string[] = [];
@@ -1880,7 +1902,13 @@ test("a callback a script hands to an action runs under the same guards the scri
 interface V1Index {
     buildId: string;
     controllers: { name: string; path: string; methods: string[] }[];
-    stateGuards: { ok: boolean; frozen: number; unfrozen: string[]; open: string[] };
+    stateGuards: {
+        ok: boolean;
+        frozen: number;
+        unfrozen: string[];
+        open: string[];
+        unexamined: string[];
+    };
 }
 
 function getV1(app: ReturnType<typeof createApplication>): V1Index {
@@ -1926,6 +1954,9 @@ test("GET /v1 carries the build id and a machine-readable guard state", function
         assert.deepEqual(index.stateGuards.open,
             ["ride.price", "staff.orders", "staff.costume", "staff.patrolArea"],
             "every write left open on purpose is named: " + JSON.stringify(index.stateGuards.open));
+        assert.deepEqual(index.stateGuards.unexamined, [],
+            "and every member of every namespace it declares has a verdict on it: "
+            + JSON.stringify(index.stateGuards.unexamined));
         assert.equal(index.stateGuards.ok, false, "and naming it is not the same as being clean");
     } finally {
         world.restore();
@@ -3046,6 +3077,105 @@ test("with every member accounted for the report says so, and names nothing", fu
         assert.ok(report.frozen.indexOf("objectManager.load") >= 0);
         assert.ok(report.frozen.indexOf("network") >= 0);
         assert.ok(report.frozen.indexOf("context.saveGame") >= 0);
+    } finally {
+        world.restore();
+    }
+});
+
+/* ------------------------------------------------------------------ *
+ * Part 12 - the summary that went false without saying why
+ *
+ * `stateGuardReport()` learned to name what nobody had swept; `stateGuardSummary()` - the
+ * thing `GET /v1` actually publishes and scripts/run.sh reads before a run - kept the four
+ * fields it had. So an unexamined member turned `ok` false and left a reader looking at
+ * `{"frozen":198,"unfrozen":[],"open":[]}`: three lists, all empty, none of them the
+ * reason. That is the same silence the three-state reshape was written to end, one level
+ * up.
+ * ------------------------------------------------------------------ */
+
+test("the published summary names the member nobody looked at, not merely that something failed", function () {
+    const world = installWorld({ unlistedMember: true });
+
+    try {
+        const index = getV1(createApplication());
+
+        assert.equal(index.stateGuards.ok, false, "a member with no verdict fails the pre-run check");
+        assert.deepEqual(index.stateGuards.unexamined, ["date.quarterProgress"],
+            "and the endpoint has to say which one, or `ok:false` sends a reader to three empty"
+            + " lists: " + JSON.stringify(index.stateGuards));
+
+        // The three categories stay three. Naming it here must not quietly move it into one
+        // of the lists that mean something else.
+        assert.equal(index.stateGuards.unfrozen.indexOf("date.quarterProgress"), -1,
+            "it did not refuse to freeze - nobody tried");
+        assert.equal(index.stateGuards.open.indexOf("date.quarterProgress"), -1,
+            "and nobody decided to leave it open, which is the whole difference");
+
+        const scope = globalThis as unknown as { date: Record<string, unknown> };
+
+        scope.date.quarterProgress = 7;
+        assert.equal(scope.date.quarterProgress, 7, "the stand-in must be a real write");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the summary keeps the three categories apart when all three have something in them", function () {
+    // `cash` cannot be guarded here, `ride.price` is open on purpose, and `quarterProgress`
+    // is a member nobody transcribed: one world, one summary, three different claims.
+    const world = installWorld({ stubborn: ["cash"], unlistedMember: true });
+
+    try {
+        createApplication();
+
+        const summary = stateGuardSummary();
+
+        assert.ok(summary.unfrozen.indexOf("park.cash") >= 0,
+            "tried and the slot refused: " + JSON.stringify(summary.unfrozen));
+        assert.ok(summary.open.indexOf("ride.price") >= 0,
+            "left writable on purpose: " + JSON.stringify(summary.open));
+        assert.deepEqual(summary.unexamined, ["date.quarterProgress"],
+            "and never looked at: " + JSON.stringify(summary.unexamined));
+
+        const everywhere = summary.unfrozen.concat(summary.open).concat(summary.unexamined);
+        const seen: Record<string, number> = {};
+
+        everywhere.forEach(function (path) {
+            seen[path] = (seen[path] || 0) + 1;
+        });
+
+        Object.keys(seen).forEach(function (path) {
+            assert.equal(seen[path], 1, path + " is in two categories at once, so the summary no"
+                + " longer says which of the three it is: " + JSON.stringify(summary));
+        });
+
+        assert.equal(summary.ok, false, "and any one of the three is enough to fail the check");
+    } finally {
+        world.restore();
+    }
+});
+
+test("a namespace nobody transcribed is capped in the summary and the remainder counted", function () {
+    // 34 unnamed setters on one namespace: more than an endpoint that is polled should
+    // carry, and exactly the case where dropping the tail would re-create the defect one
+    // size smaller. The one-member world above proves the other half - a list under the cap
+    // is the names and nothing else appended.
+    const world = installWorld({ unlistedMembers: 34 });
+
+    try {
+        createApplication();
+
+        const summary = stateGuardSummary();
+
+        assert.equal(stateGuardReport().unexamined.length, 34,
+            "the full report is not capped: " + String(stateGuardReport().unexamined.length));
+        assert.equal(summary.unexamined.length, 21,
+            "the served one names twenty and closes the list: " + JSON.stringify(summary.unexamined));
+        assert.equal(summary.unexamined[20], "and 14 more",
+            "the remainder is counted, never dropped: " + JSON.stringify(summary.unexamined));
+        assert.ok(summary.unexamined.indexOf("date.spare0") >= 0,
+            "and the names it does carry are real ones: " + JSON.stringify(summary.unexamined.slice(0, 3)));
+        assert.equal(summary.ok, false, "a capped list is still a list of holes");
     } finally {
         world.restore();
     }
