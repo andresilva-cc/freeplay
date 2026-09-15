@@ -320,7 +320,7 @@ export class WaitTools {
             "`days` is game time and is the same amount of scenario wherever this runs;",
             "the REAL seconds it takes are set by `set_game_speed` and are reported as `seconds`.",
             "A call is capped at twenty real seconds, so a request the current speed cannot reach in that",
-            "time comes back with `complete: false` and the days it did get - call again or raise the speed.",
+            "time comes back with `complete: false` and the days it did get.",
             "`ok: false` means nothing was waited: `days` was out of range, or set_game_speed had paused the game."
         ].join(" "),
         inputSchema: {

@@ -21,11 +21,14 @@ what to charge, when to open the park, and what to do about a falling rating. Th
 the game. A tool that makes those choices is not helping the model play; it is playing
 instead of it, and the run stops being evidence of anything.
 
-### The same rule binds the prompt
+### The same rule binds the prompt and the tool descriptions
 
-`games/openrct2/prompt.md` is governed by this document too, and it is the larger
-influence of the two: a tool description is read when its tool is in play, the prompt is
-read on every turn of every run. The line is the same one, drawn precisely. **A fact about
+`games/openrct2/prompt.md` is governed by this document too. So is every tool description,
+and for a stronger reason than it looks: the tool list is not read when a tool is in play,
+it is sent whole on every request, so all sixteen descriptions arrive in the same context
+window as the prompt on the same turn. They are also the larger half. The prompt is about
+14,700 characters; the descriptions and their argument text come to about 44,100. The line
+is the same one, drawn precisely. **A fact about
 how the simulation works stays** — the model cannot read OpenRCT2's source, so a game rule
 is knowledge it has no other way to get, and cutting it hides the rules rather than
 protecting the model's judgment. **An instruction, preference or steer goes** — it teaches
@@ -34,6 +37,35 @@ about the *world* or tells the model what to *do*. This binds tool results as ti
 binds descriptions and the prompt, because a small model follows text more reliably than it
 reasons: a steer sitting in a result does not make a run merely impure, it makes a good run
 unmeasurable, since there is no longer any way to tell the model's decision from the text's.
+
+`test/prompt.test.ts` enforced this on the prompt alone for several commits, and the
+descriptions were exempt from all of it. What that bought is visible in the rewrite that
+cleaned the prompt: it moved vocabulary OUT of the audited file and INTO the unaudited one.
+`usually` — a banned steer, and a probability standing in for a reading — ended up in
+`view_map`'s description. `Never work that rectangle out from ...` ended up in
+`describe_placement`'s. Both passed, because the rule bound one of the two files the model
+reads and the other was free.
+
+The lists now live in `test/modelFacingRules.ts` and both test files import them, so there
+is no cheaper place to put a steer. One exemption is deliberate: a description's FIRST
+sentence names what the tool does — "Buy the land rights to a rectangle of tiles", "Pave the
+tiles you name" — and that imperative is the interface rather than a move in the park.
+Everything after it is prose the model reads beside the prompt.
+
+### What a word list cannot see
+
+A banned-word list only ever catches vocabulary someone already regretted. A reviewer wrote
+a sentence that passes every steer, every imperative opener and the heading rule:
+
+> A queue eight tiles long carries eight guests to a ride that a bare door carries one to.
+
+That is a deleted throughput measurement put back as prose. Its vocabulary is clean because
+vocabulary was never what made it an answer key — the arithmetic was. So there are two rules
+that are not about words at all, in `test/modelFacingText.test.ts`. A sentence that puts a
+figure on what the park gets, or that ranks two ways of running one by it, has to be declared
+in `DECLARED_CLAIMS` with the window a player reads it off; and the prompt and the tool list
+each have a character ceiling, so a sentence cannot be added without a decision that shows up
+in the diff. Neither rule catches a claim made in prose with no number and no comparison.
 
 ## Why perception counts as mechanics
 

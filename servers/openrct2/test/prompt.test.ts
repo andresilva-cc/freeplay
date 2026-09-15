@@ -33,6 +33,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { getMcpTools } from "../src/tools/index.ts";
+import {
+    IMPERATIVE_OPENERS,
+    STEERS,
+    TRANSCRIPT_CITATION,
+    openerPattern
+} from "./modelFacingRules.ts";
+import type { Provenance } from "./modelFacingRules.ts";
 
 /** Across packages: the prompt belongs to the game, not to the bridge that serves it. */
 const PROMPT_PATH = fileURLToPath(new URL("../../../games/openrct2/prompt.md", import.meta.url));
@@ -42,19 +49,10 @@ function readPrompt(): string {
 }
 
 /**
- * Where a sentence came from. `game` is something a player reads off the game; `bridge` is
- * this API; `harness` is the agent loop the model runs inside. There is no fourth value,
- * because the fourth category does not belong in the prompt.
+ * `Provenance` and `TRANSCRIPT_CITATION` moved to ./modelFacingRules.ts, which the tool
+ * descriptions are now held to as well. They arrive in the same context window as this file
+ * on the same turn, so a rule that bound only prompt.md just moved the steer next door.
  */
-type Provenance = "game" | "bridge" | "harness";
-
-/**
- * A transcript citation defending a pinned fact. Session ids, hit rates out of a call count,
- * and "one run measured ..." are all the same defect: the prompt being justified by what one
- * model did rather than by what the game, the bridge or the harness is.
- */
-const TRANSCRIPT_CITATION =
-    /\bsession [0-9a-f]{4,}|\b\d+ of \d+ (?:calls|builds|sessions|runs|recorded)|\bone run (?:measured|recalled|ended|spent)|\b(?:nine|eight|seven|six|five|four|three|two) sessions\b|\brecorded (?:run|session|boardings)\b/i;
 
 /**
  * Rules the model can read nowhere else, each carrying the source that makes it fair to
@@ -123,43 +121,10 @@ const FACTS: { fact: string; from: Provenance; why: string }[] = [
 ];
 
 /**
- * Steers. Each of these either was in the prompt and was cut, or is the shape of the thing
- * that keeps coming back: a ranking, a preference, a cadence, or a probability offered in
- * place of a reading. The bare words are here because they are how one arrives.
+ * STEERS moved to ./modelFacingRules.ts with the rest of the vocabulary, because the tool
+ * descriptions are held to it now too. `usually` was on this list and in `view_map`'s
+ * description at the same time, and the description was the copy nothing read.
  */
-const STEERS: { pattern: RegExp; why: string }[] = [
-    { pattern: /holding the park back/i, why: "prescribes diagnose-then-remediate, and one thing per turn" },
-    { pattern: /says nothing new/i, why: "talks the model out of looking, and is only probably true" },
-    { pattern: /few considered decisions/i, why: "a verdict on one play style, cut once already" },
-    { pattern: /fix the missing piece/i, why: "an imperative wrapped round a fact that already stands alone" },
-    { pattern: /never a reason to rebuild/i, why: "same fact, stated as a prohibition" },
-    { pattern: /\busually\b/i, why: "a probability standing in for a reading" },
-    // `usually` was the only frequency word on this list, and the prompt walked straight past
-    // it: "a coordinate you derived is the commonest way a run is wasted" is the same steer in
-    // a different word, and it was measured across one model's transcripts at that. A claim
-    // about how often something happens is never a reading of this park; the tools are.
-    { pattern: /\bcommonest\b|\bmost common\b/i, why: "a frequency claim standing in for a reading, and one counted over transcripts rather than read off the park" },
-    { pattern: /\bmost often\b|\bmore often than not\b|\bmost of the time\b/i, why: "how often something happened elsewhere is not what is true here" },
-    { pattern: /\btypically\b|\bgenerally\b|\bnormally\b|\bas a rule\b|\bin most cases\b/i, why: "a hedge that answers a question the model is meant to answer by looking" },
-    { pattern: /\btends? to\b|\bare likely to\b|\bis likely to\b/i, why: "a tendency is a prediction, and the tools report the state" },
-    { pattern: /\brarely\b|\bseldom\b|\balmost always\b/i, why: "the same probability steer from the other end" },
-    { pattern: /\bprefer/i, why: "ranks two options the model is supposed to choose between" },
-    { pattern: /\bideally\b/i, why: "names a preferred outcome" },
-    { pattern: /\bbest\b/i, why: "ranking is the tool playing" },
-    // Narrowed from /\bworth\b/: `park_status` describes a ride's `value` as roughly what a
-    // guest thinks the ride is worth, which is the natural wording of the rule FACTS pins as
-    // the one that makes a price good or bad. The steer is the verdict, not the noun.
-    { pattern: /\bworth (?:it|doing)\b/i, why: "whether something is worth it is the decision itself" },
-    { pattern: /\bconsider(?:s|ing|ed)?\b/i, why: "steers attention rather than stating a fact" },
-    { pattern: /\bmake sure\b/i, why: "an instruction" },
-    { pattern: /\bremember\b/i, why: "an instruction" },
-    { pattern: /\bsimply\b/i, why: "argues a course of action is easy, which is a judgment" },
-    { pattern: /\bbetter\b/i, why: "a comparison between options" },
-    { pattern: /\bmost important\b/i, why: "a ranking" },
-    { pattern: /\bfocus on\b/i, why: "directs attention at one thing" },
-    { pattern: /\bstart by\b/i, why: "prescribes an opening move" },
-    { pattern: /\bpriorit/i, why: "ordering the model's options is the model's job" }
-];
 
 test("the prompt states the rules of the simulation the model can read nowhere else", function () {
     const prompt = readPrompt();
@@ -362,13 +327,17 @@ test("the footprint geometry clear_scenery dropped still stands in describe_plac
         "what the origin is");
     assert.match(placementText, /a square centred on the origin is the wrong ground for every footprint but a 3x3/,
         "and why a recomputed rectangle is wrong");
-    assert.match(placementText, /Never work that rectangle out from `x`, `y` and the ride's size/,
-        "and the instruction that avoids the error, at the tool that hands the rectangle over");
+    // Both halves used to be orders - "Never work that rectangle out from ..." here and "do
+    // not work them out from the ride's size" in clear_scenery. They state the same geometry
+    // now without opening on one, because test/toolDescriptions.test.ts holds every tool
+    // description to the same imperative-opener list this file holds prompt.md to.
+    assert.match(placementText, /That rectangle is the game's own layout and not a function of `x`, `y` and the ride's size/,
+        "and where the rectangle comes from, at the tool that hands it over");
 
     const clearText = String(clear.description);
 
-    assert.match(clearText, /do not work them out\s+from the ride's size and do not use the placement's `x`,`y`/,
-        "clear_scenery keeps the short form: copy the four corners, do not derive them");
+    assert.match(clearText, /Those four ARE the ride's\s+ground: the ride's size does not give the rectangle/,
+        "clear_scenery keeps the short form: the four corners are the ground, and the size is not");
     assert.doesNotMatch(clearText, /A 4x4 ride runs from its origin/,
         "the worked examples were the duplicated half and live in describe_placement");
 });
@@ -424,47 +393,11 @@ function turnSection(): string {
 }
 
 /**
- * Openers that address the model directly. Not a list of forbidden English: each one can only
- * be followed by an action HERE, so a sentence starting with it is an instruction however
- * carefully the rest of it is worded. The build recipe's own 1-4 is untouched by this, because
- * the order the game requires - ride, then doors, then paths - is a mechanic and not a cadence.
- *
- * Six words was too few, and two instructions walked past them for eight commits: the closing
- * line "Say what you are doing and why in a sentence or two, then do it", which prescribes an
- * output format and a cadence and states nothing about the world, and the section heading
- * "## Copy values across; never work them out", which is a rule of conduct in the one place
- * the eye lands first. Both are gone; the list is now wide enough to have caught them.
- *
- * Why the list is words and not a part-of-speech test: "Miss one and the ride is finished,
- * paid for, and earning nothing" opens with a bare verb and is a statement about the ride, not
- * a command - the clause after it has its own subject and finite verb. A parser cannot tell
- * those apart reliably and a curated list can, so a verb goes on this list only when nothing
- * but an action can follow it in a document that is supposed to describe a world.
+ * IMPERATIVE_OPENERS and openerPattern moved to ./modelFacingRules.ts. The tool descriptions
+ * run the same two against everything after their opening sentence, which is where
+ * `Never work that rectangle out from` and `READ `cost` ON EVERY OPTION` were sitting.
  */
-const IMPERATIVE_OPENERS = [
-    "Open with", "Start with", "Start by", "Decide", "Pick", "Choose",
-    "Say", "Copy", "Use", "Call", "Check", "Look", "Read", "Keep", "Avoid",
-    "Ensure", "Note", "Try", "Aim", "Prefer", "Remember", "Always", "Never",
-    "Don't", "Do not", "First", "Then", "Next", "Begin", "Focus", "Consider"
-];
 
-/**
- * Start of a line, of a markdown heading, of a bullet, of a numbered step, or of a sentence.
- *
- * The heading prefix is the second hole: `## Copy values across; never work them out` failed
- * none of these patterns, because `##` was not one of the prefixes a line could open with, so
- * the most prominent line in a section was the one place an instruction could sit unseen.
- */
-function openerPattern(opener: string): RegExp {
-    // A bare newline is NOT a boundary: the file is hard-wrapped, so "there is nothing to\n
-    // look up" would read as a sentence opening "look". What opens something is the start of
-    // the file, a blank line, a line that begins with a heading, bullet or step marker, or
-    // sentence punctuation - and the marker itself is then stepped over.
-    const boundary = "(?:^|\\n[ \\t]*\\n|\\n(?=[ \\t]*(?:#{1,6}|[-*]|\\d+[.)])[ \\t])|[.!?;:]\\s|—\\s)";
-    const marker = "[ \\t]*(?:#{1,6}[ \\t]+|[-*][ \\t]+|\\d+[.)][ \\t]+)?";
-
-    return new RegExp(boundary + marker + "(" + opener + ")\\b", "i");
-}
 
 test("the turn section is prose, so it fixes no opening call and no act-per-turn", function () {
     const numbered = /^[ \t]*\d+[.)][ \t]/m.exec(turnSection());

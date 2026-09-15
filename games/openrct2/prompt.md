@@ -85,14 +85,13 @@ entrance and one for the exit; a stall needs none.
    so a run is named tile by tile. The entrance's door tile needs a run with `queue: true`
    and the exit's door tile needs one with `queue: false`, and those two runs cannot share a
    tile — ordinary path laid over a queue unbinds that queue from its ride, so a tile in both
-   runs breaks one of them. The build result names both door tiles, so there is nothing to
-   look up. That result's `tiles` is what the call laid, and handed back to `remove_path` as
-   its own `tiles` it lifts exactly those, so a run laid wrong is not permanent.
+   runs breaks one of them. The build result names both door tiles. That result's `tiles` is
+   what the call laid, and handed back to `remove_path` as its own `tiles` it lifts exactly
+   those, so a run laid wrong is not permanent.
 
 `ok: true` means the ride is STANDING, nothing more. `doorsAttached`, `open` and
 `reachable` come back separately, and any of them false is a ride you ALREADY OWN.
-Building again builds and pays for a second ride. `reachable` is false until step 4 and
-does not mean the build failed.
+Building again builds and pays for a second ride.
 
 ## Where every coordinate comes from
 

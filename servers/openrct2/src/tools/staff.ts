@@ -29,9 +29,9 @@ export class StaffTools {
         description: [
             "Hire staff and place them in the park. Handymen sweep paths and mow grass, mechanics fix and",
             "inspect rides, security deter vandals, entertainers keep queueing guests happy.",
-            "Staff are hired near the park entrance and wander freely; set patrol areas with evaluate if you",
-            "want them somewhere specific. Hiring itself costs nothing; each member of staff is paid a wage",
-            "every month for as long as they are employed.",
+            "Staff are hired near the park entrance and wander freely; a patrol area is `evaluate`'s to set.",
+            "Hiring itself costs nothing; each member of staff is paid a wage every month for as long as",
+            "they are employed.",
             "`hired` is counted off the map afterwards, so it is who is standing in the park and not how many",
             "hirings were sent. When the game turns one down, `detail` carries its own words for why."
         ].join(" "),

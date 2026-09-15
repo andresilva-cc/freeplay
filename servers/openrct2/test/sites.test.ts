@@ -1808,15 +1808,17 @@ test("the description says it describes one placement and searches for nothing",
 
 test("the footprint geometry stands in the description that hands the rectangle over", function () {
     // `clear_scenery` explained that `x`,`y` is a build origin and not a centre; this is the
-    // tool that hands the rectangle over, so it is the one that has to say not to recompute
-    // it. A 4x4 runs 0..3 from its origin and a 1x4 runs -2..+1.
+    // tool that hands the rectangle over, so it is the one that has to say where the rectangle
+    // comes from. A 4x4 runs 0..3 from its origin and a 1x4 runs -2..+1. The sentence used to
+    // be "Never work that rectangle out from ..."; it states the same geometry now without
+    // opening on an order, which test/toolDescriptions.test.ts bans across every description.
     const text = description();
 
     assert.match(text, /THE ORIGIN IS NOT THE CENTRE AND NOT A CORNER/);
     assert.match(text, /a 4x4 runs 0\.\.3 from the origin, a 1x4 runs -2\.\.\+1, and only a 3x3 is centred on it/,
         "the worked examples, which are the part a rule cannot replace");
-    assert.match(text, /Never work that rectangle out from `x`, `y` and the ride's size/,
-        "and the instruction that avoids the error");
+    assert.match(text, /That rectangle is the game's own layout and not a function of `x`, `y` and the ride's size/,
+        "and where the rectangle comes from, which is what stops it being recomputed");
     assert.match(text, /`clear_scenery`'s four arguments under the same names/,
         "where the rectangle goes next");
 });
@@ -1838,8 +1840,8 @@ test("the description says what actually severs a route, and not that a queue do
         "a queue is ordinary walkable path, which is the measured fact");
     assert.match(text, /a ride claiming one, which dead-ends the single tile its door opens onto/,
         "and the one thing that does sever a route");
-    assert.match(text, /READ `cost` ON EVERY OPTION/,
-        "the sentence has to be pointed at, or it is another field that goes unread");
+    assert.match(text, /`cost`, on every option, is one sentence giving that option's whole price/,
+        "the field has to be named, or it is another field that goes unread");
     assert.match(text, /0 on a ride's door means the tile is not free/,
         "the inversion between a shop's 0 and a ride door's 0, which no number can carry");
     assert.doesNotMatch(text, /cannot walk through/,
