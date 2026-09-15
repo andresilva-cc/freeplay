@@ -10,7 +10,7 @@
  * WHAT IS READ, and why it is not `park_status`. Three plain GETs on the bridge's REST
  * surface, fired in parallel:
  *
- *   GET /v1        buildId, stateGuards {ok, frozen, unfrozen, open} and the scenario block
+ *   GET /v1        buildId, stateGuards {ok, frozen, unfrozen, open, unexamined} and the scenario block
  *                  {name, objective, status, endedOn}.        (src/app.ts, createVersionIndex)
  *   GET /v1/park   name, guests, rating, cash, bankLoan, companyValue, parkValue,
  *                  entranceFee.                               (src/parkInfo.ts)
@@ -33,12 +33,27 @@
 import { readScenarioFromValue, type FetchLike, type GameDay, type ScenarioStatus } from "./scenario.ts";
 import { dayPosition, type DateReading } from "./gameTime.ts";
 
-/** src/scripting.ts `stateGuardSummary`: what is shut, what would not shut, what is open on purpose. */
+/**
+ * src/scripting.ts `stateGuardSummary`: what is shut, what would not shut, what is open on
+ * purpose — and what nobody has a verdict on at all.
+ *
+ * `ok` there means "something froze, nothing refused to freeze, and nothing is unexamined".
+ * `open` is a disclosure that rides alongside it rather than a term of it, so a record can
+ * read `ok: true` and still name four writable levers; the reason for each is in the
+ * plugin's full `stateGuardReport`, not in this summary.
+ *
+ * `unexamined` is null, not empty, when the bridge did not report the field: a plugin built
+ * before it existed swept nothing, and recording that as `[]` would publish "nobody looked"
+ * as "nothing to find", which is the defect this whole field was added to end. It arrives
+ * already capped by the plugin at twenty names plus an "and N more" entry, because `/v1` is
+ * polled — so a record carries what the endpoint published, not a truncation of it.
+ */
 export interface GuardSummary {
 	ok: boolean;
 	frozen: number;
 	unfrozen: string[];
 	open: string[];
+	unexamined: string[] | null;
 }
 
 /** src/parkInfo.ts. Money is in tenths of a currency unit; `rating` is the park rating, 0 to 999. */
@@ -73,7 +88,11 @@ export interface ScenarioSnapshot {
 }
 
 export interface BridgeSnapshot {
-	/** True only when all three reads answered. False is a partial or empty snapshot, never a lie. */
+	/**
+	 * True only when all three reads answered and each answered in full. False is a partial
+	 * snapshot, or one whose bridge predates a field this reader expects — never a lie, and
+	 * `note` always says which. It is not the guards' own `ok`, which is in `guards.ok`.
+	 */
 	ok: boolean;
 	/** Wall-clock time the snapshot was taken, not game time. */
 	observedAt: string;
@@ -110,6 +129,7 @@ function readGuards(value: unknown): GuardSummary | null {
 		frozen: typeof guards.frozen === "number" ? guards.frozen : 0,
 		unfrozen: Array.isArray(guards.unfrozen) ? guards.unfrozen.map(String) : [],
 		open: Array.isArray(guards.open) ? guards.open.map(String) : [],
+		unexamined: Array.isArray(guards.unexamined) ? guards.unexamined.map(String) : null,
 	};
 }
 
@@ -220,6 +240,13 @@ export function createSnapshotReader(options: SnapshotOptions) {
 
 		if (root && !reading) notes.push("GET /v1 answered without a scenario: the plugin predates the field");
 
+		const guards = root ? readGuards(root.stateGuards) : null;
+
+		if (guards && guards.unexamined === null) {
+			notes.push("GET /v1 reported guards without `unexamined`: the plugin predates the field, so"
+				+ " this record cannot say whether anything in the plugin API went unswept");
+		}
+
 		const dateSnapshot = date ? readDateSnapshot(date) : null;
 		if (date && !dateSnapshot) notes.push("GET /v1/date answered without a readable date");
 
@@ -230,7 +257,7 @@ export function createSnapshotReader(options: SnapshotOptions) {
 			observedAt,
 			note: notes.length > 0 ? notes.join("; ") : null,
 			buildId: root ? stringOrNull(root.buildId) : null,
-			guards: root ? readGuards(root.stateGuards) : null,
+			guards,
 			scenario,
 			date: dateSnapshot,
 			park: parkReading,

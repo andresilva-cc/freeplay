@@ -1019,6 +1019,29 @@ async function loadPluginAgain(): Promise<typeof import("../src/scripting.ts")> 
 }
 
 /* ------------------------------------------------------------------ *
+ * Part 0 - a build whose guards never ran
+ *
+ * This has to be the FIRST test in the file and is written so it cannot pass quietly if it
+ * stops being: the lever lists in src/scripting.ts are module state that accumulates across
+ * a whole process and is never reset, so the only moment a summary with nothing in it can
+ * be observed is before any test has created an application. Move a test above this one and
+ * every assertion below fails loudly rather than drifting.
+ * ------------------------------------------------------------------ */
+
+test("a summary from a build that installed nothing is not a clean one", function () {
+    // The `frozen > 0` term of `ok`, on its own: no refusal, no unexamined member, nothing
+    // open - the shape a plugin whose startup threw before installStateGuards would serve.
+    // Drop that term and this reads ok, which is a preflight passing on no evidence at all.
+    const summary = stateGuardSummary();
+
+    assert.equal(summary.frozen, 0, "nothing in this file has installed a guard yet: " + JSON.stringify(summary));
+    assert.deepEqual(summary.unfrozen, [], "so nothing can have refused to freeze either");
+    assert.deepEqual(summary.open, [], "and nothing has declared what it leaves open");
+    assert.deepEqual(summary.unexamined, [], "and no namespace has been swept");
+    assert.equal(summary.ok, false, "a report with nothing in it is not a report of a guarded build");
+});
+
+/* ------------------------------------------------------------------ *
  * Part 1 - the direct levers
  * ------------------------------------------------------------------ */
 
@@ -1946,18 +1969,20 @@ test("GET /v1 carries the build id and a machine-readable guard state", function
         assert.ok(index.stateGuards.frozen > 0, "and the count says the guards really ran");
         assert.deepEqual(index.stateGuards.unfrozen, [], "nothing in this world refused to freeze");
 
-        // Not `ok: true`. This world has rides in it, and `ride.price` is a write the build
-        // leaves open on purpose, so the honest answer is false with the reason named. The
-        // field used to read true here while a script could set every guest's happiness,
-        // buy land by assigning `ownership` and turn off nine of thirteen scenario rules,
-        // because none of those were on either list.
+        // A declared-open lever is a disclosure, not a failure. This world has rides in it
+        // and `ride.price` is a write the build leaves open on purpose, named with a reason
+        // - so the honest answer is `ok: true` with `open` carrying the condition. The four
+        // are registered unconditionally, so counting them as failures pinned `ok` to false
+        // on every build that ever ran and hid the terms that do mean something.
         assert.deepEqual(index.stateGuards.open,
             ["ride.price", "staff.orders", "staff.costume", "staff.patrolArea"],
             "every write left open on purpose is named: " + JSON.stringify(index.stateGuards.open));
         assert.deepEqual(index.stateGuards.unexamined, [],
             "and every member of every namespace it declares has a verdict on it: "
             + JSON.stringify(index.stateGuards.unexamined));
-        assert.equal(index.stateGuards.ok, false, "and naming it is not the same as being clean");
+        assert.equal(index.stateGuards.ok, true,
+            "nothing failed and nothing is unknown, so the pre-run check is green over a"
+            + " disclosure: " + JSON.stringify(index.stateGuards));
     } finally {
         world.restore();
     }
@@ -1975,6 +2000,12 @@ test("GET /v1 names the lever that would not freeze rather than reporting ok", f
         assert.ok(index.stateGuards.unfrozen.indexOf("park.cash") >= 0,
             "and it must be named, not just counted: " + JSON.stringify(index.stateGuards.unfrozen));
 
+        // The refusal is the only thing failing here, so this pins the `unfrozen` term of
+        // `ok` on its own: the declared-open levers are present and do not count, and there
+        // is nothing unexamined to be failing instead.
+        assert.ok(index.stateGuards.open.length > 0, JSON.stringify(index.stateGuards.open));
+        assert.deepEqual(index.stateGuards.unexamined, [], JSON.stringify(index.stateGuards.unexamined));
+
         // The whole point of the field: an assignment really does land on this one, so a
         // pre-run check reading `ok` learns something a log line would have buried.
         const scope = globalThis as unknown as { park: Record<string, unknown> };
@@ -1986,14 +2017,28 @@ test("GET /v1 names the lever that would not freeze rather than reporting ok", f
     }
 });
 
-test("an empty report is not a clean one", function () {
-    // Nothing installed, nothing refused: the shape a build whose guards never ran would
-    // serve. `ok` has to be false there or the preflight passes on no evidence at all.
-    const summary = stateGuardSummary();
+test("a lever left open on purpose is a disclosure, and does not on its own fail the check", function () {
+    // The term that was NOT in `ok` after this, asserted from the other side. `open` is four
+    // names on every build - declareOpenLevers registers them unconditionally - so putting
+    // it back into `ok` makes this world red while nothing about it failed, and makes the
+    // other three terms unobservable behind a constant.
+    const world = installWorld();
 
-    assert.equal(summary.ok,
-        summary.frozen > 0 && summary.unfrozen.length === 0 && summary.open.length === 0,
-        "ok must mean installed and complete, never merely 'nothing complained'");
+    try {
+        createApplication();
+
+        const summary = stateGuardSummary();
+
+        assert.ok(summary.open.length > 0, "this build declares open levers on every install: "
+            + JSON.stringify(summary.open));
+        assert.deepEqual(summary.unfrozen, [], "and nothing in this world refused to freeze");
+        assert.deepEqual(summary.unexamined, [], "and nothing in it is without a verdict");
+        assert.equal(summary.ok, true,
+            "so the only thing left is a stated condition, which is not a failure: "
+            + JSON.stringify(summary));
+    } finally {
+        world.restore();
+    }
 });
 
 /* ------------------------------------------------------------------ *
@@ -2413,7 +2458,8 @@ test("a park with nothing in it yet still names every write left open on purpose
             ["ride.price", "staff.orders", "staff.costume", "staff.patrolArea"],
             "an empty park must still say what this build leaves writable: "
             + JSON.stringify(index.stateGuards.open));
-        assert.equal(index.stateGuards.ok, false, "and must not call itself clean over them");
+        assert.equal(index.stateGuards.ok, true,
+            "which is a condition stated, not a failure: " + JSON.stringify(index.stateGuards));
         assert.deepEqual(index.stateGuards.unfrozen, [],
             "while nothing that was tried actually refused: " + JSON.stringify(index.stateGuards.unfrozen));
     } finally {
@@ -3110,6 +3156,13 @@ test("the published summary names the member nobody looked at, not merely that s
             "it did not refuse to freeze - nobody tried");
         assert.equal(index.stateGuards.open.indexOf("date.quarterProgress"), -1,
             "and nobody decided to leave it open, which is the whole difference");
+
+        // The unknown is the only thing failing here, so this pins the `unexamined` term of
+        // `ok` on its own: guards did install, nothing refused, and the declared-open levers
+        // are present and do not count.
+        assert.ok(index.stateGuards.frozen > 0, JSON.stringify(index.stateGuards.frozen));
+        assert.ok(index.stateGuards.open.length > 0, JSON.stringify(index.stateGuards.open));
+        assert.deepEqual(index.stateGuards.unfrozen, [], JSON.stringify(index.stateGuards.unfrozen));
 
         const scope = globalThis as unknown as { date: Record<string, unknown> };
 

@@ -1567,17 +1567,31 @@ export function stateGuardReport(): {
  * set every guest's happiness to 255, buy land by assigning `ownership`, repair rides with
  * no mechanic and turn off nine of thirteen scenario rules.
  *
- * So: `frozen` is what is shut, `unfrozen` is what would not shut, and `open` names what
- * this build knows it is leaving open on purpose. `ok` is false for any of the three
- * failures - nothing froze at all, something refused to freeze, or something reachable is
- * deliberately unfrozen - because each of them means a write is available that the count
- * on its own would read as covered.
+ * So: `frozen` is what is shut, `unfrozen` is what would not shut, `open` names what this
+ * build knows it is leaving open on purpose, and `unexamined` names what nobody has a
+ * verdict on at all.
  *
- * And false for a fourth: a member of a declared namespace that nobody has a verdict on.
- * `unexamined` names those here, which is the whole reason it is a field rather than a
- * fifth way for `ok` to go false without saying why - a summary that reads
- * `{"ok":false,"frozen":198,"unfrozen":[],"open":[]}` sends a reader back to the three
- * lists that are empty precisely because the thing that failed is in none of them.
+ * `ok` means "nothing failed and nothing is unknown", and it is exactly three claims:
+ * something froze at all, nothing refused to freeze, and no member of a declared namespace
+ * is without a verdict. `open` is deliberately not one of them. A declared-open lever is a
+ * disclosure, not a failure: it is named in OPEN_LEVERS with a reason, it is recorded on
+ * every install whether or not the park has a ride in it, and it is served in `open` beside
+ * this flag for any reader to weigh. The four this build declares are unconditional, so
+ * counting them as failures pinned `ok` to false on every build that has ever run - which
+ * is not a green light, it is a constant, and a constant cannot warn anybody about
+ * anything. Worse, it hid the other three terms behind itself: `ok` read false for the same
+ * reason on a clean build and on one whose calendar was wide open, so dropping the
+ * unexamined term from this expression changed no test at all.
+ *
+ * Read `ok` as "the guards this build claims are in place, and nothing is unaccounted for",
+ * and `open` as the stated condition that comes with it. `scripts/run.sh` prints them that
+ * way - a line for the declared levers, a louder one for a refusal, a louder one still for
+ * an unexamined member - and warns on all three without ever refusing to start a run.
+ *
+ * Each of the three failures is named rather than merely counted, which is the whole reason
+ * `unexamined` is a field: a summary that reads
+ * `{"ok":false,"frozen":198,"unfrozen":[],"open":[]}` sends a reader back to the lists that
+ * are empty precisely because the thing that failed is in none of them.
  *
  * The one cap: `unexamined` can be a whole namespace wide, and this endpoint is polled, so
  * it names at most MAX_NAMED_UNEXAMINED and closes with "and N more". `unfrozen` and `open`
@@ -1591,7 +1605,7 @@ export function stateGuardSummary(): {
     unexamined: string[];
 } {
     return {
-        ok: frozenLevers.length > 0 && unfrozenLevers.length === 0 && openLevers.length === 0
+        ok: frozenLevers.length > 0 && unfrozenLevers.length === 0
             && unexaminedLevers.length === 0,
         frozen: frozenLevers.length,
         unfrozen: unfrozenLevers.slice(0),

@@ -149,6 +149,9 @@ case "$GUARD_STATUS" in
     GUARD_LINE="${GUARD_FROZEN} levers frozen"
     ;;
   declared)
+    # The endpoint's own `ok` is TRUE here and the two do not disagree: a declared-open lever
+    # is a disclosure, not a failure - named in OPEN_LEVERS with a reason, and reported. This
+    # prints it anyway, because a stated condition is still a condition to state out loud.
     GUARD_LINE="${GUARD_FROZEN} frozen, open on purpose: ${GUARD_DECLARED}"
     echo "note: the running plugin leaves these levers writable on purpose: ${GUARD_DECLARED}" >&2
     echo "      they are free settings the game's own windows offer and freezing them would" >&2

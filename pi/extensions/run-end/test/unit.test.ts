@@ -63,6 +63,13 @@ interface BridgeStub {
 	 * every time.
 	 */
 	indexHasNoScenario?: boolean;
+	/**
+	 * An older plugin again, this time one whose guard summary is the four fields it had
+	 * before `unexamined`: a build that swept no namespace and cannot say so.
+	 */
+	guardsPredateUnexamined?: boolean;
+	/** Members of the plugin API this build has no verdict on, where it has any. */
+	guardsUnexamined?: string[];
 	/** The in-game day `GET /v1` says the scenario ended on, where it says one. */
 	endedOn?: { year: number; month: number; day: number };
 	/** Where the game clock stands. Day 1 of year 1 is the start of a scenario. */
@@ -112,7 +119,15 @@ function installBridge(stub: BridgeStub): void {
 			const index: Record<string, unknown> = {
 				buildId: "test-build",
 				controllers: [],
-				stateGuards: { ok: true, frozen: 56, unfrozen: [], open: [] },
+				stateGuards: stub.guardsPredateUnexamined
+					? { ok: true, frozen: 56, unfrozen: [], open: [] }
+					: {
+							ok: (stub.guardsUnexamined ?? []).length === 0,
+							frozen: 56,
+							unfrozen: [],
+							open: ["ride.price", "staff.orders"],
+							unexamined: stub.guardsUnexamined ?? [],
+						},
 			};
 			if (!stub.indexHasNoScenario) {
 				index.scenario = {
@@ -628,7 +643,13 @@ test("both ends of the run are snapshotted into the record", async () => {
 			assert.equal(state.ok, true);
 			assert.equal(state.note, null);
 			assert.equal(state.buildId, "test-build", "a result has to name the plugin build it was played on");
-			assert.deepEqual(state.guards, { ok: true, frozen: 56, unfrozen: [], open: [] });
+			assert.deepEqual(state.guards, {
+				ok: true,
+				frozen: 56,
+				unfrozen: [],
+				open: ["ride.price", "staff.orders"],
+				unexamined: [],
+			}, "all four guard categories reach the record, `unexamined` included");
 			assert.equal(state.scenario.name, "Forest Frontiers");
 			assert.equal(state.scenario.status, "inProgress");
 			assert.equal(state.park.guests, 42);
@@ -650,6 +671,74 @@ test("both ends of the run are snapshotted into the record", async () => {
 		const started = h.logLines().find((l) => l.event === "run_start_state");
 		assert.ok(started, "the opening state is its own line as well, so it survives a lost record");
 		assert.equal(started.state.park.guests, 42);
+	} finally {
+		delete process.env.FREEPLAY_RUN_BUDGET_DAYS;
+	}
+});
+
+test("the record names the members nobody swept, not merely that the guards were not ok", async () => {
+	// The same defect as 39f4a72, one layer down. The bridge learned to say which lever it
+	// was; this reader picked the guard fields by name and kept four of the five, so a
+	// published record carried `ok: false` with three empty lists and no reason anywhere in
+	// it. Anyone reading the run afterwards would have had to go back to a bridge that is no
+	// longer running to find out what the guards had found.
+	process.env.FREEPLAY_RUN_BUDGET_DAYS = "5";
+	try {
+		const stub: BridgeStub = {
+			status: "inProgress",
+			calls: [],
+			guardsUnexamined: ["date.quarterProgress", "and 3 more"],
+		};
+		const h = await start(stub);
+		stub.date = { year: 1, month: 0, day: 6, monthsElapsed: 0, monthProgress: 10_568, ticksElapsed: 16_000 };
+		await h.fire("tool_result", waitResult({ year: 1, month: 0, day: 1 }, 5, { year: 1, month: 0, day: 6 }));
+		await settle();
+
+		const record = h.record();
+		assert.ok(record);
+
+		for (const state of [record.startState, record.endState]) {
+			assert.equal(state.guards.ok, false, "the bridge says its own check failed");
+			assert.deepEqual(state.guards.unexamined, ["date.quarterProgress", "and 3 more"],
+				"and the record has to carry which member it was, capping and all: "
+				+ JSON.stringify(state.guards));
+			assert.deepEqual(state.guards.unfrozen, [], "it is not a refusal");
+			assert.deepEqual(state.guards.open, ["ride.price", "staff.orders"],
+				"and it is not one of the levers left open on purpose, which ride alongside a"
+				+ " green check rather than failing it");
+		}
+
+		assert.equal(record.startState.ok, true, "a guard verdict of false is not a failed read");
+		assert.equal(record.startState.note, null);
+	} finally {
+		delete process.env.FREEPLAY_RUN_BUDGET_DAYS;
+	}
+});
+
+test("a bridge whose guard summary predates `unexamined` still writes a record, and says the field is absent", async () => {
+	// Old plugin, new extension. The record must not be lost over a missing field, and the
+	// missing field must not be published as an empty list: "nobody looked" recorded as
+	// "nothing to find" is the thing this whole category exists to stop.
+	process.env.FREEPLAY_RUN_BUDGET_DAYS = "5";
+	try {
+		const stub: BridgeStub = { status: "inProgress", calls: [], guardsPredateUnexamined: true };
+		const h = await start(stub);
+		stub.date = { year: 1, month: 0, day: 6, monthsElapsed: 0, monthProgress: 10_568, ticksElapsed: 16_000 };
+		await h.fire("tool_result", waitResult({ year: 1, month: 0, day: 1 }, 5, { year: 1, month: 0, day: 6 }));
+		await settle();
+
+		const record = h.record();
+		assert.ok(record, "an older bridge must still produce a record");
+		assert.equal(record.condition, "game_days_exhausted");
+		assert.equal(record.endState.buildId, "test-build", "and everything it did answer is still in it");
+		assert.equal(record.endState.park.guests, 42);
+		assert.equal(record.endState.guards.frozen, 56, "including the four fields it does have");
+		assert.deepEqual(record.endState.guards.open, []);
+
+		assert.equal(record.endState.guards.unexamined, null,
+			"the field it does not have is null, never []: " + JSON.stringify(record.endState.guards));
+		assert.match(record.endState.note, /predates the field/);
+		assert.equal(record.endState.ok, false, "and the snapshot says it is not a complete reading");
 	} finally {
 		delete process.env.FREEPLAY_RUN_BUDGET_DAYS;
 	}
