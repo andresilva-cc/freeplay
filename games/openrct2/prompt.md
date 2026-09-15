@@ -49,8 +49,9 @@ origin therefore sits inside the ride's ground without being its centre or a cor
 and that ground is the `footprint` rectangle `describe_placement` reports. A ride stands
 only where every tile of that rectangle is the park's, dry, level, all at one height, and
 carrying nothing but scenery — which `clear_scenery` takes down and nothing else will.
-Water is not ground: a tile of it fails `fits` the way unowned or sloped ground does, and
-no tool here fills it in.
+Water is not ground: a tile of it fails `fits` the way unowned or sloped ground does, it is
+refused to a `build_path` run the same way, and no typed tool here fills it in — `evaluate`
+reaches the game's own `watersetheight`, `waterraise` and `waterlower`.
 
 An entrance or an exit goes on a tile touching the footprint, and its door opens onto the
 tile one further out, which is where that ride's queue goes. So a door position needs two
@@ -133,11 +134,13 @@ reachable one unless a run in `paths.runs` covers it.
   dead-ends the one tile that door opens onto, and each access option's `queueCutsOff`
   measures that before you build — 0 for a door on bare ground, counted for a door already
   carrying an unbound queue. An ordinary path laid back over a queue unbinds it from its
-  ride, so `build_path` refuses a tile already carrying a queue to a run that is not one and
-  names the ride whose line it is. A queue laid onto another ride's queue is not refused: the
-  game chains the two lines into one and binds them to a single entrance, which leaves the
-  other ride with a door and no line, and `build_path` reports that as
-  `ridesLeftWithoutQueue`. `remove_path` takes the footpath or queue off the tiles it names.
+  ride, and `build_path` does not refuse that — whether a park spends one ride's line on
+  another is yours to weigh — it lays the run and names the ride whose line went. A queue
+  laid onto another ride's queue is not refused: the game chains the two lines into one and
+  binds them to a single entrance, which leaves the other ride with a door and no line.
+  `build_path` reports either as `ridesLeftWithoutQueue`, read off the map after the run
+  rather than predicted from the tiles. `remove_path` takes the footpath or queue off the
+  tiles it names.
 - A placement's `nearestRideDistance` is measured from its origin tile and counts the park
   gate and every ride door as a ride, so in an empty park it is the distance to the gate.
 - Nothing goes on ground the park does not own, and `buy_land` buys only the tiles a
@@ -148,7 +151,10 @@ reachable one unless a run in `paths.runs` covers it.
   is that reading taken beforehand. Reading it only: assigning `ownership` is refused, along
   with every other write to a tile, a guest or a ride's own figures — land is bought with
   `buy_land` and nothing else. Buying a sloped tile makes it the park's, not flat —
-  there is no levelling tool, and a ride or a path needs level ground.
+  no TYPED tool here levels ground, and `evaluate` reaches the game's own `landsetheight`,
+  `landraise`, `landlower` and `landsmooth`, which do. `build_flat_ride` needs level ground;
+  `build_path` lays flat path only, and that is the tool's limit rather than the game's —
+  OpenRCT2 footpaths run up slopes, on `footpathplace`'s `slopeType` and `slopeDirection`.
 - Money is in tenths: 1000 means 100.00. Admission is `entranceFee`, charged at the gate
   and set by `open_park`; ride tickets are per ride and set by `operate_ride`.
 - Ratings are fixed-point (652 is 6.52, -1 unrated), park rating runs 0-999, and

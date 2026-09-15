@@ -1451,7 +1451,17 @@ test("park_status describes the network it now sends, and recommends nothing abo
     assert.match(text, /a door there belongs to a ride that is built\s+and that no guest can walk to/,
         "which is the whole failure the report exists to name");
     assert.match(text, /`ground` counts owned land per map-aligned block/, "the census");
-    assert.match(text, /six add up to `owned`/, "and its own arithmetic");
+    assert.match(text, /while `complete` is true they add up to `owned` exactly/,
+        "its own arithmetic, said with the condition that makes it true");
+    assert.match(text, /At most 64 blocks come back/,
+        "the cap the model is measured against: the prompt and the docs disclosed it and the only text"
+        + " in the model's context every turn did not");
+    assert.match(text, /`complete` false means the park owns more/,
+        "and the flag that says the cap was reached, which the description never mentioned");
+    assert.match(text, /cut at 500 entries on the way out/,
+        "the result sanitiser's array cap, disclosed where the arithmetic above can be broken by it");
+    assert.match(text, /They come in the order a row-by-row scan of the map reaches them/,
+        "the island order, which was a size ranking and undisclosed");
 
     assert.doesNotMatch(text, /\bshould\b|\brecommend|\badvis|\bfirst\b|\bprefer/i,
         "which run to join, where to build and which island to repair are the model's decisions");
@@ -1809,8 +1819,17 @@ test("freshness is described in the direction the plugin API documents", functio
 
     assert.match(text, /the larger the number, the less\s+fresh the thought/,
         "reported in the game's own words and direction, not in an invented scale");
-    assert.match(text, /Nothing is dropped or discounted by it/,
+    assert.match(text, /Nothing is dropped or discounted by either/,
         "and the model is told nothing was filtered, so the counts are its to weigh");
+
+    // The claim used to be that the API documents freshness "as one thing only", while a
+    // second field sat beside it in the same interface, unread and unmentioned.
+    assert.match(declarations, /readonly freshTimeout: number;/,
+        "the field the old claim wrote out of existence is still declared beside freshness");
+    assert.match(text, /`freshTimeout`/,
+        "so the description names it rather than claiming there is nothing else");
+    assert.match(text, /This tool does not read it and does not return\s+it/,
+        "and says which side of the line it is on, because this tool counts freshness and not this");
 });
 
 /* ---------------------------------------------------------------------------------------
@@ -2212,6 +2231,13 @@ function namesTheToolsCarry(): Set<string> {
  * `partiallyCloudy` and `hotAndDry` are shaped exactly like field names and are values the
  * weather fields carry, so they are the one thing backticked text can name that is neither a
  * field nor a mistake.
+ *
+ * The members of the plugin API's own `Thought` are here for the same reason and are the
+ * second kind: `guest_feedback` names `freshTimeout` to say it is there, on the game's object,
+ * beside the field this tool does count - and that it is NOT read or returned here. That is a
+ * field the model reaches with `evaluate` and not one it should look for in a reply, so it is
+ * the game's word rather than a promise. The claim it replaces was that the API documented
+ * freshness "as one thing only", with `freshTimeout` sitting unread in the same interface.
  */
 function wordsTheGameDeclares(): Set<string> {
     const declarations = readFileSync(
@@ -2227,6 +2253,14 @@ function wordsTheGameDeclares(): Set<string> {
             words.add(quoted.slice(1, -1));
         });
     });
+
+    const thought = /interface Thought\s*\{[\s\S]*?\n {4}\}/.exec(declarations);
+
+    assert.ok(thought, "the plugin API still declares the Thought interface guest_feedback reads");
+
+    for (const member of (thought as RegExpExecArray)[0].matchAll(/readonly (\w+):/g)) {
+        words.add(member[1]);
+    }
 
     return words;
 }
@@ -2298,4 +2332,221 @@ test("no description or refusal sends the model to a field no tool returns", fun
 
     assert.deepEqual(Array.from(new Set(unbacked)), [],
         "every field a description or a refusal names has to be one the model can find in a reply");
+});
+
+/* ---------------------------------------------------------------------------------------
+ * The same class again, one level tighter: the field AND the tool it was attributed to.
+ *
+ * The guard above answers "does ANY tool carry this name", which is the wrong question
+ * wherever the text names a tool as well. Its answer set is the union of every interface
+ * member anywhere in `src`, so a refusal reading "check `queueCutsOff` in park_status" passes
+ * it - `queueCutsOff` is describe_placement's - while `readParkStatus()` has no such key and
+ * the model spends the turn reading a payload for a name that was never in it. That is
+ * exactly the defect the union was written for, wearing a tool name.
+ *
+ * So where a sentence names one reader tool and a field close enough to be reading as one
+ * phrase, the field is checked against THAT tool's own reply. Only the three readers, because
+ * only their whole reply can be produced here; a tool that has to act on the map to answer is
+ * left out rather than approximated, and a fixture too thin to populate a branch would fail a
+ * name that is really there.
+ */
+
+/** Tool names are snake_case and appear in prose as themselves. */
+const READER_TOOLS = ["park_status", "guest_feedback", "list_ride_objects"];
+
+/**
+ * How far apart the tool and the field may sit and still be one claim.
+ *
+ * Measured rather than picked: at this width every attribution in the codebase today is one
+ * the sentence really makes - "park_status gives those tiles as `entranceDoor`", "`park_status`
+ * reports `parkOpen` and `entranceFee`" - and the cross-references are out, where a sentence
+ * names its own field first and points at another tool at the far end ("`connectedToPark`
+ * false means ... the tiles guests can really walk to are the ones park_status covers").
+ */
+const ONE_CLAIM_APART = 70;
+
+/**
+ * A park with something of every shape `park_status` reports.
+ *
+ * The answer side has to be a real reply, and a real reply only carries the keys the park
+ * gives it: an empty park has no rides, so it has no `entranceDoor`, and a name missing
+ * because the fixture is thin reads exactly like a name the tool does not have. The
+ * assertions under `shapesByReader` are what stop that failing silently.
+ */
+function withAParkOfEveryShape(run: () => void): void {
+    withPark(function (game) {
+        // A ride with both doors on the spine, and the queue the entrance claims.
+        game.addPath(11, 10, true, 0);
+        game.addRideEntrance(12, 10, 0, 2);
+        game.addRideEntrance(11, 12, 0, 1, true);
+        game.rides = [
+            ride(0, { x: 12, y: 10, direction: 2 }, { x: 11, y: 12, direction: 1 }),
+            ride(1, null, null)
+        ];
+        stall(game, 2, 14, 6, 1);
+
+        // An island: paving the gate reaches none of, with a ride's door stranded on it.
+        game.addPath(3, 18);
+        game.addPath(3, 19);
+        game.addRideEntrance(4, 19, 1, 2);
+
+        // One block of ground of every census kind, so `blocks` carries all six counts.
+        game.addScenery(6, 6);
+        game.tile(7, 6).elements[0].slope = 1;
+        game.addWater(8, 6);
+        game.own(9, 6, false);
+
+        game.addStaff("handyman");
+        game.addMessage("{RED}Guests can't get to the entrance of Ride 1!");
+    }, function () {
+        putGuestsInPark([{ happiness: 120, cash: 500, thoughts: ["hungry", "queuingAges@9"] }]);
+        run();
+    });
+}
+
+/** What each reader tool really hands back, keyed by the name the prose would call it. */
+function shapesByReader(): Record<string, Set<string>> {
+    const shapes: Record<string, Set<string>> = {};
+
+    withAParkOfEveryShape(function () {
+        const tools = new StatusTools();
+
+        shapes.park_status = keysWithin(readParkStatus(), new Set<string>());
+        shapes.guest_feedback = keysWithin(readGuestFeedback(100), new Set<string>());
+        shapes.list_ride_objects = keysWithin(tools.listRideObjects({}), new Set<string>());
+    });
+
+    // The branches a thin park would have left empty, named so a fixture that stops
+    // producing one fails here rather than as a false accusation against a description.
+    ["entranceDoor", "exitDoor", "counter", "cutsIfBlocked", "gameDaysAgo", "islands", "doors",
+        "clockHeldBy", "complete", "parkOpen", "entranceFee"].forEach(function (name) {
+        assert.ok(shapes.park_status.has(name),
+            "the fixture park no longer produces `" + name + "`, so this guard would call a true"
+            + " description false");
+    });
+
+    assert.ok(shapes.guest_feedback.has("guestsRead"), "and guest_feedback answers for real");
+
+    return shapes;
+}
+
+/** Every argument any tool takes: a name the model WRITES, never one it looks for in a reply. */
+function argumentNames(): Set<string> {
+    const names = new Set<string>();
+
+    getMcpTools().forEach(function (tool) {
+        Object.keys(tool.inputSchema.properties || {}).forEach(function (argument) {
+            names.add(argument);
+        });
+    });
+
+    return names;
+}
+
+/** Each sentence of each piece of model-facing text, with where it came from. */
+function modelFacingSentences(): { where: string; sentence: string }[] {
+    const out: { where: string; sentence: string }[] = [];
+    const add = function (where: string, text: string): void {
+        text.replace(/\s+/g, " ").split(/(?<=[.;]) /).forEach(function (sentence) {
+            out.push({ where: where, sentence: sentence });
+        });
+    };
+
+    getMcpTools().forEach(function (tool) {
+        const properties = (tool.inputSchema.properties || {}) as Record<string, { description?: string }>;
+
+        add(tool.name, String(tool.description || ""));
+
+        Object.keys(properties).forEach(function (argument) {
+            add(tool.name + "." + argument, String(properties[argument].description || ""));
+        });
+    });
+
+    sourceFiles(SOURCE_ROOT).forEach(function (file) {
+        const source = withoutComments(readFileSync(file, "utf8"));
+        // Whole `"..." + "..."` chains rather than one literal at a time: these messages are
+        // written as a chain of them and a sentence routinely spans two.
+        const chains = source.match(/"(?:[^"\\\n]|\\.)*"(?:\s*\+\s*"(?:[^"\\\n]|\\.)*")*/g) || [];
+
+        chains.forEach(function (chain) {
+            const parts = chain.match(/"(?:[^"\\\n]|\\.)*"/g) || [];
+            const joined = parts.map(function (part) { return part.slice(1, -1); }).join("");
+
+            if (joined.indexOf("`") >= 0) {
+                add(file.slice(SOURCE_ROOT.length + 1), joined);
+            }
+        });
+    });
+
+    return out;
+}
+
+/** A field claim the text hangs on one named reader tool. */
+interface AttributedClaim {
+    where: string;
+    tool: string;
+    name: string;
+}
+
+function attributedClaims(): AttributedClaim[] {
+    const toolNames = getMcpTools().map(function (tool) { return tool.name; });
+    const claims: AttributedClaim[] = [];
+
+    modelFacingSentences().forEach(function (entry) {
+        const named = toolNames.filter(function (name) { return entry.sentence.indexOf(name) >= 0; });
+
+        // Two tools in one sentence is a sentence this cannot attribute, and guessing which
+        // one a field belongs to is how a guard starts reporting things that are not true.
+        if (named.length !== 1 || READER_TOOLS.indexOf(named[0]) < 0) {
+            return;
+        }
+
+        const tool = named[0];
+        const spots: number[] = [];
+        let at = entry.sentence.indexOf(tool);
+
+        while (at >= 0) {
+            spots.push(at);
+            at = entry.sentence.indexOf(tool, at + 1);
+        }
+
+        for (const quoted of entry.sentence.matchAll(/`([^`]+)`/g)) {
+            const name = quoted[1].trim().split(/[\s:,.(]/)[0];
+            const where = quoted.index as number;
+            const near = spots.filter(function (spot) {
+                return Math.abs(spot - where) <= ONE_CLAIM_APART;
+            });
+
+            if (FIELD_CLAIM.test(name) && near.length > 0) {
+                claims.push({ where: entry.where, tool: tool, name: name });
+            }
+        }
+    });
+
+    return claims;
+}
+
+test("no message sends the model to a field the tool it names does not carry", function () {
+    const shapes = shapesByReader();
+    const gameWords = wordsTheGameDeclares();
+    const argumentsTaken = argumentNames();
+    const claims = attributedClaims();
+
+    assert.ok(claims.length >= 10,
+        "the scan found " + String(claims.length) + " fields attributed to a named reader tool;"
+        + " a scan that finds none is a guard that checks nothing");
+
+    const wrong = claims.filter(function (claim) {
+        // An argument is a name the model writes on the way in, not one it reads on the way
+        // out - "`rideObject` is the `index` field of an entry from list_ride_objects" names
+        // one - so it is never a promise about a reply.
+        return !shapes[claim.tool].has(claim.name)
+            && !argumentsTaken.has(claim.name)
+            && !gameWords.has(claim.name);
+    }).map(function (claim) {
+        return claim.where + " sends the model to `" + claim.name + "` in " + claim.tool;
+    });
+
+    assert.deepEqual(Array.from(new Set(wrong)), [],
+        "a field named together with the tool that carries it has to be in THAT tool's reply");
 });

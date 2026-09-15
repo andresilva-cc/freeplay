@@ -101,8 +101,10 @@ gate and any ride whose bound queue went with the path.
 
 `buy_land` wraps `landbuyrights`, which is the only lever a plugin has over park
 boundaries during a scenario: its sibling `landsetrights` carries the game's `EditorOnly`
-flag, so there is no selling land back and no making an unlisted tile buyable, and ground
-height (`landsetheight`, `landraise`, `landlower`) is not reachable through any tool here.
+flag, so there is no selling land back and no making an unlisted tile buyable. Ground height is
+a separate surface again: no TYPED tool here levels ground, but `landsetheight`, `landraise`,
+`landlower` and `landsmooth` are not on `evaluate`'s refused list, so they are reachable
+through it. What no tool does is decide to use them.
 
 ### Things the API will not tell you, learned the hard way
 

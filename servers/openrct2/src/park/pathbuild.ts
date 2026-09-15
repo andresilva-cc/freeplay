@@ -93,9 +93,13 @@ export interface BuildPathOutcome {
      *
      * Measured by re-reading the chain out of each ride's entrance, the same way
      * `remove_path` measures it, because this is damage nothing in the game's API shows.
-     * An ordinary path over a queue unbinds it and is refused before anything is laid; a
-     * queue laid onto another ride's queue chains the two lines into one, which the game
-     * allows and which takes the first ride's line away.
+     * Both ways of causing it are allowed: an ordinary path laid over a queue unbinds it from
+     * its ride, and a queue laid onto another ride's queue chains the two lines into one and
+     * binds them to a single entrance. This file used to refuse the first of them, which is
+     * the veto `src/park/build.ts` took out of `build_flat_ride` for the same reason -
+     * whether a park wants to spend one ride's queue on another is a trade-off with a real
+     * cost and a real benefit, and refusing it took the trade off the table. The run goes
+     * ahead now and this names what it cost, read off the map rather than predicted.
      */
     ridesLeftWithoutQueue: RideWithoutQueue[];
     detail: string;
@@ -272,8 +276,15 @@ interface Blocker {
  * `sloped` is this tool's condition rather than the game's. `footpathplace` takes a
  * `slopeType` and a `slopeDirection` and OpenRCT2 runs footpaths up slopes with them; this
  * file sends 0 for both, so it needs flat ground and says so as its own limit.
+ *
+ * `water` IS the game's. `FootpathPlaceAction` answers a tile whose surface carries water
+ * above the placement height with "Can't build this underwater!", one tile at a time - so
+ * without this condition a run across a lake passed pre-flight, fired, and came back part
+ * laid, which is exactly the atomicity this tool's own description promises it will not
+ * break. It reads `cell.water`, the field `describe_placement` reads, so the two tools
+ * cannot call one tile dry and wet in the same turn.
  */
-function blockCode(grid: MapGrid, x: number, y: number, queueAllowed: boolean): string | null {
+function blockCode(grid: MapGrid, x: number, y: number): string | null {
     const cell = grid.at(x, y);
 
     if (!cell) {
@@ -284,6 +295,12 @@ function blockCode(grid: MapGrid, x: number, y: number, queueAllowed: boolean): 
         return "unowned";
     }
 
+    // Before slope, the way `describe_placement` and the ground census both sort it: a lake
+    // bed is level and at a height, and saying it is flat is not what stops the path.
+    if (cell.water) {
+        return "water";
+    }
+
     if (!cell.flat) {
         return "sloped";
     }
@@ -292,17 +309,15 @@ function blockCode(grid: MapGrid, x: number, y: number, queueAllowed: boolean): 
         return cell.clearable ? "scenery" : "structure";
     }
 
-    // A queue is ordinary walkable path - guests cross one - so this is not about routes.
-    // Ordinary path laid over a queue unbinds it from its ride, and that damage is
-    // invisible from the API, so a run that is not a queue never takes a queue tile.
-    if (cell.queue && !queueAllowed) {
-        return "queue";
-    }
-
+    // A tile already carrying a queue used to be refused to a run that is not one. The game
+    // takes it: the path goes down and the queue is unbound from its ride. Whose line that
+    // spends is a trade with a real cost and a real benefit, and refusing it took the trade
+    // off the table, so the cost is measured afterwards instead - `ridesLeftWithoutQueue`,
+    // the same field and the same reader `build_flat_ride` reports it through.
     return null;
 }
 
-function describeBlock(tile: Tile, code: string, wantQueue: boolean): Blocker {
+function describeBlock(tile: Tile, code: string): Blocker {
     if (code === "unowned") {
         return {
             tile: tile,
@@ -321,19 +336,15 @@ function describeBlock(tile: Tile, code: string, wantQueue: boolean): Blocker {
         };
     }
 
-    if (code === "queue") {
-        const ride = queueBinding(tile.x, tile.y);
-        const whose = ride !== null ? "carrying ride " + String(ride) + "'s queue" : "carrying a queue no ride has claimed";
-
+    if (code === "water") {
         return {
             tile: tile,
-            what: whose + ", and " + (wantQueue
-                ? "a queue laid onto an existing one chains the two lines into one"
-                : (ride !== null
-                    ? "ordinary path laid over it unbinds it from ride " + String(ride)
-                    : "ordinary path laid over it replaces the queue")),
-            remedy: "remove_path takes a queue up, and takes the same `tiles` as this call",
-            stale: true
+            // The game's own condition, unlike the slope one below: FootpathPlaceAction
+            // refuses a placement under water with "Can't build this underwater!".
+            what: "under water, and the game refuses a footpath under water",
+            remedy: "no typed tool here takes water off a tile, but evaluate reaches the game's own"
+                + " waterlower, watersetheight and landraise",
+            stale: false
         };
     }
 
@@ -451,8 +462,10 @@ function blockedRunRefusal(blockers: Blocker[], named: number): string {
 
     return String(blockers.length) + " of the " + plural(named, "tile") + " named cannot take a path: "
         + blockerGroups(blockers) + "."
-        + " Every tile of a run has to be owned, flat, and carrying nothing a footpath cannot share,"
-        + " and a run that is not a queue takes no tile carrying a queue."
+        + " Every tile of a run has to be owned, dry, flat, and carrying nothing a footpath cannot share."
+        + " A tile already carrying a queue is not one of those: the run takes it, the queue is unbound"
+        + " from its ride, and `ridesLeftWithoutQueue` names the ride that lost it."
+        + " Dry is the game's own condition: it refuses a footpath under water, one tile at a time."
         + " Flat is this tool's limit and not the game's: OpenRCT2 footpaths run up slopes, this tool lays"
         + " flat path only, and levelling ground is the game's own landsetheight, landraise, landlower and"
         + " landsmooth, which evaluate reaches."
@@ -539,10 +552,10 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
     const blockers: Blocker[] = [];
 
     for (let i = 0; i < tiles.length; i++) {
-        const code = blockCode(grid, tiles[i].x, tiles[i].y, request.queue);
+        const code = blockCode(grid, tiles[i].x, tiles[i].y);
 
         if (code !== null) {
-            blockers.push(describeBlock(tiles[i], code, request.queue));
+            blockers.push(describeBlock(tiles[i], code));
         }
     }
 
@@ -869,10 +882,10 @@ export function buildPath(request: BuildPathRequest, done: (outcome: BuildPathOu
                     : (replacedExistingPath > 0
                         ? " Nothing was cut off by it."
                         : ""))
-                // Measured rather than counted up from what was asked for. An ordinary path
-                // over a queue is refused before anything is laid, so this is the damage that
-                // gets through: a queue laid onto another ride's queue chains the two lines
-                // into one, and nothing in the game's API shows the first ride lost its line.
+                // Measured rather than counted up from what was asked for. Both ways of
+                // causing it go through - an ordinary path over a queue unbinds it, a queue
+                // over another ride's queue chains the two lines into one - and nothing in the
+                // game's API shows the ride that lost its line.
                 + lostQueue.map(function (ride) {
                     return " WARNING: ride " + String(ride.id) + " " + ride.name + " no longer has a queue"
                         + " bound to it. Its entrance door is at " + tileName(ride.entranceDoor) + ", and until"

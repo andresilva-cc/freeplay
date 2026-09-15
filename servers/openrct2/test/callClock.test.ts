@@ -295,6 +295,14 @@ test("the session instructions say what the figure is and when it is missing", f
             "a key nothing defines is a key the model has to guess the meaning of");
         assert.match(instructions, /first call of a session/,
             "and an absent field has to be explained, or it reads as a bug");
+        // The three numbers used to be called "the in-game day it ended". The code records the
+        // day one of the bridge's own reads first saw the status, which is the day it happened
+        // or the first day after it that the bridge looked - and a day the model is told is
+        // the day something happened is a day it will reason from.
+        assert.match(instructions, /the in-game day the BRIDGE FIRST READ it as over/,
+            "which day the three numbers are, said as what the code records rather than as the event");
+        assert.match(instructions, /the status is polled once an in-game day/,
+            "and why the two can differ, which is the whole of what makes the distinction real");
         assert.doesNotMatch(instructions, /deadline|running out|too long|hurry|objective/i,
             "the clock is the model's to spend; this reports a number and says nothing about it");
     });

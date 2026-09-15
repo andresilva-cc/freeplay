@@ -1062,7 +1062,7 @@ export function describePlacement(rideObjectIndex: number, cx: number, cy: numbe
             });
         }
     } else {
-        // In the order the tiles ring the footprint, which is a shape rather than a
+        // In the clockwise walk round the footprint, which is a shape rather than a
         // judgement. The list this replaced was sorted by distance to a path and cut to
         // eight, and the model took the first entry of it every time; there is no sort here,
         // so the order carries no claim about which door is worth using. Positions that come

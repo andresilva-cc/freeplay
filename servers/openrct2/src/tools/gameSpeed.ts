@@ -1,5 +1,5 @@
 import { mcpTool, mcpToolController } from "./decorators.js";
-import { recordPlayerPause } from "../clockGate.js";
+import { pauseRefusesActions, recordPlayerPause } from "../clockGate.js";
 import type { DeferredMcpResult } from "./types.js";
 
 /** Long enough for a queued game action to have been applied on a later tick. */
@@ -37,6 +37,10 @@ export interface GameSpeedOutcome {
     ok: boolean;
     /** The speed the game reads back as, not the speed that was asked for. */
     speed: number;
+    /**
+     * Whether a pause that REFUSES things is in force: the same reading `park_status`
+     * reports under the same name, and not the game's raw pause flag.
+     */
     paused: boolean;
     detail: string;
 }
@@ -53,8 +57,32 @@ function currentSpeed(): number {
     return typeof context.gameSpeed === "number" ? context.gameSpeed : 0;
 }
 
-function currentlyPaused(): boolean {
+/**
+ * The game's own pause flag, which is the thing `pausetoggle` flips.
+ *
+ * The only place in this file that may read it. The bridge holds that flag true between tool
+ * calls, so it answers true on essentially every turn; it is the right question for "would
+ * firing `pausetoggle` land the game in the state that was asked for?" and the wrong question
+ * for anything the result says.
+ */
+function clockIsStopped(): boolean {
     return context.paused === true;
+}
+
+/**
+ * Whether the pause in force is one the game refuses map changes through.
+ *
+ * `src/clockGate.ts` answers it, and `park_status` reports the same call under the same name,
+ * so the two cannot disagree. This read `context.paused` verbatim, which made the tool answer
+ * `paused: true` with a detail saying builds were being refused, on every turn where nothing
+ * was being refused at all and `park_status` said so in the same session. It is the identical
+ * defect `build_flat_ride` shipped with and had taken out before release.
+ *
+ * It is also the reading that survives the call: `holdClockBetweenCalls` stops the clock again
+ * on the way out, and that hold refuses nothing, so what this answers is still true afterwards.
+ */
+function currentlyPaused(): boolean {
+    return pauseRefusesActions();
 }
 
 function review(request: GameSpeedRequest): SpeedReview {
@@ -87,7 +115,9 @@ function describe(request: GameSpeedRequest, state: SpeedReview): GameSpeedOutco
 
     if (!state.pausedOk) {
         notes.push("asked to " + (request.paused === true ? "pause" : "unpause")
-            + " but the game is " + (state.paused ? "paused" : "running"));
+            + " but " + (state.paused
+                ? "a pause that refuses map changes is still in force"
+                : "no pause that refuses anything is in force"));
     }
 
     return {
@@ -96,13 +126,18 @@ function describe(request: GameSpeedRequest, state: SpeedReview): GameSpeedOutco
         paused: state.paused,
         detail: notes.length === 0
             ? (state.paused
-                ? "The game is paused, so no scenario time passes until it is unpaused, and it"
-                    + " refuses the map changes listed on this tool's `paused` argument. Its speed setting is "
-                    + describeSpeed(state.speed) + ", which is what a game day costs in real"
-                    + " seconds inside a wait."
-                : "The game is running at speed " + describeSpeed(state.speed) + ". The bridge"
-                    + " holds it still again the moment this call answers; what unpausing changed is"
-                    + " that map changes and wait are no longer refused.")
+                ? "A pause that refuses is in force: no scenario time passes through it, and the game"
+                    + " refuses the map changes listed on this tool's `paused` argument until it is lifted."
+                    + " The speed setting is " + describeSpeed(state.speed) + ", which is what a game day"
+                    + " costs in real seconds inside a wait."
+                // What is true AFTER this call returns, which is not "the game is running": the
+                // bridge stops the clock again as the result is built, so a detail saying the game
+                // was running described a state that had already ended by the time it was read.
+                : "No pause of yours is in force, so nothing is being refused and `wait` spends game days."
+                    + " The clock is still held: the bridge stops it again as this call answers, the way it"
+                    + " stands between every call, and scenario time passes only inside `wait`."
+                    + " The speed setting is " + describeSpeed(state.speed) + ", which is what a game day"
+                    + " costs in real seconds inside a wait.")
             : notes.join("; ") + "."
     };
 }
@@ -164,7 +199,7 @@ export function setGameSpeed(request: GameSpeedRequest, done: (outcome: GameSpee
 
     // `pausetoggle` flips the flag, so firing it when the game is already in the state
     // that was asked for would put it into the other one.
-    if (wantsPause && currentlyPaused() !== request.paused) {
+    if (wantsPause && clockIsStopped() !== request.paused) {
         context.executeAction("pausetoggle", {}, function () { /* verified by re-read */ });
     }
 
@@ -179,7 +214,12 @@ export function setGameSpeed(request: GameSpeedRequest, done: (outcome: GameSpee
         // rather than on a tick. Not a loop: if this does not take either, the second read
         // is reported as it stands. Speed has no setter, so only pause can be retried.
         if (!first.pausedOk && wantsPause) {
-            context.paused = request.paused === true;
+            try {
+                context.paused = request.paused === true;
+            } catch (_error) {
+                // Read-only in network mode, where the pause belongs to the server. The read
+                // below reports whatever the game actually did, which is the point of it.
+            }
         }
 
         context.setTimeout(function () {
@@ -229,6 +269,10 @@ export class GameSpeedTools {
                         + " operate_ride opening, closing, pricing and inspection intervals, hire_staff,"
                         + " open_park and this tool itself, and reading is never affected. A ride opened while"
                         + " paused is open, but takes its first guest only once the clock runs again."
+                        + " `paused` in the result is whether such a pause is in force afterwards - the same"
+                        + " reading park_status gives under that name - and not the game's raw pause flag:"
+                        + " after `paused: false` it reads false and stays false, because the hold the bridge"
+                        + " puts straight back refuses nothing."
                         + " Omit to leave it as it is."
                 }
             },

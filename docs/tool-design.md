@@ -210,7 +210,8 @@ because the neighbouring problems look identical from the model's side and are n
 at all: `landsetrights`, which unowns land or puts it up for sale, carries the game's
 `EditorOnly` flag, so land cannot be sold back and a tile the scenario is not selling cannot
 be made buyable; and levelling is a different surface again (`landsetheight`, `landraise`,
-`landlower`) that nothing in this bridge touches. A rectangle that is half for sale buys the
+`landlower`, `landsmooth`) that no typed tool here touches, though `evaluate` reaches all four.
+A rectangle that is half for sale buys the
 half that is and names the tiles it did not get, which is the same rule as everywhere else:
 read the map back and report what is there, rather than failing the whole call or claiming
 the whole rectangle.
@@ -1037,8 +1038,10 @@ which complaints were current would be deciding which ones to act on.
 `fits` counted a tile as failing for being unowned, sloped, at the wrong height or built on, and
 water fell through: a lake read as ground a ride could stand on. A player sees a lake. `fits`
 now requires the tile to be dry, `blockers` names water as the cause, and the same condition
-holds for both tiles of a door position. There is no tool here that fills water in, the same way
-there is none that levels a slope, so this is a reading and not a step.
+holds for both tiles of a door position, and for every tile of a `build_path` run. No TYPED tool
+here fills water in, the same way none levels a slope; `evaluate` reaches the game's own
+`watersetheight`, `waterraise`, `waterlower`, `landsetheight`, `landraise`, `landlower` and
+`landsmooth`, none of which is on its refused list. So this is a reading and not a step.
 
 ### A door that takes another ride's queue
 

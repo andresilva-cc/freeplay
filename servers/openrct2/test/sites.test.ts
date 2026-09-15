@@ -1882,8 +1882,14 @@ test("the description says a distance is to paving guests can reach", function (
 test("the description says the access list is unordered, that it is filtered, and that a ride needs two", function () {
     const text = description();
 
-    assert.match(text, /The list is in the order the tiles ring the footprint and is ordered by nothing else: it is not sorted and not marked/,
+    assert.match(text, /a clockwise walk of the tiles round the footprint, starting on its -y\s+side/,
+        "the order the walk actually produces, which is what a reader checks the list against");
+    assert.match(text, /except at the four corners, where\s+the walk turns and the step is diagonal/,
+        "including where the walk is NOT adjacent: the four corner turns the old claim glossed over");
+    assert.match(text, /not sorted, not marked/,
         "the half that is true: nothing is ranked");
+    assert.match(text, /the first entry is first only because a walk has to start somewhere/,
+        "the default the order still picks, said in the text and not only in a source comment");
     assert.match(text, /IT IS FILTERED, AND IT SAYS SO/,
         "and the half that was a falsehood, said where the list is described");
     assert.match(text, /`accessTotal` is how many door positions the footprint has at all/,

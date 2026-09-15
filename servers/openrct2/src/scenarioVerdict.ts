@@ -1,5 +1,10 @@
 /**
- * Whether the scenario is over, and on which in-game day it ended.
+ * Whether the scenario is over, and the in-game day the bridge first read it as over.
+ *
+ * Not "the day it ended", which is what the model-facing text used to call it. There is no
+ * hook for the objective, so the status is polled on `interval.day` and sampled again wherever
+ * the answer is about to be reported; the day recorded is the day one of those reads first saw
+ * it, which is the day it happened or the first day after it that the bridge looked.
  *
  * OpenRCT2 reports `scenario.status` as `inProgress`, `completed` or `failed`, and there is
  * NO hook for it changing: `HookType` carries `interval.day`, `interval.tick`, the map, ride
@@ -37,6 +42,7 @@ export type ScenarioEndStatus = "completed" | "failed";
  */
 export interface ScenarioVerdict {
     status: ScenarioEndStatus;
+    /** The three below are the day the bridge FIRST READ the end, not the day it happened. */
     year: number;
     month: number;
     day: number;

@@ -112,6 +112,37 @@ test("the reachable count is exactly what walkableFromParkEntrance finds", funct
     });
 });
 
+
+/*
+ * `islands` was sorted by `tiles` descending, undisclosed, two lines from `GroundCensus.blocks`
+ * saying in its own doc comment "Unordered - these are counts, not a ranking". The biggest
+ * stranded fragment is the most walking recovered per tile of path laid, so putting it at the
+ * top ranked the model's repair options for it - the same defect as the complaint list that
+ * came back with the park's answer at the top.
+ */
+test("islands come back in scan order and not biggest first", function () {
+    withGame(function (game) {
+        game.addParkEntrance(10, 4);
+        game.addPath(10, 5);
+
+        // One stranded tile at a low y, so the map scan reaches it first...
+        game.addPath(20, 6);
+
+        // ...and a bigger fragment further down, which a size ranking would put first.
+        for (let x = 20; x <= 22; x++) {
+            game.addPath(x, 20);
+        }
+    }, function () {
+        const islands = readPathNetwork().islands;
+
+        assert.equal(islands.length, 2);
+        assert.deepEqual(islands.map(function (island) { return island.tiles; }), [1, 3],
+            "the order is the order the row-by-row scan reaches them; sorting by size is a ranking");
+        assert.deepEqual(islands[0].runs[0], { fromX: 20, fromY: 6, toX: 20, toY: 6, tiles: 1, kind: "path" },
+            "and the one at the lower y really is the one that comes back first");
+    });
+});
+
 test("an unclaimed queue is walked straight through, because the game moves no edge for it", function () {
     withGame(function (game) {
         game.addParkEntrance(10, 4);

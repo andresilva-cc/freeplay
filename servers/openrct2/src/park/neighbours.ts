@@ -214,7 +214,13 @@ export function tileState(
         return "carrying scenery";
     }
 
-    return cell.flat ? "bare ground the park owns" : "bare ground on a slope, which takes no footpath";
+    // Not "which takes no footpath", which is false and was read back to the model inside
+    // build_path's own refusal, one sentence away from that tool saying the opposite:
+    // OpenRCT2 footpaths run up slopes on footpathplace's slopeType and slopeDirection, and
+    // build_path sends 0 for both. The limit is the bridge's and is named as the bridge's.
+    return cell.flat
+        ? "bare ground the park owns"
+        : "bare ground on a slope, which no typed tool here lays path on";
 }
 
 /**

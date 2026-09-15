@@ -164,13 +164,17 @@ export function computeFootprintOffsets(shape: FlatRideShape, rotation: number):
  * that is not the order is worse than either, because it is what a reader checks against.
  *
  * So it is a real walk now: clockwise round the box one tile outside the footprint, starting
- * at its -y side, then +x, then +y, then -x. Adjacent entries are adjacent on the ground,
- * which is what makes the `side` of two options readable side by side.
+ * at its -y side, then +x, then +y, then -x. Adjacent entries are adjacent on the ground
+ * EXCEPT at the four corner turns: the ring's own corner tile is diagonal to the footprint and
+ * so is never a door position, so it is skipped and the step across a corner is a diagonal one.
+ * `describe_placement`'s description says both halves of that, because a stated order that is
+ * not the order is what a reader checks against.
  *
  * This still picks a default - any fixed order does, and the first entry is now always on the
  * -y face instead of always on the +x face. Nothing here can fix that; what it can do is not
- * claim the order means anything. The count is in `accessTotal`, the faces are in `side`, and
- * nothing is sorted.
+ * claim the order means anything, which is why the tool's own text says the first entry is
+ * first only because a walk has to start somewhere. The count is in `accessTotal`, the faces
+ * are in `side`, and nothing is sorted.
  *
  * The trailing sweep is for a footprint that is not a filled rectangle: nothing in the table
  * is one today, and a perimeter tile in a notch would otherwise be dropped rather than

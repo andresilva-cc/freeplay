@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { FakeGame } from "./fakeGame.ts";
-import { resetClockGate } from "../src/clockGate.ts";
+import { clockHeldBy, holdClockBetweenCalls, playerPausedTheGame, resetClockGate } from "../src/clockGate.ts";
+import { readParkStatus } from "../src/park/status.ts";
 import { operateRide } from "../src/park/operate.ts";
 import { buildPath, DEFAULT_PATH_OBJECT } from "../src/park/pathbuild.ts";
 import type { BuildPathOutcome } from "../src/park/pathbuild.ts";
@@ -58,6 +59,108 @@ function names(game: FakeGame): string[] {
 }
 
 function nothing(): void { /* the default fake is already a running game at speed 1 */ }
+
+
+/* ---------------------------------------------------------------------------------------
+ * What `paused` in the result means, which for nine commits was the wrong thing entirely.
+ *
+ * It read `context.paused` verbatim. The clock gate holds that flag true between tool calls,
+ * so on an ordinary turn - nothing paused by the model, nothing being refused - this tool
+ * answered `paused: true` and a detail reading "The game is paused, so no scenario time
+ * passes until it is unpaused, and it refuses the map changes listed on this tool's `paused`
+ * argument", while `park_status` in the same session answered `paused: false` with
+ * `clockHeldBy: bridge`. Two tools, one turn, opposite answers about whether builds work.
+ *
+ * It is the same defect `build_flat_ride` shipped with and had taken out before release, and
+ * the fix is the same: ask `src/clockGate.ts` whether the pause in force refuses anything,
+ * which is also the reading that survives the hold going back on as the call answers.
+ */
+
+/** The state every ordinary turn starts in: the bridge holding the clock, nothing refused. */
+function withTheBridgeHoldingTheClock(game: FakeGame, run: () => void): void {
+    holdClockBetweenCalls();
+
+    assert.equal(game.gameValues.paused, true, "the hold has to be in force for this to mean anything");
+    assert.equal(clockHeldBy(), "bridge", "and it has to be the bridge's own");
+
+    run();
+}
+
+test("the hold between calls is not reported as a pause, and park_status agrees", function () {
+    withGame(nothing, function (game) {
+        withTheBridgeHoldingTheClock(game, function () {
+            const outcome = set({ speed: 3 });
+
+            assert.equal(outcome.ok, true, outcome.detail);
+            assert.equal(outcome.paused, false,
+                "the bridge's hold refuses nothing, so reporting it as a pause is a false refusal");
+            assert.equal(outcome.paused, readParkStatus().paused,
+                "two tools answering the same question in one turn must not answer it differently");
+
+            assert.doesNotMatch(outcome.detail, /refuses the map changes/,
+                "nothing is being refused, and saying so costs the turn the model spends unpausing");
+            assert.doesNotMatch(outcome.detail, /The game is paused/,
+                "the sentence that was read back every turn");
+            assert.match(outcome.detail, /No pause of yours is in force/,
+                "what is actually true: the clock is stopped and nothing is refused by it");
+        });
+    });
+});
+
+test("unpausing reports what is true after the call, not what was true inside it", function () {
+    withGame(nothing, function (game) {
+        // The model's own pause, which is the one that refuses things.
+        set({ paused: true });
+        assert.equal(playerPausedTheGame(), true, "the fixture has to start from the model's pause");
+
+        const outcome = set({ paused: false });
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(outcome.paused, false);
+        assert.doesNotMatch(outcome.detail, /The game is running/,
+            "it is not: holdClockBetweenCalls stops the clock again as this call answers, so a detail"
+            + " saying the game is running describes a state that has already ended");
+        assert.match(outcome.detail, /The clock is still held/,
+            "the clock and the refusal are two different facts and the result has to carry both");
+
+        // The hold going back on is exactly what used to make the reported value stale.
+        holdClockBetweenCalls();
+
+        assert.equal(game.gameValues.paused, true, "the bridge holds the clock again, as it always does");
+        assert.equal(readParkStatus().paused, outcome.paused,
+            "and what this call reported is still the answer afterwards");
+        assert.equal(clockHeldBy(), "bridge");
+    });
+});
+
+test("a pause the model asked for is still reported as one, and still refuses", function () {
+    withGame(nothing, function (game) {
+        withTheBridgeHoldingTheClock(game, function () {
+            const outcome = set({ paused: true });
+
+            assert.equal(outcome.ok, true, outcome.detail);
+            assert.equal(outcome.paused, true, "this pause is the model's and it does refuse things");
+            assert.equal(playerPausedTheGame(), true, "and the gate was told whose it is");
+            assert.equal(clockHeldBy(), "you");
+            assert.match(outcome.detail, /refuses the map changes/,
+                "what a pause the model set actually does, which is the whole reason to report it");
+            assert.equal(game.gameValues.paused, true, "the clock is stopped on the map as well");
+        });
+    });
+});
+
+test("asking to pause while the bridge holds the clock fires no toggle", function () {
+    withGame(nothing, function (game) {
+        withTheBridgeHoldingTheClock(game, function () {
+            const outcome = set({ paused: true });
+
+            assert.equal(outcome.paused, true, outcome.detail);
+            assert.equal(names(game).indexOf("pausetoggle"), -1,
+                "pausetoggle FLIPS the flag: the game is already stopped, so firing it would start it");
+            assert.equal(game.gameValues.paused, true, "and the clock is still stopped");
+        });
+    });
+});
 
 test("the game runs at the speed that was asked for", function () {
     withGame(nothing, function (game) {

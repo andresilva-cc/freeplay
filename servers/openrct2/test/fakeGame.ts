@@ -29,6 +29,12 @@ export interface FakeElement {
      */
     ownership?: number;
     slope?: number;
+    /**
+     * Surface only: the height water stands at above this tile, 0 or absent for dry ground.
+     * The plugin API hands it over raw off the surface element, which is where every reader
+     * in `src` gets it from, so this is the one place the fake says a tile is wet.
+     */
+    waterHeight?: number;
     isQueue?: boolean;
     /**
      * Footpath only: the sides a guest may leave this tile by, as OpenRCT2 stores them.
@@ -135,6 +141,14 @@ const STAFF_TYPE_NAMES: Record<number, string> = {
  * footpathplace, footpathremove, landbuyrights, trackplace, rideentranceexitplace,
  * ridedemolish, and the scenery, wall and banner removals - does not, so a paused game
  * answers it with "Construction not possible while game is paused!" and changes nothing.
+ *
+ * Checked against OpenRCT2/OpenRCT2 develop rather than believed, because this file is the
+ * one place a wrong list would pass every test and refuse every real build: all nine names
+ * in `ACTIONS_ALLOWED_WHILE_PAUSED` OR the flag in their own `GetActionFlags()`
+ * (PauseToggleAction, GameSetSpeedAction, ParkSetEntranceFeeAction, ParkSetParameterAction,
+ * RideSetPriceAction, RideCreateAction, RideSetStatusAction, RideSetSettingAction,
+ * StaffHireNewAction), and all ten the bridge fires that are absent from it return the base
+ * flags unchanged or override nothing at all. The list is right in both directions.
  *
  * The plugin needs the same list - src/clockGate.ts decides from it which actions need the
  * clock let run around them - so the fake reads the plugin's copy rather than keeping a
@@ -447,6 +461,23 @@ export class FakeGame {
         }
 
         surface.ownership = bits;
+    }
+
+    /**
+     * Put water on a tile, the way a scenario's lake sits on it.
+     *
+     * A helper rather than `Object.assign(tile.elements[0], { waterHeight })` at each call
+     * site, which is how four suites were writing it: a fixture that reaches into the element
+     * by hand is a fixture that can set a field the game never sets, and the two readers that
+     * disagreed about water - `describe_placement` and `build_path` - each had a test that
+     * proved nothing because the fake could not refuse a placement on water at all.
+     *
+     * 112 is one step above the 96 the fake's ground sits at, which is what makes the tile
+     * underwater by the game's own rule: `ConstructionClearance.cpp` sets `ELEMENT_IS_UNDERWATER`
+     * when the surface's water height is above the placement height.
+     */
+    public addWater(x: number, y: number, height = 112): void {
+        this.tile(x, y).elements[0].waterHeight = height;
     }
 
     public addScenery(x: number, y: number, type = "small_scenery"): void {
@@ -1006,6 +1037,22 @@ export class FakeGame {
         if (action.name === "footpathplace") {
             if (!this.inBounds(tileX, tileY)) {
                 return { error: 1, errorTitle: "Off the map", errorMessage: "out of bounds" };
+            }
+
+            // The game's own rule, and one the fake could not express until there was a way to
+            // put water on a tile at all: `FootpathPlaceAction::ElementInsertQuery` refuses a
+            // placement whose height is below the surface's water height, one tile at a time,
+            // with STR_CANT_BUILD_FOOTPATH_HERE / STR_CANT_BUILD_THIS_UNDERWATER. Without it a
+            // `build_path` run across a lake was accepted here and refused by the real game.
+            const water = this.tile(tileX, tileY).elements[0].waterHeight;
+            const placeAt = typeof args.z === "number" ? args.z : this.groundHeight(tileX, tileY);
+
+            if (typeof water === "number" && water > placeAt) {
+                return {
+                    error: 1,
+                    errorTitle: "Can\u2019t build footpath here\u2026",
+                    errorMessage: "Can\u2019t build this underwater!"
+                };
             }
 
             const isQueue = ((args.constructFlags as number) & 1) !== 0;

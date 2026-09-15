@@ -41,7 +41,8 @@ const DEFERRED_TIMEOUT_MS = 30000;
 const ELAPSED_FIELD = "gameDaysSinceLastCall";
 
 /**
- * The scenario is over, what the game decided, and the in-game day it decided it - carried on
+ * The scenario is over, what the game decided, and the in-game day the bridge first read it as
+ * over, which is not always the day the game decided it - carried on
  * every tool result from then on, and absent entirely while the scenario is still being
  * played, so its presence is the whole signal.
  *
@@ -725,8 +726,11 @@ export class McpServer {
                 "reads 0 unless a tool that acts let the clock run while it worked.",
                 "The first call of a session has no previous result and carries no figure.",
                 "A result carrying `scenarioEnded` is the game saying the scenario is over:",
-                "`status` is `completed` or `failed` and `year`, `month` and `day` are the in-game day it",
-                "ended. Nothing carries that field while the scenario is still being played."
+                "`status` is `completed` or `failed` and `year`, `month` and `day` are the in-game day the",
+                "BRIDGE FIRST READ it as over, which is the day it happened or the first day after it that",
+                "the bridge looked: the game raises no hook for it, so the status is polled once an in-game",
+                "day and read again whenever a result is about to carry it.",
+                "Nothing carries that field while the scenario is still being played."
             ].join(" ")
         });
     }

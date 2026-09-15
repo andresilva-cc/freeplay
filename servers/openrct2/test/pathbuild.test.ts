@@ -670,67 +670,70 @@ test("a severed park is counted and explained, not told what to do about it", fu
     });
 });
 
-test("an ordinary path run that names a queue tile is refused, not apologised for", function () {
-    // The tool used to contradict its own refusal: that text promised "no route is taken
-    // across" a queue, and the router exempted the far end of every leg from the rule -
-    // for queue runs and ordinary ones alike. So a run ended on a bound queue, paved it,
-    // unbound the ride, and only then said so in a WARNING. One such call cost eleven
-    // turns and about seven minutes of remove_path, failed rebuilds and view_map.
+test("an ordinary path run over a ride's queue is laid, and names the ride that lost its line", function () {
+    // This used to be refused outright. The game takes it - the path goes down and the queue
+    // is unbound - and whether a park wants to spend one ride's line on another is a trade
+    // with a real cost and a real benefit, which refusing took off the table. The twin veto
+    // came out of build_flat_ride with that reasoning written into src/park/build.ts; this is
+    // the same veto in the other tool.
     withGame(function (game) {
-        parkWithGate(game);
-        game.addPath(10, 6);
-        game.addPath(10, 7, true, 0);
-        game.addPath(10, 8, true, 0);
+        parkWithSpine(game, 12);
+        rideWithAnEntranceAt(game, 0, "Ferris Wheel", { x: 12, y: 6 }, 2);
+        // The queue on the tile that door opens onto, which is the line the run will take.
+        game.addPath(11, 6, true, 0);
     }, function (game) {
-        const outcome = lay(line({ x: 10, y: 6 }, { x: 10, y: 8 }));
+        assert.equal(footpathAt(game, 11, 6)?.ride, 0, "the fixture has to start with ride 0 served");
 
-        assert.equal(outcome.ok, false, outcome.detail);
-        assert.match(outcome.detail, /10,7 10,8 - carrying ride 0's queue/,
-            "the tiles and the ride whose line they are have to be named, not the category");
-        assert.match(outcome.detail, /unbinds it from ride 0/,
-            "and what paving them would have done, which is damage nothing in the API shows");
-        assert.match(outcome.detail, /remove_path takes a queue up/,
-            "a blocker with a remedy names the call that lifts it");
-        assert.doesNotMatch(outcome.detail, /WARNING/,
-            "a refusal before the fact, not an apology after it");
+        const outcome = lay(line({ x: 11, y: 5 }, { x: 11, y: 7 }));
 
-        // The claim is about the world, so read the world: the queue is still a queue and
-        // still bound. A test that only read the message would pass on a tool that paved
-        // the tile and merely described the refusal.
-        const path = footpathAt(game, 10, 8);
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(outcome.tilesPlaced, 3, "the whole run goes down: " + outcome.detail);
+        assert.doesNotMatch(outcome.detail, /cannot take a path/,
+            "the veto is gone, so no tile of this run is a blocker");
+
+        // The consequence, measured rather than predicted, in build_flat_ride's own vocabulary.
+        assert.equal(outcome.ridesLeftWithoutQueue.length, 1, outcome.detail);
+        assert.equal(outcome.ridesLeftWithoutQueue[0].id, 0);
+        assert.equal(outcome.ridesLeftWithoutQueue[0].name, "Ferris Wheel");
+        assert.deepEqual(outcome.ridesLeftWithoutQueue[0].entranceDoor, { x: 11, y: 6 });
+        assert.match(outcome.detail, /WARNING: ride 0 Ferris Wheel no longer has a queue bound to it/,
+            "the cost said out loud, because the fields of this result go unread");
+
+        // The world agrees, read off the fake's own element rather than off the message.
+        const path = footpathAt(game, 11, 6);
         assert.ok(path);
-        assert.equal(path.isQueue, true, "the queue was paved over anyway");
-        assert.equal(path.ride, 0, "the queue was unbound from its ride anyway");
-        assert.equal(game.attempted.length, 0, "and not one tile was laid on the way to refusing");
+        assert.equal(path.isQueue, false, "the tile is ordinary path now");
+        assert.equal(path.ride, null, "and it is bound to no ride");
     });
 });
 
-test("a path run takes no queue tile wherever in the run it sits", function () {
-    // Three separate exemptions used to exist - the first tile of a run was never checked
-    // at all, and the last was exempt on purpose - and each is a different way to unbind a
-    // ride silently. With no route to pick there is no end to exempt: every named tile is
-    // held to the same rule.
-    const positions: { where: string; tiles: Tile[]; queueAt: Tile }[] = [
-        { where: "first", tiles: line({ x: 10, y: 6 }, { x: 10, y: 8 }), queueAt: { x: 10, y: 6 } },
-        { where: "middle", tiles: line({ x: 10, y: 6 }, { x: 10, y: 8 }), queueAt: { x: 10, y: 7 } },
-        { where: "last", tiles: line({ x: 10, y: 6 }, { x: 10, y: 8 }), queueAt: { x: 10, y: 8 } }
+test("a queue anywhere in an ordinary run is taken, and the ride that lost it is named", function () {
+    // Three exemptions used to exist here - the first tile was never checked, the last was
+    // exempt on purpose - and the rule that replaced them refused all three. Every position
+    // is now laid, and every position reports what it cost.
+    const positions: { where: string; queueAt: Tile }[] = [
+        { where: "first", queueAt: { x: 11, y: 5 } },
+        { where: "middle", queueAt: { x: 11, y: 6 } },
+        { where: "last", queueAt: { x: 11, y: 7 } }
     ];
 
     positions.forEach(function (position) {
         withGame(function (game) {
-            parkWithGate(game);
+            parkWithSpine(game, 12);
+            // The entrance building one tile east, so its door opens onto the queue tile.
+            rideWithAnEntranceAt(game, 3, "Twist", { x: 12, y: position.queueAt.y }, 2);
             game.addPath(position.queueAt.x, position.queueAt.y, true, 3);
         }, function (game) {
-            const outcome = lay(position.tiles);
+            const outcome = lay(line({ x: 11, y: 5 }, { x: 11, y: 7 }));
 
-            assert.equal(outcome.ok, false,
-                "a queue " + position.where + " in the run was paved over: " + outcome.detail);
-            assert.match(outcome.detail,
-                new RegExp(String(position.queueAt.x) + "," + String(position.queueAt.y) + " - carrying ride 3's queue"),
-                "the " + position.where + " tile is the one at fault and it has to be named");
-            assert.equal(footpathAt(game, position.queueAt.x, position.queueAt.y)?.isQueue, true,
-                "the queue " + position.where + " in the run was paved over on the map");
-            assert.equal(game.attempted.length, 0, "and no tile of the run was laid");
+            assert.equal(outcome.ok, true,
+                "a queue " + position.where + " in the run was refused: " + outcome.detail);
+            assert.equal(footpathAt(game, position.queueAt.x, position.queueAt.y)?.isQueue, false,
+                "the queue " + position.where + " in the run is still a queue on the map");
+            assert.equal(outcome.ridesLeftWithoutQueue.length, 1,
+                "a queue " + position.where + " in the run took ride 3's line and said nothing: "
+                + outcome.detail);
+            assert.equal(outcome.ridesLeftWithoutQueue[0].id, 3);
         });
     });
 });
@@ -756,11 +759,11 @@ test("a queue run may name a queue tile, which is how one line joins another", f
 /**
  * The damage that gets through, and the only kind that can.
  *
- * An ordinary path over a queue is refused above, before anything is laid. A queue laid
- * onto another ride's queue is not: the game allows it, chains the two lines into one and
- * binds the whole chain to one entrance, and the ride at the other end is left with a door
- * and no line. Nothing in the game's API reports that, so it is measured - the chain out of
- * every ride's entrance, read before the call and again after.
+ * Two ways in, and both go through now. An ordinary path over a queue unbinds it, which is
+ * the test above. A queue laid onto another ride's queue chains the two lines into one and
+ * binds the whole chain to one entrance, leaving the ride at the other end with a door and no
+ * line. Nothing in the game's API reports either, so both are measured the same way - the
+ * chain out of every ride's entrance, read before the call and again after.
  */
 test("a queue that chains onto another ride's line reports the ride that lost it", function () {
     withGame(function (game) {
@@ -801,6 +804,115 @@ test("a queue that chains onto another ride's line reports the ride that lost it
         assert.deepEqual(outcome.ridesLeftWithoutQueue, [],
             "a queue laid nowhere near a ride took nothing away from one");
         assert.doesNotMatch(outcome.detail, /no longer has a queue/);
+    });
+});
+
+
+/* ---------------------------------------------------------------------------------------
+ * Water, which this tool could not see.
+ *
+ * `blockCode` checked ownership, slope and what was standing on a tile, and had no water
+ * condition at all, while the refusal enumerated the rule as "Every tile of a run has to be
+ * owned, flat, and carrying nothing a footpath cannot share" and the description promised
+ * "the whole run goes down or none of it does". A lake tile passed pre-flight, the run fired,
+ * and the game refused it one tile at a time - so the run went down in pieces, which is the
+ * one thing this tool says it will not do. `describe_placement` gained the same condition off
+ * the same `waterHeight`, and the two reading one tile differently in one turn is the failure
+ * the shared source exists to prevent.
+ */
+
+test("a run across water is refused whole, and no tile of it is laid", function () {
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+        game.addWater(10, 8);
+    }, function (game) {
+        const outcome = lay(line({ x: 10, y: 6 }, { x: 10, y: 10 }));
+
+        assert.equal(outcome.ok, false, outcome.detail);
+        assert.match(outcome.detail, /10,8 - under water, and the game refuses a footpath under water/,
+            "the tile and what is wrong with it, not the category");
+        assert.match(outcome.detail, /owned, dry, flat/,
+            "the rule the refusal enumerates has to include the condition it just applied");
+        assert.match(outcome.detail, /waterlower, watersetheight and landraise/,
+            "a blocker nothing typed here fixes still names the route that exists");
+        assert.equal(outcome.tilesPlaced, 0);
+        assert.equal(game.attempted.length, 0,
+            "nothing at all was fired: a run half on the ground is what atomicity means here");
+    });
+});
+
+test("the game refuses a footpath under water tile by tile, which is what pre-flight prevents", function () {
+    // The fake could not express this at all until it could: `footpathplace` accepted any tile
+    // in bounds, so a test of the condition above would have passed against a tool that had no
+    // condition. This fires the action the way build_path fires it and reads the answer back.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addWater(10, 8);
+    }, function (game) {
+        const answers: Record<string, string> = {};
+
+        for (let y = 7; y <= 9; y++) {
+            const at = y;
+
+            context.executeAction("footpathplace", {
+                x: 10 * 32, y: at * 32, z: 96, direction: 0,
+                object: DEFAULT_PATH_OBJECT, railingsObject: 0,
+                slopeType: 0, slopeDirection: 0, constructFlags: 0
+            }, function (result) {
+                answers[String(at)] = result.error
+                    ? String(result.errorTitle) + ": " + String(result.errorMessage)
+                    : "ok";
+            });
+        }
+
+        game.applyQueuedActions();
+
+        assert.equal(answers["7"], "ok", "dry ground beside the lake takes a path");
+        assert.equal(answers["9"], "ok", "and so does dry ground on the other side");
+        assert.match(String(answers["8"]), /build this underwater/,
+            "the game's own refusal, quoted: STR_CANT_BUILD_THIS_UNDERWATER");
+
+        // Which is the damage: two of the three tiles are on the ground and one is not.
+        assert.equal(footpathAt(game, 10, 7) !== undefined, true);
+        assert.equal(footpathAt(game, 10, 8), undefined, "the lake tile carries nothing");
+        assert.equal(footpathAt(game, 10, 9) !== undefined, true);
+    });
+});
+
+test("dry ground beside water is laid, so the condition is water and not proximity to it", function () {
+    withGame(function (game) {
+        parkWithGate(game);
+        game.addPath(10, 6);
+        game.addWater(11, 7);
+    }, function (game) {
+        const outcome = lay(line({ x: 10, y: 6 }, { x: 10, y: 9 }));
+
+        assert.equal(outcome.ok, true, outcome.detail);
+        assert.equal(outcome.tilesPlaced, 4);
+        assert.equal(footpathAt(game, 10, 7) !== undefined, true,
+            "the tile beside the lake is dry and takes a path");
+    });
+});
+
+
+test("the tiles beside a stranded run are described without contradicting this tool's own rule", function () {
+    // `neighboursOf` called sloped bare ground "bare ground on a slope, which takes no
+    // footpath", and build_path emits that straight into its own detail - one envelope in
+    // which the tool said footpaths run up slopes and that a slope takes no footpath. Five
+    // code sites and the path tool's description had already been corrected; this reader and
+    // the prompt were the two the burst walked past.
+    withGame(function (game) {
+        parkWithGate(game);
+        game.tile(5, 9).elements[0].slope = 1;
+    }, function () {
+        const outcome = lay(line({ x: 5, y: 10 }, { x: 5, y: 11 }));
+
+        assert.equal(outcome.connectedToPark, false, outcome.detail);
+        assert.match(outcome.detail, /5,9 is bare ground on a slope, which no typed tool here lays path on/,
+            "the limit is named as this bridge's, which is what is true");
+        assert.doesNotMatch(outcome.detail, /takes no footpath/,
+            "OpenRCT2 footpaths run up slopes, so that sentence is a rule of the game that is not one");
     });
 });
 

@@ -435,14 +435,28 @@ test("the perimeter is walked round the footprint, one face at a time", function
         "-2,1", "-2,0", "-2,-1"
     ], "clockwise from the -y face: every entry is orthogonally adjacent to the one before it");
 
-    // The property that matters and that the old order did not have: consecutive entries are
-    // neighbours on the ground, so two options listed together are two doors side by side.
+    // The property that matters and that the old order did not have, stated exactly rather
+    // than as "step <= 2": consecutive entries are neighbours on the ground EXCEPT at the
+    // corner turns, where the ring's own corner tile is diagonal to the footprint, is never a
+    // door position, and is skipped - so the step across it is a diagonal. The comment that
+    // stood here said adjacency held throughout, which is what `describe_placement` then told
+    // the model, and a stated order that is not the order is what a reader checks against.
+    let diagonals = 0;
+
     for (let i = 1; i < square.length; i++) {
         const step = Math.abs(square[i].dx - square[i - 1].dx) + Math.abs(square[i].dy - square[i - 1].dy);
 
-        assert.ok(step <= 2, "entry " + String(i) + " jumps " + String(step)
+        assert.ok(step === 1 || step === 2, "entry " + String(i) + " jumps " + String(step)
             + " tiles from the one before it, so this is not a walk");
+
+        if (step === 2) {
+            diagonals++;
+        }
     }
+
+    assert.equal(diagonals, 3,
+        "three of the four corner turns fall between consecutive entries; the fourth is between"
+        + " the last entry and the first, which is not a consecutive pair");
 });
 
 test("the ring holds for a footprint that is not square and for one tile", function () {

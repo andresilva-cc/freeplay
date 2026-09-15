@@ -126,6 +126,14 @@ export interface StrandedDoor {
     y: number;
 }
 
+/**
+ * A stretch of path the park gate reaches none of.
+ *
+ * The list of these is in the order a row-by-row scan of the map first reaches one: islands
+ * come in the order of their lowest-y tile, and of its lowest x within that row. That is scan
+ * order and nothing else - not by size, not by what is on them, not by anything about the
+ * park - because which stranded fragment is worth reconnecting is the model's to weigh.
+ */
 export interface PathIsland {
     /** Path tiles on it. The `runs` below cover exactly these. */
     tiles: number;
@@ -650,8 +658,11 @@ export function readPathNetwork(): PathNetworkShape {
         };
     });
 
-    islands.sort(function (a, b) { return b.tiles - a.tiles; });
-
+    // NOT sorted. It was sorted by `tiles` descending, undisclosed, two lines from
+    // `GroundCensus.blocks` saying "Unordered - these are counts, not a ranking" - and the
+    // biggest stranded fragment is the most walking recovered per tile of path laid, so
+    // putting it first ranked the model's repair options for it. The order is now whatever
+    // the scan produces, which `PathIsland` states.
     return {
         gate: gate,
         reachableTiles: reachableNames.length,
