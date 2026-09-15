@@ -111,6 +111,29 @@ function isPausedNow(): boolean {
 }
 
 /**
+ * True only for the instant this gate is writing `context.paused` itself.
+ *
+ * `context.paused` is frozen against evaluated scripts in src/scripting.ts, and it has to
+ * be: it is the single flag the whole clock discipline rests on, a script could set it to
+ * false, and `park_status` went on reporting `clockHeldBy: "bridge"` while it was wrong.
+ * But the gate's own write happens on the script's stack - `runActionWithClock` opens the
+ * window from inside `context.executeAction`, which is where a script fires an action - so
+ * "is a script running?" is not enough on its own to tell the two apart. This is the rest
+ * of the question: the gate says, for the length of one assignment, that this write is its.
+ *
+ * A flag rather than a token because the guard and the writer are in different modules and
+ * the write goes through a property setter, which takes no argument of its own. It is set
+ * and cleared around a single synchronous assignment with nothing in between that could run
+ * a script, so there is no window in which a script could be holding it open.
+ */
+let gateIsSettingPause = false;
+
+/** Whether the `context.paused` write happening right now is this gate's. See `setPaused`. */
+export function pauseWriteIsTheGates(): boolean {
+    return gateIsSettingPause;
+}
+
+/**
  * Set the pause through the plugin API's own setter, which calls `PauseToggle` at once
  * rather than queueing an action. It throws in network mode, where the pause belongs to the
  * server; a bridge that cannot hold the clock then holds nothing and says so by reading back
@@ -123,10 +146,16 @@ function setPaused(value: boolean): void {
         return;
     }
 
+    gateIsSettingPause = true;
+
     try {
         game.paused = value;
     } catch (_error) {
         // Read-only in network mode. Nothing to do but leave the clock where it is.
+    } finally {
+        // In `finally` because the setter can throw: leaving this set would hand the next
+        // script the one write this whole guard exists to refuse.
+        gateIsSettingPause = false;
     }
 }
 
@@ -352,4 +381,5 @@ export function resetClockGate(): void {
     playerPaused = false;
     windowsOpen = 0;
     closeOwed = false;
+    gateIsSettingPause = false;
 }

@@ -3,7 +3,7 @@
  * back into something JSON-serialisable and small enough to put in a prompt.
  */
 
-import { runActionWithClock } from "./clockGate.js";
+import { pauseWriteIsTheGates, runActionWithClock } from "./clockGate.js";
 
 /**
  * Limits for `evaluate`, where the model can ask for the whole world by accident.
@@ -422,14 +422,38 @@ function requireKnownActionName(caller: string, name: unknown): void {
 }
 
 /**
- * The game will run these, and running them is not playing. They are refused by name at
- * the entry point rather than by freezing anything, because the action layer is the only
- * place they exist: `cheatset` alone can set cash, park rating, ride ratings and
- * scenario completion in one call.
+ * The game will run these, and running them is not playing.
+ *
+ * Three ways in, because the levers come in three shapes:
+ *
+ * - `REFUSED_ACTIONS` is refused to everything, script and typed tool alike. No tool in this
+ *   bridge fires one, and every one of them is either a cheat entry point or the action form
+ *   of something the property guards freeze.
+ * - `SCRIPT_ONLY_REFUSED_ACTIONS` is refused only while a script is on the stack, because a
+ *   typed tool does fire it and owns the bookkeeping that goes with it.
+ * - `refusedByArgument` is for the one action that is two actions wearing one name.
+ *
+ * Refused here rather than by freezing anything, because the action layer is where these
+ * exist: `cheatset` alone can set cash, park rating, ride ratings and scenario completion in
+ * one call, and `guestsetflags` reaches the same `PeepFlags` that `peep.setFlag` is frozen
+ * over. A guard on the property with the action left open is not a guard.
  */
-function refuseCheatAction(caller: string, name: unknown): void {
+function refuseAction(caller: string, name: unknown, args: unknown): void {
     const key = typeof name === "string" ? name.toLowerCase() : "";
-    const why = REFUSED_ACTIONS[key];
+    let why: string | undefined = REFUSED_ACTIONS[key];
+
+    if (why === undefined && insideEvaluate) {
+        why = SCRIPT_ONLY_REFUSED_ACTIONS[key];
+
+        if (why !== undefined) {
+            throw new Error("context." + caller + ": " + key + " cannot be executed from an evaluated"
+                + " script. " + why + " " + EARNED_INSTEAD);
+        }
+    }
+
+    if (why === undefined) {
+        why = refusedByArgument(key, args);
+    }
 
     if (why === undefined) {
         return;
@@ -438,6 +462,33 @@ function refuseCheatAction(caller: string, name: unknown): void {
     throw new Error("context." + caller + ": " + key + " is not available in this run. "
         + why + " " + EARNED_INSTEAD);
 }
+
+/**
+ * The one refusal that has to read the arguments, because the name covers two things.
+ *
+ * `parksetparameter` is how `open_park` opens and closes the park - parameter 0 and 1, the
+ * one park flag a player sets - and parameter 2 is "set same price in park", which writes
+ * the `unlockAllPrices` flag that `park.setFlag` refuses by name. Refusing the whole action
+ * would take the open/close route with it; refusing the flag on the property and leaving it
+ * on the action is the hole this whole pass is about. So the third parameter is refused and
+ * the first two are not.
+ */
+function refusedByArgument(key: string, args: unknown): string | undefined {
+    if (key !== "parksetparameter" || !args || typeof args !== "object") {
+        return undefined;
+    }
+
+    if ((args as { parameter?: unknown }).parameter !== SET_SAME_PRICE_IN_PARK) {
+        return undefined;
+    }
+
+    return "parksetparameter with parameter 2 is \"set same price in park\", which writes the"
+        + " unlockAllPrices park flag - the scenario's own rule about what the park may charge for."
+        + " Parameters 0 and 1 open and close the park and are how open_park does it.";
+}
+
+/** `ParkSetParameterArgs.parameter` for "set same price in park". 0 closes, 1 opens. */
+const SET_SAME_PRICE_IN_PARK = 2;
 
 function markGuarded<T>(fn: T): T {
     (fn as unknown as Guarded).__freeplayActionGuard = GUARD_LOAD;
@@ -593,7 +644,7 @@ export function installActionGuards(): void {
     recordLever("context.queryAction", guardInvoker("queryAction", function (original) {
         return function (this: unknown, name: string, args: object, callback?: (result: unknown) => void): unknown {
             requireKnownActionName("queryAction", name);
-            refuseCheatAction("queryAction", name);
+            refuseAction("queryAction", name, args);
 
             let answer: unknown;
             let answered = false;
@@ -618,7 +669,7 @@ export function installActionGuards(): void {
     recordLever("context.executeAction", guardInvoker("executeAction", function (original) {
         return function (this: unknown, name: string, args: object, callback?: (result: unknown) => void): unknown {
             requireKnownActionName("executeAction", name);
-            refuseCheatAction("executeAction", name);
+            refuseAction("executeAction", name, args);
             recordExecutedAction(name);
 
             const guarded = guardScriptCallback(callback);
@@ -666,7 +717,64 @@ const REFUSED_ACTIONS: Record<string, string> = {
     cheatset: "cheatset is the cheat menu: it sets cash, park rating, ride ratings and scenario completion directly.",
     scenariosetsetting: "scenariosetsetting edits the scenario itself, including the objective and its deadline.",
     parksetdate: "parksetdate moves the calendar, and the objective has a deadline measured in years.",
-    ridefreezerating: "ridefreezerating pins a ride's excitement, intensity and nausea so they stop following the ride."
+    ridefreezerating: "ridefreezerating pins a ride's excitement, intensity and nausea so they stop following the ride.",
+
+    // ---------------------------------------------------------------------------------
+    // The action forms of writes the property guards above already freeze.
+    //
+    // Every one of these was reachable while its twin was shut, which is the same hole
+    // wearing the other hat: `peep.setFlag` has been frozen since the guest sweep went in
+    // and `context.executeAction("guestsetflags", ...)` fired on the same build. The test
+    // for inclusion is the one the guards already answer - is this the action form of
+    // something frozen, or of something the scenario rather than the player owns - and not
+    // whether OpenRCT2's own C++ would have refused it. That second question could not be
+    // checked with the game closed, so the refusal is on this side either way; a game that
+    // refuses it too simply refuses it twice.
+    // ---------------------------------------------------------------------------------
+    guestsetflags: "guestsetflags is the action form of peep.setFlag, which is frozen: PeepFlags carries"
+        + " leavingPark, lost, happiness and nausea, so clearing one keeps a guest in the park or stops"
+        + " them minding what the park is like - and the guest count is the objective.",
+    peeppickup: "peeppickup picks a guest up and puts them down anywhere on the map, which is the action"
+        + " form of writing peep.x, peep.y and peep.z - all frozen. Where a guest is is the game walking"
+        + " them round the park.",
+    landsetrights: "landsetrights sets park ownership and construction rights on a tile outright, which is"
+        + " the action form of assigning element.ownership - frozen, and for this reason. Land is bought"
+        + " with the landbuyrights action at park.landPrice, which charges for it; park value follows"
+        + " owned land.",
+    tilemodify: "tilemodify is the tile inspector: it edits any field of any element on any tile in place"
+        + " and for nothing, which is the whole of the element prototype this build freezes - ownership,"
+        + " slope, baseZ, addition, isQueue, trackType and the rest.",
+    mapchangesize: "mapchangesize resizes the map the scenario was built on. The ground a run is given is"
+        + " part of the scenario, like its objective and its deadline.",
+    peepspawnplace: "peepspawnplace moves where guests enter the park, which is the scenario's, and the"
+        + " scenario editor's tool for setting it.",
+    loadorquit: "loadorquit leaves the scenario - it opens the game's save prompt or quits to the title"
+        + " screen. A run is one pass at one park; there is nothing to reload to, nobody at the screen to"
+        + " answer a prompt, and scenario.status is frozen for the same reason.",
+
+    // Multiplayer administration. `network` itself is refused to a script below, and these
+    // are its action forms; a single-player run has no players or groups to administer.
+    networkmodifygroup: "networkmodifygroup edits multiplayer player groups and their permissions.",
+    playerkick: "playerkick removes a player from a multiplayer server.",
+    playersetgroup: "playersetgroup moves a player between multiplayer permission groups."
+};
+
+/**
+ * Actions a typed tool fires and a script may not.
+ *
+ * Both of these are the action form of `context.paused`, which is frozen against scripts
+ * below and is the single flag the clock discipline rests on. They cannot go in
+ * `REFUSED_ACTIONS` because `set_game_speed` fires both of them for real - and it is the
+ * tool that tells the clock gate whose pause this is, through `recordPlayerPause`. A script
+ * firing either would move the clock without that bookkeeping, leaving `park_status` and the
+ * run log reporting a `clockHeldBy` that is not what the game is doing.
+ */
+const SCRIPT_ONLY_REFUSED_ACTIONS: Record<string, string> = {
+    pausetoggle: "pausetoggle flips the game's pause, which is what the bridge holds between tool calls"
+        + " so that a turn spent thinking costs the scenario nothing. set_game_speed is the tool that"
+        + " pauses and unpauses, and it tells the clock that the pause is yours.",
+    gamesetspeed: "gamesetspeed decides how much scenario time a wait spends, and the objective has a"
+        + " deadline measured in years. set_game_speed is the tool that sets it."
 };
 
 /**
@@ -759,7 +867,13 @@ const PARK_LEVERS: Record<string, string> = {
     guestInitialCash: "What guests arrive carrying is a scenario setting.",
     guestInitialHappiness: "What guests arrive feeling is a scenario setting; what happens to them afterwards is the park's doing.",
     guestInitialHunger: "What guests arrive feeling is a scenario setting.",
-    guestInitialThirst: "What guests arrive feeling is a scenario setting."
+    guestInitialThirst: "What guests arrive feeling is a scenario setting.",
+    // Neither of these two moves a figure the objective is measured in, and neither was on
+    // any list until the namespace sweep below went looking. They are frozen rather than
+    // declared open because both have an action that does the same thing - parksetname, and
+    // the game's own news feed - and "harmless" is the reasoning that left the calendar open.
+    name: "The park's name is set by the parksetname action.",
+    messages: "The news feed is the game's record of what has happened in the park."
 };
 
 /** `scenario` members that decide whether the run is won. */
@@ -772,7 +886,9 @@ const SCENARIO_LEVERS: Record<string, string> = {
     filename: "The scenario file is which scenario is being played, and the game files a completion score"
         + " against that name.",
     parkRatingWarningDays: "This counts the consecutive days the park rating has sat under the scenario's"
-        + " threshold, and resets itself when the rating comes back up."
+        + " threshold, and resets itself when the rating comes back up.",
+    name: "The scenario's name is the scenario's, and the game files a completion score against it.",
+    details: "The scenario's description is the scenario's."
 };
 
 /** The objective's own fields: moving the goalposts is the same cheat as faking the score. */
@@ -991,6 +1107,126 @@ const OPEN_LEVERS: Record<string, string> = {
         + " hire_staff tells the model to set it through evaluate."
 };
 
+/**
+ * Why the calendar is frozen, and why reads of it are not.
+ *
+ * `date.monthsElapsed = 0` returned ok:true on a build whose report named 198 frozen levers,
+ * and put the world's calendar back from month 20 to month 0 with no unaccounted-change note
+ * behind it. Against `guestsBy` or `parkValueBy` - objectives whose whole difficulty is a
+ * deadline measured in years - that is unlimited game time, which is the largest single thing
+ * a run can be handed.
+ *
+ * It is the same lever `parksetdate` is refused for, by name, with the reason written out:
+ * "parksetdate moves the calendar, and the objective has a deadline measured in years." The
+ * property setter does exactly what that action does, and nothing in this file had ever
+ * mentioned the `date` namespace - not one reference across the whole of it.
+ *
+ * The reads stay open and have to: `wait`, `park_status` and the model's own sense of how
+ * much of the scenario is left all come off `date.year`, `date.month` and `date.day`, and
+ * `src/gameClock.ts` measures a call's cost in game days from `date.monthsElapsed`.
+ */
+const CALENDAR_IS_THE_SCENARIO = "The calendar is the scenario's clock and the objective has a deadline"
+    + " measured in years. Game time is spent by the wait tool on purpose, and by nothing else;"
+    + " the parksetdate action is refused for this same reason. Reading the date is untouched.";
+
+/**
+ * The two members of `GameDate` the plugin API declares writable. The other six -
+ * `ticksElapsed`, `yearsElapsed`, `day`, `month`, `year` - are `readonly` and are how every
+ * tool in this bridge tells the time; `src/clockGate.ts` waits on `ticksElapsed` to know a
+ * game tick has been applied.
+ *
+ * A named list rather than the default-deny sweep the ride and element prototypes get,
+ * which is the shape that let those two prototypes sit open - and it is safe here only
+ * because of what was added alongside it. `date` is eight members wide and fully
+ * enumerated, and `sweepNamespaces` now reports any member of it this table does not name
+ * and the API does not declare read-only, so a `GameDate` that grows a third setter comes
+ * back as `unexamined` rather than as nothing at all. That report is the thing a deny list
+ * never had.
+ */
+const DATE_LEVERS: Record<string, string> = {
+    monthsElapsed: CALENDAR_IS_THE_SCENARIO,
+    monthProgress: CALENDAR_IS_THE_SCENARIO
+};
+
+/**
+ * `park.research` is a live object, not a copy, and every figure on it is writable.
+ *
+ * The scenario decides what has been invented and what the park has yet to research, and
+ * `inventedItems` is a plain array: assigning it hands the park every ride the scenario was
+ * holding back. Funding is bought with money through the parksetresearchfunding action.
+ */
+const RESEARCH_IS_FUNDED = "What the park has researched is what it has paid for over time, and what is"
+    + " left to research is the scenario's. Funding and priorities are set by the parksetresearchfunding"
+    + " action, which charges the park for the research it buys.";
+
+const RESEARCH_LEVERS: Record<string, string> = {
+    inventedItems: RESEARCH_IS_FUNDED,
+    uninventedItems: RESEARCH_IS_FUNDED,
+    funding: RESEARCH_IS_FUNDED,
+    priorities: RESEARCH_IS_FUNDED,
+    stage: RESEARCH_IS_FUNDED,
+    progress: RESEARCH_IS_FUNDED
+};
+
+/**
+ * Why `context.paused` is frozen against a script but not against the bridge.
+ *
+ * Demonstrated with the bridge holding the clock: `context.paused = false` answered ok, and
+ * `clockHeldBy()` went from `bridge` to `nobody` on the spot. The next
+ * `holdClockBetweenCalls()` puts the pause back, so the game time that leaks is small - but
+ * `park_status` reports `clockHeldBy` to the model and to the run log in between, and it
+ * reports it wrong, which is the part that cannot be measured afterwards.
+ *
+ * The gate itself still has to write it, and it writes it from inside a script's own stack:
+ * `runActionWithClock` opens the clock window from inside `context.executeAction`, which is
+ * where a script fires an action. So `insideEvaluate` alone cannot tell the two apart, and
+ * `pauseWriteIsTheGates()` is the other half - see `setPaused` in src/clockGate.ts.
+ */
+const CLOCK_IS_THE_BRIDGES = "The pause between tool calls is how this bridge keeps a turn spent thinking"
+    + " from spending scenario time, and park_status reports who is holding the clock. Game time is spent"
+    + " by the wait tool, and the pause the model asks for is set by set_game_speed.";
+
+const SAVING_IS_NOT_PLAYING = "Saving and rendering the park are the harness's business, not a move in the"
+    + " park: a save is a point to reload to, and a run is one pass at one scenario. With no one at the"
+    + " screen, a save with no options put up a prompt nobody can answer.";
+
+/**
+ * Why `objectManager.load()` is refused and the reads next to it are not.
+ *
+ * `load` puts a ride object into the park that the scenario did not make available, which
+ * makes `list_ride_objects` - the tool the model picks a ride from - a lie: it reports what
+ * the scenario allows. Reading the loaded and installed objects is how that tool works and
+ * stays open.
+ */
+const OBJECTS_ARE_THE_SCENARIOS = "Which ride and scenery objects the park may build is part of the"
+    + " scenario, and list_ride_objects reports it. Loading one the scenario did not allow builds a park"
+    + " out of pieces the scenario withheld.";
+
+/**
+ * Why the whole `network` namespace and not its members.
+ *
+ * The same reasoning as `ui`: a member-by-member guard can only refuse the members somebody
+ * listed. There is nothing here for the model in either direction - a run is one player on
+ * one machine, `mode` is "none", `players` is one entry, and everything that acts
+ * administers groups and permissions. The plugin's own HTTP listener is
+ * `network.createListener()`, which is called once from src/index.ts at startup, outside any
+ * script, where the namespace is untouched.
+ */
+const NOBODY_ELSE_IS_PLAYING = "The network namespace is OpenRCT2's multiplayer: player groups, permissions,"
+    + " kicks and chat. This run is one player on one machine, so there is nobody on the other side of any"
+    + " of it. The namespace is refused whole rather than member by member, because a member nobody thought"
+    + " to list is how this stayed open.";
+
+const LEGACY_CONSOLE_IS_A_BACK_DOOR = "console.executeLegacy runs OpenRCT2's own developer console commands,"
+    + " which include set money, set forced_park_rating, set game_speed and the rest of the cheat set - the"
+    + " same levers the cheatset action is refused for, reached by typing them as a string.";
+
+const PROFILING_IS_NOT_PLAYING = "The profiler measures where the game spends its own frame time. It is a"
+    + " developer tool, it costs the game speed while it runs, and it says nothing about the park.";
+
+const TITLE_SEQUENCES_ARE_NOT_THE_PARK = "The title sequence manager edits the animations OpenRCT2 plays on"
+    + " its own menu screen, on disc, outside this park entirely.";
+
 /** Entity kinds to look through for the base prototype they all share. Litter first: it is the one
  * whose `remove` is worth a wage. */
 const ENTITY_KINDS = ["litter", "guest", "staff", "balloon", "car", "duck", "money_effect"];
@@ -1092,17 +1328,207 @@ function recordOpen(path: string, because: string): void {
 
 const openReasons: Record<string, string> = {};
 
-/** What was frozen and what would not freeze, so the limits of this are inspectable. */
+/**
+ * Every global the plugin API declares, and what this build does about each.
+ *
+ * The fourth state. `frozen`, `unfrozen` and `open` between them could only ever describe
+ * levers somebody had already listed, so a whole namespace nobody had thought about was not
+ * a failing entry - it was no entry, and the report read exactly the same with the calendar
+ * wide open as with it shut. `date` was reachable from a script, writable, and named in none
+ * of the three; so were `objectManager`, `network`, `context.paused` and `context.saveGame`.
+ *
+ * So the report now has to enumerate what it looked at. Every name below is one of the
+ * fourteen globals `declare global` puts in @openrct2/types, and each carries either the
+ * members examined and found to be reads, or `refused`, meaning the namespace is taken away
+ * from a script whole. A member that is present at runtime and is neither frozen, open, a
+ * declared read, nor read-only by its own descriptor comes back as `unexamined` - which is
+ * how `context.paused` would have shown up, and how the next one will.
+ *
+ * Static, like KNOWN_ACTION_NAMES and for the same reason: the engine offers no way to ask
+ * it what globals it has. That is the one gap left - a namespace OpenRCT2 adds and nobody
+ * transcribes is still invisible - and it is named here rather than left to be discovered.
+ */
+type NamespaceTreatment = "swept" | "refused";
+
+interface NamespacePlan {
+    treatment: NamespaceTreatment;
+    /** Members examined and found to answer a question rather than change one. */
+    reads: string[];
+}
+
+const API_NAMESPACES: Record<string, NamespacePlan> = {
+    park: {
+        treatment: "swept",
+        reads: ["getFlag", "postMessage", "getMonthlyExpenditure", "research", "awards", "parkSize",
+            "totalRideValueForMoney"]
+    },
+    scenario: { treatment: "swept", reads: [] },
+    cheats: { treatment: "swept", reads: [] },
+    date: { treatment: "swept", reads: ["ticksElapsed", "yearsElapsed", "day", "month", "year"] },
+    map: {
+        treatment: "swept",
+        reads: ["size", "numRides", "numEntities", "rides", "getRide", "getTile", "getEntity",
+            "getAllEntities", "getAllEntitiesOnTile", "getTrackIterator", "getPathNavigator"]
+    },
+    context: {
+        treatment: "swept",
+        reads: ["apiVersion", "configuration", "sharedStorage", "getParkStorage", "mode", "gameSpeed",
+            "getObject", "getAllObjects", "getTrackSegment", "getAllTrackSegments", "getIcon",
+            "getRandom", "formatString"]
+    },
+    objectManager: {
+        treatment: "swept",
+        reads: ["installedObjects", "getInstalledObject", "getObject", "getAllObjects"]
+    },
+    climate: { treatment: "swept", reads: ["type", "current", "future"] },
+    console: { treatment: "swept", reads: ["clear", "log"] },
+    profiler: { treatment: "swept", reads: ["getData", "enabled"] },
+    pluginManager: { treatment: "swept", reads: ["plugins"] },
+    ui: { treatment: "refused", reads: [] },
+    network: { treatment: "refused", reads: [] },
+    titleSequenceManager: { treatment: "refused", reads: [] }
+};
+
+interface NamespaceSweep {
+    name: string;
+    /** False for a namespace this build of the game does not have, such as `ui` headless. */
+    present: boolean;
+    treatment: NamespaceTreatment;
+    /** How many members were given a verdict, the namespace itself counting as one when refused. */
+    examined: number;
+    /** Members with no verdict at all: not frozen, not open, not a declared read, not read-only. */
+    unexamined: string[];
+}
+
+let namespaceSweeps: NamespaceSweep[] = [];
+let unexaminedLevers: string[] = [];
+
+/** Longest list of unexamined members one log line will name. */
+const MAX_LOGGED_UNEXAMINED = 20;
+
+/** The namespace itself, read through whatever guard is sitting on the slot. */
+function readNamespace(name: string): unknown {
+    if (typeof globalThis === "undefined" || !globalThis) {
+        return undefined;
+    }
+
+    try {
+        return (globalThis as unknown as Record<string, unknown>)[name];
+    } catch (_error) {
+        // A namespace guard refusing the read means something is there.
+        return undefined;
+    }
+}
+
+/**
+ * Whether this build has a verdict on one member.
+ *
+ * Read-only is a verdict: every guard in this file leaves reads alone on purpose, so a
+ * getter with no setter is not a lever. A method is a lever whatever its slot says, because
+ * calling it is the write - which is why `park.generateGuest` and `objectManager.load` are
+ * frozen rather than counted as covered by the fact that nobody can assign over them.
+ */
+function isExamined(name: string, plan: NamespacePlan, target: object, key: string): boolean {
+    const path = name + "." + key;
+
+    if (typeof leverSeen[path] !== "undefined" || typeof leverSeen[path + "()"] !== "undefined") {
+        return true;
+    }
+
+    if (typeof openReasons[path] === "string" || plan.reads.indexOf(key) >= 0) {
+        return true;
+    }
+
+    const owner = findPropertyOwner(target, key);
+    const descriptor = owner === null ? undefined : Object.getOwnPropertyDescriptor(owner, key);
+
+    if (!descriptor) {
+        return true;
+    }
+
+    const isMethod = typeof descriptor.value === "function";
+    const isSettable = typeof descriptor.set === "function"
+        || (descriptor.writable === true && !isMethod);
+
+    return !isMethod && !isSettable;
+}
+
+/**
+ * Walk every declared namespace and say what was looked at.
+ *
+ * Runs at the end of every install, not once: `park` and `scenario` are replaced when a
+ * scenario loads, `ui` can be taken away by a script and put back, and a hot reload leaves
+ * a previous load's wrappers in the slots. A verdict taken at startup would be a verdict
+ * about a world that is no longer there.
+ */
+function sweepNamespaces(): void {
+    const sweeps: NamespaceSweep[] = [];
+    const unexamined: string[] = [];
+    const names = Object.keys(API_NAMESPACES);
+
+    for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        const plan = API_NAMESPACES[name];
+        const value = readNamespace(name);
+        const present = typeof value !== "undefined" && value !== null;
+
+        if (!present || plan.treatment === "refused") {
+            // A refused namespace is one lever, already recorded by name, and there is
+            // nothing inside it a script can reach to enumerate.
+            sweeps.push({
+                name: name, present: present, treatment: plan.treatment,
+                examined: present ? 1 : 0, unexamined: []
+            });
+            continue;
+        }
+
+        const target = value as object;
+        const members = apiKeys(target);
+        const missed: string[] = [];
+
+        for (let m = 0; m < members.length; m++) {
+            if (!isExamined(name, plan, target, members[m])) {
+                missed.push(name + "." + members[m]);
+            }
+        }
+
+        for (let m = 0; m < missed.length; m++) {
+            unexamined.push(missed[m]);
+        }
+
+        sweeps.push({
+            name: name, present: true, treatment: plan.treatment,
+            examined: members.length, unexamined: missed
+        });
+    }
+
+    namespaceSweeps = sweeps;
+    unexaminedLevers = unexamined;
+}
+
+/**
+ * What was frozen, what would not freeze, what is open on purpose - and what nobody looked
+ * at, which is the one this could not say before.
+ */
 export function stateGuardReport(): {
     frozen: string[];
     unfrozen: string[];
     open: { path: string; because: string }[];
+    unexamined: string[];
+    namespaces: NamespaceSweep[];
 } {
     return {
         frozen: frozenLevers.slice(0),
         unfrozen: unfrozenLevers.slice(0),
         open: openLevers.map(function (path) {
             return { path: path, because: openReasons[path] };
+        }),
+        unexamined: unexaminedLevers.slice(0),
+        namespaces: namespaceSweeps.map(function (sweep) {
+            return {
+                name: sweep.name, present: sweep.present, treatment: sweep.treatment,
+                examined: sweep.examined, unexamined: sweep.unexamined.slice(0)
+            };
         })
     };
 }
@@ -1123,10 +1549,17 @@ export function stateGuardReport(): {
  * failures - nothing froze at all, something refused to freeze, or something reachable is
  * deliberately unfrozen - because each of them means a write is available that the count
  * on its own would read as covered.
+ *
+ * And false for a fourth now: a member of a declared namespace that nobody has a verdict
+ * on. `stateGuardReport().unexamined` is where those are named; this endpoint is polled and
+ * keeps the four fields it has, so the honest thing it can do is refuse to say ok. The
+ * fifth field belongs here too and is not here yet only because the shape of this object is
+ * asserted in a test file another change is holding.
  */
 export function stateGuardSummary(): { ok: boolean; frozen: number; unfrozen: string[]; open: string[] } {
     return {
-        ok: frozenLevers.length > 0 && unfrozenLevers.length === 0 && openLevers.length === 0,
+        ok: frozenLevers.length > 0 && unfrozenLevers.length === 0 && openLevers.length === 0
+            && unexaminedLevers.length === 0,
         frozen: frozenLevers.length,
         unfrozen: unfrozenLevers.slice(0),
         open: openLevers.slice(0)
@@ -1153,6 +1586,16 @@ function reportUnguarded(): void {
         unguardedReported = true;
         console.log("freeplay: these levers are writable on purpose and are not guarded: "
             + openLevers.join(", "));
+    }
+
+    if (unexaminedLevers.length > 0) {
+        unguardedReported = true;
+        console.log("freeplay: nobody has a verdict on these members of the plugin API, so they are"
+            + " neither guarded nor knowingly left open: "
+            + unexaminedLevers.slice(0, MAX_LOGGED_UNEXAMINED).join(", ")
+            + (unexaminedLevers.length > MAX_LOGGED_UNEXAMINED
+                ? " and " + String(unexaminedLevers.length - MAX_LOGGED_UNEXAMINED) + " more"
+                : ""));
     }
 }
 
@@ -1407,7 +1850,8 @@ function freezeValueWhileEvaluating(
     label: string,
     key: string,
     because: string,
-    copyOnRead?: boolean
+    copyOnRead?: boolean,
+    ours?: () => boolean
 ): GuardOutcome {
     const owner = findPropertyOwner(root, key);
 
@@ -1450,7 +1894,12 @@ function freezeValueWhileEvaluating(
         Object.defineProperty(owner, key, {
             get: markStateGuard(read),
             set: markStateGuard(function (this: unknown, value: unknown): void {
-                if (insideEvaluate) {
+                // `ours` is the second half of the question for a member the plugin writes
+                // from inside a script's own stack. `context.paused` is the one: the clock
+                // gate opens its window from inside `context.executeAction`, which is exactly
+                // where a script fires an action, so "is a script running?" answers true for
+                // the gate's write as well as for the script's. See CLOCK_IS_THE_BRIDGES.
+                if (insideEvaluate && !(typeof ours === "function" && ours())) {
                     throw new Error(message);
                 }
 
@@ -1919,6 +2368,52 @@ export function installStateGuards(): void {
         freezeValues(target, "scenario.objective", OBJECTIVE_LEVERS);
     });
 
+    // `park.research` is a live object hanging off a readonly member, so the readonly-ness
+    // of `park.research` itself protects nothing: `inventedItems` is a plain writable array
+    // and assigning it hands the park every ride the scenario was holding back.
+    installGroup(function () {
+        if (typeof park === "undefined" || !park) {
+            return null;
+        }
+
+        const research = (park as unknown as { research?: unknown }).research;
+
+        if (!research || typeof research !== "object") {
+            return null;
+        }
+
+        const root = sharedRoot(research as object);
+
+        // Handed out fresh on every read, so there is nothing durable to guard. Say so.
+        if (root === research && (park as unknown as { research?: unknown }).research !== research) {
+            recordUnguardable("park.research", RESEARCH_LEVERS);
+            return null;
+        }
+
+        return root;
+    }, function (target) {
+        freezeAllWritable(target, "park.research", RESEARCH_LEVERS, RESEARCH_IS_FUNDED, {});
+    });
+
+    // The calendar. Reads are untouched - wait, park_status and gameClock all live off
+    // them - and the namespace sweep at the end of this function is what says so out loud
+    // rather than leaving the six read-only members to be taken on trust.
+    installGroup(function () {
+        return typeof date === "undefined" || !date ? null : date as unknown as object;
+    }, function (target) {
+        // Refused to a script rather than to everything, the way park.entranceFee is. The
+        // scenario clock is advanced by OpenRCT2's own loop in C++, which does not come
+        // through the plugin API at all, so there is nothing on this side to break - and the
+        // one thing in this repository that does write it is test/fakeGame.ts, standing in
+        // for exactly that loop. A script is the whole of what can reach it otherwise, and
+        // the parksetdate action is refused to everything.
+        recordLever("date.monthsElapsed", freezeValueWhileEvaluating(target, "date", "monthsElapsed",
+            DATE_LEVERS.monthsElapsed));
+        recordLever("date.monthProgress", freezeValueWhileEvaluating(target, "date", "monthProgress",
+            DATE_LEVERS.monthProgress));
+        refuseNewMembers(target);
+    });
+
     installGroup(function () {
         return typeof cheats === "undefined" || !cheats ? null : cheats as unknown as object;
     }, function (target) {
@@ -2019,6 +2514,43 @@ export function installStateGuards(): void {
         recordLever("context.clearTimeout", guardWhileEvaluating(entry, "context", "clearTimeout", TIMERS_BELONG_TO_TOOLS));
         recordLever("context.clearInterval", guardWhileEvaluating(entry, "context", "clearInterval", TIMERS_BELONG_TO_TOOLS));
         recordLever("context.subscribe", guardWhileEvaluating(entry, "context", "subscribe", HOOKS_FIRE_LATER));
+
+        // The one flag the whole clock discipline rests on, and the one member of this API
+        // the plugin writes from inside a script's own stack. `pauseWriteIsTheGates` is what
+        // lets the gate through while the script is refused; see CLOCK_IS_THE_BRIDGES.
+        recordLever("context.paused", freezeValueWhileEvaluating(entry, "context", "paused",
+            CLOCK_IS_THE_BRIDGES, false, pauseWriteIsTheGates));
+        recordLever("context.saveGame", guardWhileEvaluating(entry, "context", "saveGame", SAVING_IS_NOT_PLAYING));
+        recordLever("context.captureImage",
+            guardWhileEvaluating(entry, "context", "captureImage", SAVING_IS_NOT_PLAYING));
+    }
+
+    // Re-checked every call for the same reason the timers are: these sit on globals the
+    // game replaces, and each costs one property read to confirm.
+    if (typeof objectManager !== "undefined" && objectManager) {
+        const objects = objectManager as unknown as object;
+
+        recordLever("objectManager.load",
+            guardWhileEvaluating(objects, "objectManager", "load", OBJECTS_ARE_THE_SCENARIOS));
+        recordLever("objectManager.unload",
+            guardWhileEvaluating(objects, "objectManager", "unload", OBJECTS_ARE_THE_SCENARIOS));
+    }
+
+    if (typeof console !== "undefined" && console) {
+        // console.log stays open - it goes to the game's log and is how a script says
+        // anything at all outside its return value. executeLegacy is the cheat menu as a
+        // string, and it is the only other thing in this namespace that does something.
+        recordLever("console.executeLegacy",
+            guardWhileEvaluating(console as unknown as object, "console", "executeLegacy",
+                LEGACY_CONSOLE_IS_A_BACK_DOOR));
+    }
+
+    if (typeof profiler !== "undefined" && profiler) {
+        const profiling = profiler as unknown as object;
+
+        recordLever("profiler.start", guardWhileEvaluating(profiling, "profiler", "start", PROFILING_IS_NOT_PLAYING));
+        recordLever("profiler.stop", guardWhileEvaluating(profiling, "profiler", "stop", PROFILING_IS_NOT_PLAYING));
+        recordLever("profiler.reset", guardWhileEvaluating(profiling, "profiler", "reset", PROFILING_IS_NOT_PLAYING));
     }
 
     // The last route a script had to a callback the game would run later. Re-checked on
@@ -2027,6 +2559,18 @@ export function installStateGuards(): void {
     recordLever("ui", guardNamespaceWhileEvaluating("ui", namespaceExists(function () {
         return typeof ui !== "undefined";
     }), NOBODY_IS_LOOKING));
+
+    // Refused whole for the same reason `ui` is, and with the same escape for the plugin:
+    // src/index.ts serves the bridge itself off `network.createListener()`, once, at startup
+    // and outside any script.
+    recordLever("network", guardNamespaceWhileEvaluating("network", namespaceExists(function () {
+        return typeof network !== "undefined";
+    }), NOBODY_ELSE_IS_PLAYING));
+
+    recordLever("titleSequenceManager",
+        guardNamespaceWhileEvaluating("titleSequenceManager", namespaceExists(function () {
+            return typeof titleSequenceManager !== "undefined";
+        }), TITLE_SEQUENCES_ARE_NOT_THE_PARK));
 
     reportUnguarded();
 
@@ -2046,6 +2590,10 @@ export function installStateGuards(): void {
             };
         }));
     });
+
+    // Last, because it reads what everything above recorded: which of the plugin API's own
+    // namespaces were looked at, and which members of them nobody has a verdict on.
+    sweepNamespaces();
 }
 
 
@@ -2063,7 +2611,7 @@ export function installStateGuards(): void {
 /** What a change is put down to. `*` means any executed action accounts for it. */
 interface InvariantSpec {
     path: string;
-    source: "park" | "scenario" | "objective";
+    source: "park" | "scenario" | "objective" | "date";
     key: string;
     movedBy: string[];
 }
@@ -2103,7 +2651,20 @@ const INVARIANTS: InvariantSpec[] = [
     { path: "scenario.objective.type", source: "objective", key: "type", movedBy: [] },
     { path: "scenario.objective.guests", source: "objective", key: "guests", movedBy: [] },
     { path: "scenario.objective.year", source: "objective", key: "year", movedBy: [] },
-    { path: "scenario.objective.parkValue", source: "objective", key: "parkValue", movedBy: [] }
+    { path: "scenario.objective.parkValue", source: "objective", key: "parkValue", movedBy: [] },
+
+    // The calendar, which nothing here watched while nothing there froze it. `monthsElapsed`
+    // is the deadline every timed objective is measured against, and it cannot move inside a
+    // script: a script runs to completion inside one game tick, and the game advances the
+    // month in `gameStateUpdateLogic`, which does not run while one is on the stack. So any
+    // change between the two readings is a write.
+    //
+    // `monthProgress` is deliberately not here. It is the same lever at a finer grain and it
+    // is frozen the same way, but the game increments it on every tick rather than every
+    // month, so watching it would turn a single mistaken assumption about when a tick can
+    // land into a false cheat report on every call. The one that can only be a write is
+    // worth more than the one that is merely usually a write.
+    { path: "date.monthsElapsed", source: "date", key: "monthsElapsed", movedBy: [] }
 ];
 
 const UNREADABLE = "<unreadable>";
@@ -2120,6 +2681,7 @@ interface ActionLog {
 interface WorldRefs {
     park: Record<string, unknown> | null;
     scenario: Record<string, unknown> | null;
+    date: Record<string, unknown> | null;
 }
 
 let executedActions: ActionLog = { count: 0, names: [], byName: {} };
@@ -2152,7 +2714,8 @@ function recordExecutedAction(name: unknown): void {
 function captureWorld(): WorldRefs {
     return {
         park: typeof park === "undefined" || !park ? null : park as unknown as Record<string, unknown>,
-        scenario: typeof scenario === "undefined" || !scenario ? null : scenario as unknown as Record<string, unknown>
+        scenario: typeof scenario === "undefined" || !scenario ? null : scenario as unknown as Record<string, unknown>,
+        date: typeof date === "undefined" || !date ? null : date as unknown as Record<string, unknown>
     };
 }
 
@@ -2172,7 +2735,9 @@ function readInvariants(world: WorldRefs): Record<string, unknown> {
         const spec = INVARIANTS[i];
         const source = spec.source === "objective"
             ? objective
-            : spec.source === "park" ? world.park : world.scenario;
+            : spec.source === "park"
+                ? world.park
+                : spec.source === "date" ? world.date : world.scenario;
 
         if (source === null) {
             continue;

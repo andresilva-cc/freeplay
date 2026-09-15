@@ -3,7 +3,8 @@ import test from "node:test";
 
 import { createApplication } from "../src/app.ts";
 import { BUILD_ID } from "../src/buildInfo.ts";
-import { runScript, stateGuardSummary } from "../src/scripting.ts";
+import { clockHeldBy, holdClockBetweenCalls, resetClockGate } from "../src/clockGate.ts";
+import { runScript, stateGuardReport, stateGuardSummary } from "../src/scripting.ts";
 import { UiTools } from "../src/tools/ui.ts";
 
 /**
@@ -249,12 +250,97 @@ function assertWritable(prototype: object, key: string, value: unknown): void {
         key + " does not write on the unguarded double, so a refusal on it would prove nothing");
 }
 
+/* ------------------------------------------------------------------ *
+ * The namespaces nobody had looked at
+ *
+ * `date`, `context.paused`, `objectManager`, `network`, `console.executeLegacy`,
+ * `profiler` and `park.research` were all reachable from a script on a build whose report
+ * named 198 frozen levers and said nothing at all about any of them. Each is shaped here
+ * the way @openrct2/types shapes it - the members it declares writable behind accessors
+ * that really write, the members it declares readonly behind getters with no setter - and
+ * each has a factory so a test can build a twin no guard has ever seen and prove the write
+ * lands on it first.
+ * ------------------------------------------------------------------ */
+
+interface DateStore {
+    ticks: number;
+    monthsElapsed: number;
+    monthProgress: number;
+}
+
+/**
+ * `GameDate`: two setters and six members that only answer.
+ *
+ * The shape matters. `monthsElapsed` and `monthProgress` are the two the plugin API
+ * declares writable, and `date.monthsElapsed = 0` put a world back from month 20 to month 0
+ * with `{"ok":true}` and no note. `ticksElapsed`, `yearsElapsed`, `year`, `month` and `day`
+ * are readonly and are how `wait`, `park_status` and `src/gameClock.ts` tell the time, so a
+ * guard that took them with it would be worse than the hole.
+ */
+function buildDatePrototype(store: DateStore): Record<string, unknown> {
+    const prototype: Record<string, unknown> = {};
+
+    ["monthsElapsed", "monthProgress"].forEach(function (key) {
+        Object.defineProperty(prototype, key, {
+            get: function () { return (store as unknown as Record<string, number>)[key]; },
+            set: function (value: number) { (store as unknown as Record<string, number>)[key] = value; },
+            configurable: true,
+            enumerable: false
+        });
+    });
+
+    const readable: Record<string, () => number> = {
+        ticksElapsed: function () { return store.ticks; },
+        yearsElapsed: function () { return Math.floor(store.monthsElapsed / 8); },
+        year: function () { return Math.floor(store.monthsElapsed / 8) + 1; },
+        month: function () { return store.monthsElapsed % 8; },
+        day: function () { return 1 + Math.floor(store.monthProgress / 2114); }
+    };
+
+    Object.keys(readable).forEach(function (key) {
+        Object.defineProperty(prototype, key, {
+            get: readable[key], configurable: true, enumerable: false
+        });
+    });
+
+    return prototype;
+}
+
+/**
+ * `context.paused`, behind an accessor that records every write.
+ *
+ * Every write, because the interesting question is not only whether the flag moved: the
+ * clock gate writes this itself, from inside `context.executeAction`, which is on a
+ * script's own stack. A guard that refused the gate would look identical to a working one
+ * from the flag alone.
+ */
+function definePaused(target: object, writes: boolean[]): void {
+    let paused = false;
+
+    Object.defineProperty(target, "paused", {
+        get: function () { return paused; },
+        set: function (value: boolean) {
+            paused = value === true;
+            writes.push(paused);
+        },
+        configurable: true,
+        enumerable: false
+    });
+}
+
+/** `park.research`: a live object behind a readonly member, every figure of it writable. */
+const RESEARCH_FIGURES = ["inventedItems", "uninventedItems", "funding", "priorities", "stage", "progress"];
+
 const PARK_FIGURES = [
     "cash", "rating", "bankLoan", "maxBankLoan", "value", "companyValue",
     "guests", "totalAdmissions", "totalIncomeFromAdmissions", "entranceFee"
 ];
 
-const SCENARIO_FIGURES = ["status", "completedCompanyValue", "companyValueRecord", "parkRatingWarningDays", "filename"];
+/** The two `park` members the lever table never named, found by the namespace sweep. */
+const PARK_TEXT_FIGURES = ["name", "messages"];
+
+const SCENARIO_FIGURES = ["status", "completedCompanyValue", "companyValueRecord", "parkRatingWarningDays",
+    "filename", "name", "details"];
 
 const OBJECTIVE_FIGURES = ["type", "guests", "year", "parkValue"];
 
@@ -285,6 +371,25 @@ interface World {
     uiCallbacks: unknown[];
     /** The namespace itself, for the assertions about reading it from outside a script. */
     ui: Record<string, unknown>;
+    /** The calendar behind `date`, which the objective's deadline is measured against. */
+    dateStore: DateStore;
+    /** Every write that reached `context.paused`, the gate's own included. */
+    pauseWrites: boolean[];
+    /** What reached `context.saveGame` and `context.captureImage`. */
+    saved: string[];
+    /** The store behind `park.research`. */
+    research: Record<string, unknown>;
+    /** What reached `objectManager.load` and `.unload`. */
+    objectsLoaded: string[];
+    /** What reached the multiplayer namespace, and the namespace itself. */
+    networkCalls: string[];
+    network: Record<string, unknown>;
+    /** Commands that reached `console.executeLegacy`, and what `console.log` was told. */
+    legacyCommands: string[];
+    logged: string[];
+    /** What reached the profiler and the title sequence editor. */
+    profilerCalls: string[];
+    titleCalls: string[];
     timers: {
         setTimeout(callback: () => void, delay?: number): number;
         clearTimeout(handle: number): void;
@@ -310,6 +415,12 @@ interface WorldOptions {
      * anything the report only says once it has found one would read clean.
      */
     bare?: boolean;
+    /**
+     * A setter on `GameDate` that no table in src/scripting.ts names, standing in for the
+     * next plugin API version growing a member nobody transcribes. Put on the prototype
+     * rather than the instance because the guard seals the instance against new members.
+     */
+    unlistedMember?: boolean;
 }
 
 function defineFigures(prototype: object, keys: string[], store: Record<string, unknown>, stubborn: string[]): void {
@@ -335,7 +446,7 @@ function installWorld(options?: WorldOptions): World {
     };
     const scenarioStore: Record<string, unknown> = {
         status: "inProgress", completedCompanyValue: 0, companyValueRecord: 180000, parkRatingWarningDays: 0,
-        filename: "Forest Frontiers.sc6"
+        filename: "Forest Frontiers.sc6", name: "Forest Frontiers", details: "A gentle start."
     };
     const objectiveStore: Record<string, unknown> = { type: "guestsBy", guests: 250, year: 4, parkValue: 0 };
     const cheatStore: Record<string, unknown> = {
@@ -344,6 +455,31 @@ function installWorld(options?: WorldOptions): World {
 
     const parkPrototype: Record<string, unknown> = {};
     defineFigures(parkPrototype, PARK_FIGURES, parkStore as unknown as Record<string, unknown>, stubborn);
+
+    const parkTextStore: Record<string, unknown> = { name: "Forest Frontiers", messages: [] };
+    defineFigures(parkPrototype, PARK_TEXT_FIGURES, parkTextStore, stubborn);
+
+    // `park.research` is readonly on Park and every figure on the object it hands back is
+    // writable, so the readonly-ness of the member protects nothing: assigning
+    // `inventedItems` hands the park every ride the scenario was holding back.
+    const researchStore: Record<string, unknown> = {
+        inventedItems: [], uninventedItems: [{ type: "ride" }], funding: 1,
+        priorities: [], stage: 0, progress: 0
+    };
+    const researchPrototype: Record<string, unknown> = {};
+    defineFigures(researchPrototype, RESEARCH_FIGURES, researchStore, stubborn);
+    researchPrototype.isObjectResearched = function () { return true; };
+
+    const research = Object.create(researchPrototype) as Record<string, unknown>;
+
+    Object.defineProperty(parkPrototype, "research", {
+        get: function () { return research; },
+        configurable: true,
+        enumerable: false
+    });
+
+    parkPrototype.postMessage = function () { /* the game's own news feed */ };
+    parkPrototype.getMonthlyExpenditure = function () { return []; };
 
     const calls: string[] = [];
 
@@ -449,6 +585,7 @@ function installWorld(options?: WorldOptions): World {
     /** Callbacks the game is holding until the tick it applies the action on. */
     const held: (() => void)[] = [];
     let deferring = false;
+    const saved: string[] = [];
 
     /** Actions cost the park money, the way the game charges for them. */
     const fakeContext = {
@@ -457,6 +594,13 @@ function installWorld(options?: WorldOptions): World {
 
             if (name === "ridecreate") {
                 parkStore.cash -= 12000;
+            }
+
+            if (name === "parksetname") {
+                // A route neither the guard nor its author thought of: the world moves the
+                // calendar behind an action that cannot move the calendar. The freeze above
+                // stops the setter; this is what is left for the backstop to catch.
+                dateStore.monthsElapsed -= 4;
             }
 
             if (name === "parksetloan") {
@@ -502,6 +646,82 @@ function installWorld(options?: WorldOptions): World {
         subscribe: function (hook: string, _callback: () => void) {
             subscribed.push(hook);
             return { dispose: function () { /* not used here */ } };
+        },
+
+        saveGame: function (options?: object) { saved.push("saveGame:" + JSON.stringify(options || {})); },
+        captureImage: function () { saved.push("captureImage"); }
+    };
+
+    const pauseWrites: boolean[] = [];
+
+    definePaused(fakeContext, pauseWrites);
+
+    const dateStore: DateStore = { ticks: 4000, monthsElapsed: 20, monthProgress: 1000 };
+    const datePrototype = buildDatePrototype(dateStore);
+
+    if (options !== undefined && options.unlistedMember === true) {
+        // A setter no table in src/scripting.ts names, on the namespace it sweeps.
+        let unlisted = 0;
+
+        Object.defineProperty(datePrototype, "quarterProgress", {
+            get: function () { return unlisted; },
+            set: function (value: number) { unlisted = value; },
+            configurable: true,
+            enumerable: false
+        });
+    }
+
+    const objectsLoaded: string[] = [];
+    const fakeObjectManager: Record<string, unknown> = {
+        installedObjects: [],
+        getInstalledObject: function () { return null; },
+        getObject: function () { return null; },
+        getAllObjects: function () { return [{ identifier: "rct2.ride.ptct1" }]; },
+        load: function (identifier: unknown) {
+            objectsLoaded.push("load:" + String(identifier));
+            return null;
+        },
+        unload: function (identifier: unknown) { objectsLoaded.push("unload:" + String(identifier)); }
+    };
+
+    const networkCalls: string[] = [];
+    const fakeNetwork: Record<string, unknown> = {
+        get mode() { return "none"; },
+        get numPlayers() { return 1; },
+        get players() { return []; },
+        get groups() { return []; },
+        defaultGroup: 0,
+        sendMessage: function (message: unknown) { networkCalls.push("sendMessage:" + String(message)); },
+        kickPlayer: function (id: unknown) { networkCalls.push("kickPlayer:" + String(id)); },
+        createListener: function () {
+            networkCalls.push("createListener");
+            return {};
+        }
+    };
+
+    const legacyCommands: string[] = [];
+    const logged: string[] = [];
+    const fakeConsole: Record<string, unknown> = {
+        clear: function () { /* nothing to clear here */ },
+        log: function (message: unknown) { logged.push(String(message)); },
+        executeLegacy: function (command: unknown) { legacyCommands.push(String(command)); }
+    };
+
+    const profilerCalls: string[] = [];
+    const fakeProfiler: Record<string, unknown> = {
+        get enabled() { return false; },
+        getData: function () { return []; },
+        start: function () { profilerCalls.push("start"); },
+        stop: function () { profilerCalls.push("stop"); },
+        reset: function () { profilerCalls.push("reset"); }
+    };
+
+    const titleCalls: string[] = [];
+    const fakeTitleSequenceManager: Record<string, unknown> = {
+        titleSequences: [],
+        create: function (name: unknown) {
+            titleCalls.push(String(name));
+            return {};
         }
     };
 
@@ -571,7 +791,9 @@ function installWorld(options?: WorldOptions): World {
 
     const previous = {
         park: scope.park, scenario: scope.scenario, cheats: scope.cheats,
-        map: scope.map, context: scope.context, ui: scope.ui
+        map: scope.map, context: scope.context, ui: scope.ui, date: scope.date,
+        objectManager: scope.objectManager, network: scope.network, console: scope.console,
+        profiler: scope.profiler, titleSequenceManager: scope.titleSequenceManager
     };
 
     scope.park = Object.create(parkPrototype);
@@ -580,6 +802,14 @@ function installWorld(options?: WorldOptions): World {
     scope.map = fakeMap;
     scope.context = fakeContext;
     scope.ui = fakeUi;
+    scope.date = Object.create(datePrototype);
+    scope.objectManager = fakeObjectManager;
+    scope.network = fakeNetwork;
+    // Swapped whole rather than given an extra member, so restoring puts Node's own console
+    // back: the guard installs non-configurably and could not be taken off the real one.
+    scope.console = fakeConsole;
+    scope.profiler = fakeProfiler;
+    scope.titleSequenceManager = fakeTitleSequenceManager;
 
     return {
         park: parkStore,
@@ -601,6 +831,17 @@ function installWorld(options?: WorldOptions): World {
         uiCalls: uiCalls,
         uiCallbacks: uiCallbacks,
         ui: fakeUi,
+        dateStore: dateStore,
+        pauseWrites: pauseWrites,
+        saved: saved,
+        research: researchStore,
+        objectsLoaded: objectsLoaded,
+        networkCalls: networkCalls,
+        network: fakeNetwork,
+        legacyCommands: legacyCommands,
+        logged: logged,
+        profilerCalls: profilerCalls,
+        titleCalls: titleCalls,
         timers: scope.context as unknown as World["timers"],
         addRide: function () {
             const ride = makeRide(rides.length);
@@ -630,6 +871,13 @@ function installWorld(options?: WorldOptions): World {
             scope.map = previous.map;
             scope.context = previous.context;
             scope.ui = previous.ui;
+            scope.date = previous.date;
+            scope.objectManager = previous.objectManager;
+            scope.network = previous.network;
+            scope.console = previous.console;
+            scope.profiler = previous.profiler;
+            scope.titleSequenceManager = previous.titleSequenceManager;
+            resetClockGate();
         }
     };
 }
@@ -2137,6 +2385,667 @@ test("a park with nothing in it yet still names every write left open on purpose
         assert.equal(index.stateGuards.ok, false, "and must not call itself clean over them");
         assert.deepEqual(index.stateGuards.unfrozen, [],
             "while nothing that was tried actually refused: " + JSON.stringify(index.stateGuards.unfrozen));
+    } finally {
+        world.restore();
+    }
+});
+
+/* ------------------------------------------------------------------ *
+ * Part 7 - the calendar
+ *
+ * `date.monthsElapsed = 0` answered `{"ok":true}` on a build whose report named 198 frozen
+ * levers, put a world back from month 20 to month 0, and raised no unaccounted-change note
+ * behind it. src/scripting.ts contained no reference to `date` at all - one, to
+ * `ride.buildDate`. Against a `guestsBy` or `parkValueBy` objective that is unlimited game
+ * time, which is the largest single thing a run can be handed, and it is the same lever
+ * `parksetdate` has been refused by name for since the action list was written.
+ * ------------------------------------------------------------------ */
+
+test("the calendar double really moves when no guard has seen it", function () {
+    const store: DateStore = { ticks: 4000, monthsElapsed: 20, monthProgress: 1000 };
+    const twin = Object.create(buildDatePrototype(store)) as Record<string, unknown>;
+
+    twin.monthsElapsed = 0;
+    twin.monthProgress = 0;
+
+    assert.equal(store.monthsElapsed, 0, "monthsElapsed does not write on the unguarded double");
+    assert.equal(store.monthProgress, 0, "monthProgress does not write on the unguarded double");
+    assert.equal(twin.year, 1, "and the year the objective is measured in follows it");
+});
+
+test("a script cannot reset the calendar, and the objective keeps its deadline", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        assert.equal(world.dateStore.monthsElapsed, 20, "the world starts in month 20, year 3");
+
+        const refusal = expectMcpRefusal(evaluate, "date.monthsElapsed = 0; date.monthsElapsed");
+
+        assert.match(refusal, /date\.monthsElapsed cannot be assigned/, refusal);
+        assert.equal(world.dateStore.monthsElapsed, 20,
+            "the calendar moved, which is the whole of the objective's deadline");
+
+        const finer = expectMcpRefusal(evaluate, "date.monthProgress = 0; 'done'");
+
+        assert.match(finer, /date\.monthProgress cannot be assigned/, finer);
+        assert.equal(world.dateStore.monthProgress, 1000, "the month did not restart either");
+
+        // The other way in, and the one the reviewer reached for first.
+        const action = expectMcpRefusal(evaluate,
+            "context.executeAction('parksetdate', { year: 1, month: 0, day: 1 }); 'done'");
+
+        assert.match(action, /parksetdate is not available/, action);
+        assert.deepEqual(world.executed, [], "and nothing reached the game");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the calendar refusal names the tool that does spend game time", function () {
+    const world = installWorld();
+
+    try {
+        const refusal = expectMcpRefusal(mcpEvaluate(), "date.monthsElapsed = 0; 'done'");
+
+        assert.match(refusal, /deadline measured in years/, refusal);
+        assert.match(refusal, /wait tool/, "a refusal that does not name the mechanism teaches nothing: " + refusal);
+        assert.match(refusal, /parksetdate/, "and the action refused for the same reason: " + refusal);
+    } finally {
+        world.restore();
+    }
+});
+
+test("the date can still be read, because wait, park_status and the model live off it", function () {
+    const world = installWorld();
+
+    try {
+        const outcome = mcpEvaluate()(
+            "({ months: date.monthsElapsed, year: date.year, month: date.month, day: date.day,"
+            + " ticks: date.ticksElapsed, years: date.yearsElapsed, progress: date.monthProgress })");
+
+        assert.equal(outcome.ok, true, JSON.stringify(outcome));
+        assert.deepEqual(outcome.result, {
+            months: 20, year: 3, month: 4, day: 1, ticks: 4000, years: 2, progress: 1000
+        }, "every read the bridge and the model take off the calendar has to still answer");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the game's own loop still advances the calendar, because it is not a script", function () {
+    const world = installWorld();
+
+    try {
+        createApplication();
+
+        const scope = globalThis as unknown as { date: Record<string, unknown> };
+
+        // What OpenRCT2 does in C++ every tick, and what test/fakeGame.ts does standing in
+        // for it. A guard that always threw would have stopped the clock instead of the
+        // cheat, and every deferred tool in this bridge waits on that clock.
+        scope.date.monthsElapsed = 21;
+        scope.date.monthProgress = 0;
+
+        assert.equal(world.dateStore.monthsElapsed, 21, "the month the game moved has to land");
+        assert.equal(world.dateStore.monthProgress, 0, "and so does the month restarting");
+    } finally {
+        world.restore();
+    }
+});
+
+test("a calendar that moved with no action behind it is reported", function () {
+    const world = installWorld();
+
+    try {
+        // parksetname cannot move the calendar, and in this world it does - which is what a
+        // route neither the guard nor its author thought of looks like from here.
+        const outcome = run("context.executeAction('parksetname', { name: 'Park' }); 'renamed'");
+
+        assert.equal(outcome.ok, true, JSON.stringify(outcome));
+        assert.deepEqual(outcome.unaccountedChanges, [
+            { property: "date.monthsElapsed", before: 20, after: 16 }
+        ], "the backstop has to see a calendar nothing accounts for: " + JSON.stringify(outcome));
+        assert.match(String(outcome.note), /date\.monthsElapsed 20 -> 16/, String(outcome.note));
+    } finally {
+        world.restore();
+    }
+});
+
+/* ------------------------------------------------------------------ *
+ * Part 8 - the action forms of frozen property twins
+ *
+ * `context.executeAction('guestsetflags', ...)` fired on the same build that froze
+ * `peep.setFlag`, and for the same `PeepFlags`. A guard on the property with the action
+ * left open is not a guard, so every name in KNOWN_ACTION_NAMES was put to the question the
+ * property guards already answer: is this the action form of something frozen, or of
+ * something the scenario rather than the player owns.
+ * ------------------------------------------------------------------ */
+
+const ACTION_TWINS: { action: string; args: string; twin: RegExp }[] = [
+    // PeepFlags carries leavingPark: clearing it pins the guest count, which is the objective.
+    { action: "guestsetflags", args: "{ peep: 1, guestFlags: 0 }", twin: /peep\.setFlag/ },
+    // The action form of writing peep.x, peep.y and peep.z.
+    { action: "peeppickup", args: "{ type: 0, id: 1, x: 10, y: 10, z: 20, playerId: 0 }", twin: /peep\.x/ },
+    // The action form of element.ownership, which bought a tile outright.
+    { action: "landsetrights", args: "{ x1: 0, y1: 0, x2: 32, y2: 32, setting: 4, ownership: 160 }",
+        twin: /element\.ownership/ },
+    // The tile inspector: the whole element prototype, in place and for nothing.
+    { action: "tilemodify", args: "{ x: 5, y: 5, setting: 'surface_toggle_corner', value: 0 }",
+        twin: /tile inspector/ },
+    { action: "mapchangesize", args: "{ targetSize: { x: 200, y: 200 } }", twin: /scenario/ },
+    { action: "peepspawnplace", args: "{ x: 10, y: 10, z: 14, direction: 0 }", twin: /scenario/ },
+    { action: "loadorquit", args: "{ mode: 0 }", twin: /scenario/ },
+    { action: "networkmodifygroup",
+        args: "{ type: 0, groupId: 0, name: 'x', permissionIndex: 0, permissionState: 0 }",
+        twin: /multiplayer/ },
+    { action: "playerkick", args: "{ playerId: 1 }", twin: /multiplayer/ },
+    { action: "playersetgroup", args: "{ playerId: 1, groupId: 2 }", twin: /multiplayer/ }
+];
+
+test("an action that does what a frozen property does is refused by name, and never reaches the game", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        ACTION_TWINS.forEach(function (entry) {
+            const refusal = expectMcpRefusal(evaluate,
+                "context.executeAction('" + entry.action + "', " + entry.args + "); 'done'");
+
+            assert.match(refusal, new RegExp(entry.action + " is not available"), refusal);
+            assert.match(refusal, entry.twin,
+                entry.action + " must say which frozen lever it is the other face of: " + refusal);
+        });
+
+        assert.deepEqual(world.executed, [],
+            "not one of them may reach the game: " + JSON.stringify(world.executed));
+    } finally {
+        world.restore();
+    }
+});
+
+test("the same names are refused through queryAction, which is the other way in", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        ACTION_TWINS.forEach(function (entry) {
+            expectMcpRefusal(evaluate,
+                "context.queryAction('" + entry.action + "', " + entry.args + "); 'done'");
+        });
+
+        assert.deepEqual(world.queried, [], "a query is how a script finds out whether one would take");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the clock's own actions are refused a script and still fire for the tool that owns them", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        ["pausetoggle", "gamesetspeed"].forEach(function (name) {
+            const refusal = expectMcpRefusal(evaluate,
+                "context.executeAction('" + name + "', { speed: 4 }); 'done'");
+
+            assert.match(refusal, new RegExp(name + " cannot be executed from an evaluated script"), refusal);
+            assert.match(refusal, /set_game_speed/,
+                "the refusal has to name the tool that does it: " + refusal);
+        });
+
+        assert.equal(world.executed.indexOf("pausetoggle"), -1,
+            "neither reached the game from a script: " + JSON.stringify(world.executed));
+        assert.equal(world.executed.indexOf("gamesetspeed"), -1, JSON.stringify(world.executed));
+
+        // The same call from where set_game_speed makes it - outside any script - still goes
+        // through, or the tool that owns the pause would have lost its lever.
+        const scope = globalThis as unknown as { context: { executeAction: (n: string, a: object) => void } };
+
+        scope.context.executeAction("gamesetspeed", { speed: 4 });
+        scope.context.executeAction("pausetoggle", {});
+
+        assert.deepEqual(world.executed, ["gamesetspeed", "pausetoggle"],
+            "set_game_speed fires both of these for real: " + JSON.stringify(world.executed));
+    } finally {
+        world.restore();
+    }
+});
+
+test("parksetparameter still opens the park and refuses the pricing rule it also carries", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        // Parameter 2 is "set same price in park", which writes the unlockAllPrices flag that
+        // park.setFlag refuses by name. Refusing the whole action would take open_park with it.
+        const refusal = expectMcpRefusal(evaluate,
+            "context.executeAction('parksetparameter', { parameter: 2, value: 1 }); 'done'");
+
+        assert.match(refusal, /unlockAllPrices/, refusal);
+        assert.deepEqual(world.executed, [], "and it did not reach the game");
+
+        const opened = evaluate("context.executeAction('parksetparameter', { parameter: 1, value: 0 }); 'open'");
+
+        assert.equal(opened.ok, true, "opening the park is the one thing a player does here: "
+            + JSON.stringify(opened));
+        assert.deepEqual(world.executed, ["parksetparameter"], JSON.stringify(world.executed));
+    } finally {
+        world.restore();
+    }
+});
+
+test("the actions that are how the park is built and run are left alone", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+        // Each of these charges the park for what it does, or is a management decision a
+        // player makes. Refusing them would be refusing the game.
+        const playable = [
+            "context.executeAction('footpathplace', { x: 32, y: 32, z: 96, direction: 0, slope: 0 })",
+            "context.executeAction('landbuyrights', { x1: 0, y1: 0, x2: 32, y2: 32, setting: 0 })",
+            "context.executeAction('ridesetprice', { ride: 0, price: 20, isPrimaryPrice: true })",
+            "context.executeAction('staffhire', { staffType: 0, autoPosition: true })",
+            "context.executeAction('parksetloan', { value: 80000 })",
+            "context.executeAction('parkmarketing', { type: 0, item: 0, duration: 4 })",
+            "context.executeAction('parksetresearchfunding', { priorities: 1, fundingAmount: 2 })",
+            "context.executeAction('staffsetpatrolarea', { staff: 3, x: 0, y: 0, mode: 0 })",
+            "context.executeAction('landsetheight', { x: 32, y: 32, height: 20, style: 0 })",
+            "context.executeAction('clearscenery', { x1: 0, y1: 0, x2: 32, y2: 32, type: 0 })"
+        ];
+
+        playable.forEach(function (code) {
+            const outcome = evaluate(code + "; 'done'");
+
+            assert.equal(outcome.ok, true, code + " was refused: " + JSON.stringify(outcome));
+        });
+
+        assert.equal(world.executed.length, playable.length,
+            "every one of them has to reach the game: " + JSON.stringify(world.executed));
+        assert.ok(world.executed.indexOf("staffsetpatrolarea") >= 0,
+            "the action twin of a lever the build leaves open on purpose stays open too");
+    } finally {
+        world.restore();
+    }
+});
+
+/* ------------------------------------------------------------------ *
+ * Part 9 - the clock the whole discipline rests on
+ * ------------------------------------------------------------------ */
+
+test("the pause flag really moves on a double no guard has seen", function () {
+    const writes: boolean[] = [];
+    const twin: Record<string, unknown> = {};
+
+    definePaused(twin, writes);
+
+    twin.paused = true;
+
+    assert.equal(twin.paused, true, "the pause does not write on the unguarded double");
+    assert.deepEqual(writes, [true], "and the write has to be visible behind it");
+});
+
+test("a script cannot take the clock off the bridge", function () {
+    const world = installWorld();
+
+    try {
+        resetClockGate();
+        createApplication();
+        holdClockBetweenCalls();
+
+        assert.equal(clockHeldBy(), "bridge", "the bridge holds the clock between tool calls");
+        assert.deepEqual(world.pauseWrites, [true], "which it does by writing this flag");
+
+        const refusal = expectRefusal("context.paused = false; context.paused");
+
+        assert.match(refusal, /context\.paused cannot be assigned from an evaluated script/, refusal);
+        assert.match(refusal, /set_game_speed/, "and it names the tool that does set it: " + refusal);
+        assert.deepEqual(world.pauseWrites, [true], "nothing else may have reached the flag");
+        assert.equal(clockHeldBy(), "bridge",
+            "park_status reports this to the model and to the run log, so it has to still be true");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the clock gate still opens its window from inside a script's own action", function () {
+    const world = installWorld();
+
+    try {
+        resetClockGate();
+        createApplication();
+        holdClockBetweenCalls();
+
+        // The gate unpauses from inside `context.executeAction`, which is exactly where a
+        // script fires an action - so `insideEvaluate` is true for the gate's own write too.
+        // Without the escape this write is swallowed by setPaused's catch and the action is
+        // fired into a paused game, which OpenRCT2 refuses, silently and every time.
+        const outcome = run("context.executeAction('footpathplace',"
+            + " { x: 32, y: 32, z: 96, direction: 0, slope: 0 }); 'fired'");
+
+        assert.equal(outcome.ok, true, JSON.stringify(outcome));
+        assert.deepEqual(world.executed, ["footpathplace"], "the action has to reach the game");
+        assert.deepEqual(world.pauseWrites, [true, false],
+            "the gate has to have been able to let the clock run across it: "
+            + JSON.stringify(world.pauseWrites));
+
+        holdClockBetweenCalls();
+
+        assert.equal(world.pauseWrites[world.pauseWrites.length - 1], true,
+            "and the hold goes back on when the call is over: " + JSON.stringify(world.pauseWrites));
+        assert.equal(clockHeldBy(), "bridge");
+    } finally {
+        world.restore();
+    }
+});
+
+test("outside a script the tool that owns the pause still writes it", function () {
+    const world = installWorld();
+
+    try {
+        resetClockGate();
+        createApplication();
+
+        // src/tools/gameSpeed.ts falls back to this setter when the pausetoggle action does
+        // not take. It is the route every hand-written run used and is known to work.
+        const scope = globalThis as unknown as { context: Record<string, unknown> };
+
+        scope.context.paused = true;
+
+        assert.equal(scope.context.paused, true, "a setter that always threw would break set_game_speed");
+        assert.deepEqual(world.pauseWrites, [true]);
+    } finally {
+        world.restore();
+    }
+});
+
+test("saving and rendering the park are the harness's, not a move in it", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        const save = expectMcpRefusal(evaluate, "context.saveGame({ name: 'won' }); 'done'");
+
+        assert.match(save, /context\.saveGame\(\) cannot be called from an evaluated script/, save);
+        assert.match(save, /point to reload to/, save);
+
+        expectMcpRefusal(evaluate, "context.captureImage({}); 'done'");
+
+        assert.deepEqual(world.saved, [], "neither may reach the game: " + JSON.stringify(world.saved));
+    } finally {
+        world.restore();
+    }
+});
+
+/* ------------------------------------------------------------------ *
+ * Part 10 - the rest of the namespaces nobody had swept
+ * ------------------------------------------------------------------ */
+
+test("a script cannot load a ride object the scenario did not allow", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        const refusal = expectMcpRefusal(evaluate, "objectManager.load('rct2.ride.xyz'); 'done'");
+
+        assert.match(refusal, /objectManager\.load\(\) cannot be called from an evaluated script/, refusal);
+        assert.match(refusal, /list_ride_objects/,
+            "the refusal has to say which tool it would have made a lie of: " + refusal);
+
+        expectMcpRefusal(evaluate, "objectManager.unload('rct2.ride.xyz'); 'done'");
+
+        assert.deepEqual(world.objectsLoaded, [], JSON.stringify(world.objectsLoaded));
+
+        // The reads next to it are how list_ride_objects works and stay open.
+        const reading = evaluate("objectManager.getAllObjects('ride').length");
+
+        assert.equal(reading.ok, true, JSON.stringify(reading));
+        assert.equal(reading.result, 1, "reading which objects are loaded is the whole of that tool");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the multiplayer namespace is refused whole, and the bridge's own listener is not", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        const refusal = expectMcpRefusal(evaluate, "network.sendMessage('hello'); 'done'");
+
+        assert.match(refusal, /network cannot be reached from an evaluated script/, refusal);
+        assert.match(refusal, /one player on one machine/, refusal);
+
+        expectMcpRefusal(evaluate, "typeof network");
+        expectMcpRefusal(evaluate, "network.kickPlayer(1); 'done'");
+
+        assert.deepEqual(world.networkCalls, [], JSON.stringify(world.networkCalls));
+
+        // src/index.ts serves this whole bridge off network.createListener(), once, at
+        // startup and outside any script. The namespace has to still be there for it.
+        const scope = globalThis as unknown as { network: { createListener: () => unknown } };
+
+        scope.network.createListener();
+
+        assert.deepEqual(world.networkCalls, ["createListener"],
+            "refusing a script must not take the bridge's own socket with it");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the developer console's legacy command line is the cheat menu as a string", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        const refusal = expectMcpRefusal(evaluate, "console.executeLegacy('set money 1000000'); 'done'");
+
+        assert.match(refusal, /console\.executeLegacy\(\) cannot be called from an evaluated script/, refusal);
+        assert.match(refusal, /set forced_park_rating/,
+            "the refusal has to name what is on the other side of it: " + refusal);
+        assert.deepEqual(world.legacyCommands, [], JSON.stringify(world.legacyCommands));
+
+        // console.log goes to the game's log and is left alone: it is the only way a script
+        // says anything at all outside its return value.
+        const logging = evaluate("console.log('hello'); 'said'");
+
+        assert.equal(logging.ok, true, JSON.stringify(logging));
+        assert.ok(world.logged.indexOf("hello") >= 0, JSON.stringify(world.logged));
+    } finally {
+        world.restore();
+    }
+});
+
+test("the profiler and the title sequence editor are not part of playing the park", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        const profiling = expectMcpRefusal(evaluate, "profiler.start(); 'done'");
+
+        assert.match(profiling, /profiler\.start\(\) cannot be called from an evaluated script/, profiling);
+        expectMcpRefusal(evaluate, "profiler.stop(); 'done'");
+        expectMcpRefusal(evaluate, "profiler.reset(); 'done'");
+
+        const titles = expectMcpRefusal(evaluate, "titleSequenceManager.create('x'); 'done'");
+
+        assert.match(titles, /titleSequenceManager cannot be reached from an evaluated script/, titles);
+
+        assert.deepEqual(world.profilerCalls, [], JSON.stringify(world.profilerCalls));
+        assert.deepEqual(world.titleCalls, [], JSON.stringify(world.titleCalls));
+    } finally {
+        world.restore();
+    }
+});
+
+test("what the park has researched really moves on a double, and not through a script", function () {
+    const store: Record<string, unknown> = { inventedItems: [], funding: 1 };
+    const prototype: Record<string, unknown> = {};
+
+    defineFigures(prototype, ["inventedItems", "funding"], store, []);
+
+    const twin = Object.create(prototype) as Record<string, unknown>;
+
+    twin.inventedItems = ["everything"];
+    twin.funding = 3;
+
+    assert.deepEqual(store.inventedItems, ["everything"], "the unguarded double has to really write");
+    assert.equal(store.funding, 3);
+
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        const refusal = expectMcpRefusal(evaluate,
+            "park.research.inventedItems = park.research.uninventedItems; 'done'");
+
+        assert.match(refusal, /park\.research\.inventedItems cannot be assigned/, refusal);
+        assert.match(refusal, /parksetresearchfunding/, refusal);
+        assert.deepEqual(world.research.inventedItems, [],
+            "assigning this hands the park every ride the scenario was holding back");
+
+        expectMcpRefusal(evaluate, "park.research.funding = 3; 'done'");
+        assert.equal(world.research.funding, 1, JSON.stringify(world.research));
+
+        const reading = evaluate("park.research.uninventedItems.length");
+
+        assert.equal(reading.ok, true, JSON.stringify(reading));
+        assert.equal(reading.result, 1, "reading what is left to research is how a park plans");
+    } finally {
+        world.restore();
+    }
+});
+
+test("the park and scenario members the lever tables never named are frozen too", function () {
+    const world = installWorld();
+
+    try {
+        const evaluate = mcpEvaluate();
+
+        expectMcpRefusal(evaluate, "park.name = 'Cheatsville'; 'done'");
+        expectMcpRefusal(evaluate, "park.messages = []; 'done'");
+        expectMcpRefusal(evaluate, "scenario.name = 'Won'; 'done'");
+        expectMcpRefusal(evaluate, "scenario.details = ''; 'done'");
+
+        assert.equal(world.scenario.name, "Forest Frontiers", JSON.stringify(world.scenario));
+        assert.equal(world.scenario.details, "A gentle start.", JSON.stringify(world.scenario));
+    } finally {
+        world.restore();
+    }
+});
+
+/* ------------------------------------------------------------------ *
+ * Part 11 - the report that could not say "never looked"
+ *
+ * `stateGuardReport()` named 198 frozen levers across ten surfaces and nothing else, so
+ * `date`, `objectManager`, `network`, `context.paused` and `context.saveGame` appeared in
+ * none of `frozen`, `unfrozen` or `open`. Not as a failing entry: as no entry. The report
+ * read identically whether or not the calendar was open, which is exactly the defect the
+ * three-state reshape was written to make impossible.
+ * ------------------------------------------------------------------ */
+
+test("the report names every namespace of the plugin API it swept", function () {
+    const world = installWorld();
+
+    try {
+        createApplication();
+
+        const report = stateGuardReport();
+        const byName: Record<string, { present: boolean; treatment: string; examined: number }> = {};
+
+        report.namespaces.forEach(function (sweep) {
+            byName[sweep.name] = sweep;
+        });
+
+        ["park", "scenario", "cheats", "date", "map", "context", "objectManager", "console",
+            "profiler", "ui", "network", "titleSequenceManager", "climate", "pluginManager"
+        ].forEach(function (name) {
+            assert.ok(byName[name], name + " is a global the plugin API declares and the report must"
+                + " have a verdict on it: " + JSON.stringify(Object.keys(byName)));
+        });
+
+        assert.equal(byName.date.present, true, "the namespace the whole of this was about");
+        assert.ok(byName.date.examined >= 7, "every member of it has to have been classified: "
+            + JSON.stringify(byName.date));
+        assert.equal(byName.network.treatment, "refused", JSON.stringify(byName.network));
+        assert.equal(byName.ui.treatment, "refused", JSON.stringify(byName.ui));
+
+        // Not in this world, and saying so is the point: absent is a different answer from
+        // swept, and both are different from nobody having looked.
+        assert.equal(byName.climate.present, false, "this world has no climate to sweep");
+        assert.equal(byName.climate.examined, 0, JSON.stringify(byName.climate));
+    } finally {
+        world.restore();
+    }
+});
+
+test("a member nobody has a verdict on comes back as unexamined rather than as silence", function () {
+    const world = installWorld({ unlistedMember: true });
+
+    try {
+        createApplication();
+
+        const report = stateGuardReport();
+
+        assert.ok(report.unexamined.indexOf("date.quarterProgress") >= 0,
+            "a setter no table in src/scripting.ts names has to be named here, not counted as"
+            + " covered and not left out: " + JSON.stringify(report.unexamined));
+
+        const swept = report.namespaces.filter(function (entry) { return entry.name === "date"; })[0];
+
+        assert.deepEqual(swept.unexamined, ["date.quarterProgress"],
+            "and it has to be attributed to the namespace it is on: " + JSON.stringify(swept));
+
+        assert.equal(report.frozen.indexOf("date.quarterProgress"), -1, "it is not frozen");
+        assert.equal(report.unfrozen.indexOf("date.quarterProgress"), -1, "and it did not refuse to freeze");
+        assert.deepEqual(report.open.filter(function (entry) {
+            return entry.path === "date.quarterProgress";
+        }), [], "and nobody decided to leave it open - which is the whole difference");
+
+        assert.equal(stateGuardSummary().ok, false,
+            "a member with no verdict on it has to fail the pre-run check");
+
+        // And it really is a hole, or naming it would prove nothing.
+        const scope = globalThis as unknown as { date: Record<string, unknown> };
+
+        scope.date.quarterProgress = 7;
+        assert.equal(scope.date.quarterProgress, 7, "the stand-in must be a real write");
+    } finally {
+        world.restore();
+    }
+});
+
+test("with every member accounted for the report says so, and names nothing", function () {
+    const world = installWorld();
+
+    try {
+        createApplication();
+
+        const report = stateGuardReport();
+
+        assert.deepEqual(report.unexamined, [],
+            "every member of every declared namespace in this world has a verdict: "
+            + JSON.stringify(report.unexamined));
+
+        assert.ok(report.frozen.indexOf("date.monthsElapsed") >= 0,
+            "and the calendar is on the frozen list now: " + JSON.stringify(report.frozen.slice(0, 40)));
+        assert.ok(report.frozen.indexOf("context.paused") >= 0, "and so is the clock flag");
+        assert.ok(report.frozen.indexOf("objectManager.load") >= 0);
+        assert.ok(report.frozen.indexOf("network") >= 0);
+        assert.ok(report.frozen.indexOf("context.saveGame") >= 0);
     } finally {
         world.restore();
     }
